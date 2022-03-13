@@ -1,76 +1,45 @@
+# This references the default golang container from
+# the Docker Hub: https://registry.hub.docker.com/u/library/golang/
+# If you want Google's container you would reference google/golang
+# Read more about containers on our dev center
+# https://devcenter.wercker.com/overview-and-core-concepts/containers/
 box: golang
+# This is the build pipeline. Pipelines are the core of wercker
+# Read more about pipelines on our dev center
+# https://devcenter.wercker.com/development/pipelines/
 
-dev:
-  steps:
-    - setup-go-workspace:
-        package-dir: github.com/cloudnativego/hello
+# You can also use services such as databases. Read more on our dev center:
+# https://devcenter.wercker.com/administration/services/
+# services:
+    # - postgres
+    # https://devcenter.wercker.com/administration/services/examples/postgresql/
 
-    - script:
-        name: env
-        code: env
-
-    - script:
-        name: go init
-        code: |
-          cd $WERCKER_SOURCE_DIR
-          go version
-          go mod init
-
-
-    - internal/watch:
-        code: go run main.go
-        reload: true
-
+    # - mongo
+    # https://devcenter.wercker.com/administration/services/examples/mongodb/
 build:
+  # The steps that will be executed on build
+  # Steps make up the actions in your pipeline
+  # Read more about steps on our dev center:
+  # https://devcenter.wercker.com/development/steps/
   steps:
-    - setup-go-workspace:
-        package-dir: github.com/cloudnativego/hello
+    # Sets the go workspace and places you package
+    # at the right place in the workspace tree
+    - setup-go-workspace
 
+    # Gets the dependencies
     - script:
-        name: env
-        code: env
-
-    - script:
-        name: go init
+        name: go get
         code: |
-          cd $WERCKER_SOURCE_DIR
-          go version
-          go mod init
+          go get
 
     # Build the project
     - script:
         name: go build
         code: |
-          go build
+          go build ./...
 
     # Test the project
     - script:
         name: go test
         code: |
-          go test -v 
-
-    - script:
-        name: copy files to wercker output
-        code: |
-          cp -R ./ ${WERCKER_OUTPUT_DIR}
-
-
-deploy:
- steps:
-   - internal/docker-push:
-       username: $DOCKER_USERNAME
-       password: $DOCKER_PASSWORD
-       cmd: /pipeline/source/hello
-       port: "8080"
-       tag: latest
-       repository: cloudnativego/book-hello
-       registry: https://registry.hub.docker.com
-
-   - cng/cf-deploy:
-       api: $API
-       user: $USER
-       password: $PASSWORD
-       org: $ORG
-       space: $SPACE
-       appname: wercker-step-hello
-       docker_image: cloudnativego/book-hello
+          go test ./...
