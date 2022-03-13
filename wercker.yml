@@ -10,10 +10,11 @@ dev:
         code: env
 
     - script:
-        name: go get
+        name: go init
         code: |
           cd $WERCKER_SOURCE_DIR
           go version
+          go mod init
 
 
     - internal/watch:
@@ -30,10 +31,11 @@ build:
         code: env
 
     - script:
-        name: go get
+        name: go init
         code: |
           cd $WERCKER_SOURCE_DIR
           go version
+          go mod init
 
     # Build the project
     - script:
@@ -45,7 +47,7 @@ build:
     - script:
         name: go test
         code: |
-          go test -v $(glide novendor)
+          go test -v 
 
     - script:
         name: copy files to wercker output
