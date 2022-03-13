@@ -28,9 +28,9 @@ build:
 
     # Gets the dependencies
     - script:
-        name: go get
+        name: go mod init
         code: |
-          go get
+          go mod init
 
     # Build the project
     - script:
