@@ -139,6 +139,9 @@ func (s *Screen) Note(message string) {
 	if s.closed {
 		return
 	}
+	if !DiagnosticWriteAllowed(s.out) {
+		return
+	}
 	enabled := s.platformEnabled()
 	if s.active && !enabled {
 		if s.platformLost() {

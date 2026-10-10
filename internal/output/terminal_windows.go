@@ -7,6 +7,7 @@ package output
 
 import (
 	"errors"
+	"io"
 	"syscall"
 	"unsafe"
 
@@ -218,3 +219,6 @@ func (s *Screen) platformShowCursor() {
 	cursor := windowsCursorInfo{Size: 25, Visible: 1}
 	_, _, _ = procSetCursorInfo.Call(uintptr(p.outHandle), uintptr(unsafe.Pointer(&cursor)))
 }
+
+// Windows console writes do not use Unix terminal job-control semantics.
+func DiagnosticWriteAllowed(io.Writer) bool { return true }

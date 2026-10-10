@@ -7,6 +7,7 @@ package output
 
 import (
 	"errors"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -326,4 +327,33 @@ func linuxCursorWritePermitted(foreground, backgroundWritesAllowed bool, sequenc
 		return true
 	}
 	return sequence == "\x1b[?25h" && backgroundWritesAllowed
+}
+
+// DiagnosticWriteAllowed reports whether an ordinary diagnostic write is
+// permitted by the current Linux terminal job-control state. It deliberately
+// does not depend on live-screen eligibility.
+func DiagnosticWriteAllowed(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return true
+	}
+	fd := int(file.Fd())
+	if fd < 0 {
+		return false
+	}
+	mode, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if errors.Is(err, unix.ENOTTY) {
+		return true // redirected files and pipes are ordinary destinations
+	}
+	if err != nil {
+		return false // a vanished or indeterminate terminal is best-effort silent
+	}
+	foreground, err := unix.IoctlGetInt(fd, unix.TIOCGPGRP)
+	if errors.Is(err, unix.ENOTTY) {
+		return true // a tty in another session is not this process's job-control tty
+	}
+	if err != nil {
+		return false
+	}
+	return foreground == unix.Getpgrp() || mode.Lflag&unix.TOSTOP == 0
 }
