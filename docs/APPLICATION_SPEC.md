@@ -10,7 +10,7 @@ Build a standalone Go CLI retaining the Ping Monitor behavior of `evdanil/cn-too
 
 Supported release targets are **Linux x86-64** and **Windows x86-64**. ICMP is implemented in Go using maintained, permissively licensed Go code and OS socket APIs. Neither platform may execute `ping`, PowerShell, a shell, or another helper to perform network probes. The delivered binary needs no Python, C compiler, separately installed SQLite library, or network service.
 
-Retain IPv4/IPv6 targets, optional TCP probes, repeated and single-round runs, persistent history, request identity, sampled online periods, live terminal grid/table, `q`/`v`, signals, `--list`, `--show`, `--follow`, and table/JSON/Markdown/CSV output. Deliberate changes are the standalone command name, CLI flags replacing cn-tool's INI settings, a separate default history filename, native ICMP error handling, and the two supported platforms. Native error attribution may improve upon Windows' old text-parser limitations, but must never invent a sender.
+Retain IPv4/IPv6 targets, optional TCP probes, repeated and single-round runs, persistent history, request identity, sampled online periods, live terminal grid/table, `q`/`v`, signals, `--list`, `--show`, `--follow`, and table/JSON/Markdown/CSV output. The default history remains `~/.cn-ping-history.db`, so existing records remain available without an override. Deliberate changes are the standalone command name, CLI flags replacing cn-tool's INI settings, native ICMP error handling, and the two supported platforms. Native error attribution may improve upon Windows' old text-parser limitations, but must never invent a sender.
 
 Exclude the interactive menu and prompts, XLSX and `--report`/`-r`, other cn-tool modules and their credentials, plugin hooks, macOS and other architectures, a daemon/service installer, web UI, notifications, alerts, authentication, packet capture, traceroute, arbitrary packet construction, RTT analytics, and a general-purpose configuration framework. There is no background service; cron or Windows Task Scheduler invokes the CLI.
 
@@ -38,7 +38,7 @@ Options work before or after targets; `--` ends option parsing. No arguments pri
 | `--for` | At least 10 seconds; when `--every` is explicitly supplied, duration must be at least that interval. `--for 30s` alone is valid and has one possible round on the default 60-second interval |
 | `--since` | All retained earlier rounds if omitted; age in minutes/hours/days/weeks or ISO date/date-time; naive date-times mean UTC, explicit offsets and `Z` are honored. Resolve relative ages once at command start; no sliding follow window |
 | `--since 0m` | A target run includes only its own completed rounds; show/follow filter by the resulting command-start cutoff |
-| `--history-file` | `~/.cn-mon-history.db`, with `~` meaning the current user's home on either OS; supplied relative paths resolve against the working directory; empty value is invalid |
+| `--history-file` | `~/.cn-ping-history.db`, preserving cn-tool's default, with `~` meaning the current user's home on either OS; supplied relative paths resolve against the working directory; empty value is invalid |
 | `--history-days` | 30; positive integer days; prune only when a target run starts |
 | TCP | None; 1–5 distinct comma-separated ASCII ports, each 1–65535; strip whitespace around each port, deduplicate and sort ascending |
 
@@ -53,7 +53,7 @@ cn-mon --file sites.txt --tcp 22,443 --since 0m --format json
 cn-mon --list
 cn-mon --show 1f48 --since 24h --format md
 cn-mon --follow 1f48
-cn-mon --show 1f48 --history-file ~/.cn-ping-history.db
+cn-mon --show 1f48 --history-file ./lab-history.db
 ```
 
 ## 3. Targets and stable request identity
@@ -62,14 +62,16 @@ Read positional objects in order, then `--file`; a positional `-` is replaced at
 
 Accept IPv4/IPv6 literals, CIDRs with host bits normalized, IPv4 dotted netmasks/hostmasks, and ASCII DNS names (single-label names included). For example, `10.1.2.5/255.255.255.0` and `10.1.2.5/0.0.0.255` both normalize to `10.1.2.0/24`, with the same expansion and request identity as that CIDR; malformed/noncontiguous masks are rejected. Names follow the reference length/label validation: total typed length 2–252, optional trailing dot, labels 1–63 ASCII letters/digits/hyphens with alphanumeric ends. An invalid all-digits-and-dots token is not a hostname. Reject IPv4-mapped IPv6 with a diagnostic giving the IPv4 form. Link-local IPv6 requires a nonempty interface zone on a single address, e.g. `fe80::1%eth0` or a Windows interface index; link-local subnets and zoned CIDRs are rejected. Preserve zone spelling in canonical identity and pass it to both probes.
 
-Each IPv4 network may contain at most 65,536 addresses (`/16` or narrower); each IPv6 network at most 65,536 (`/112` or narrower). These are **per-network** limits; there is no new aggregate ICMP host limit. With TCP, the aggregate expanded unique host list is at most 1,024. A token that would exceed the TCP limit is rejected whole, while later smaller tokens may fit. Invalid tokens are recorded in `not_found`; any remaining valid targets are still run, with exit precedence in section 9.
+Each IPv4 network may contain at most 65,536 addresses (`/16` or narrower); each IPv6 network at most 65,536 (`/112` or narrower). These are **per-network** limits; there is no new aggregate ICMP host limit. With TCP, admission is greedy in collected input order, **before canonicalization**: count distinct host strings returned by the source parser for already accepted tokens plus the candidate. A token that would exceed 1,024 is rejected whole, while later smaller tokens may fit. Thus differently cased names can occupy separate admission slots even though later canonicalization merges them. Preserve this source behavior; do not sort or lowercase candidates before admission or reject the whole request because its raw input total is too large. Reordering near the cap can change the accepted target set. Rejected tokens are recorded in `not_found`; any remaining accepted targets are still run, with exit precedence in section 9. The resulting canonical host list also never exceeds 1,024.
+
+Source authority for the two phases is [bulk_ping.py, lines 445–455](https://github.com/evdanil/cn-tool/blob/2e2f3c40ef6718486f1ca4477f9145029ec495fa/cn_tool/modules/bulk_ping.py#L445-L455), which applies the limit in input order using parser-returned strings, followed by [ping_monitor.py, lines 313–350](https://github.com/evdanil/cn-tool/blob/2e2f3c40ef6718486f1ca4477f9145029ec495fa/cn_tool/modules/ping_monitor.py#L313-L350), which canonicalizes only non-refused tokens and re-expands those sorted tokens. The source's broad order-invariance docstring does not override its admission behavior.
 
 Expansion matches the reference Python `ipaddress` host semantics: ordinary IPv4 excludes network/broadcast, `/31` includes both, `/32` the one address; ordinary IPv6 excludes subnet-router anycast, `/127` includes both, `/128` the one address. Subnet expansion additionally excludes loopback, multicast and reserved addresses; a single literal or host-sized prefix is used as supplied, including loopback. Private/documentation addresses are not excluded merely for being nonpublic. The compatibility fixtures freeze the reference exclusions rather than substituting Go's `IsGlobalUnicast`. Characterization baseline is Python 3.12.14: IPv4 reserved `240.0.0.0/4`; IPv6 reserved `::/8`, `100::/8`, `200::/7`, `400::/6`, `800::/5`, `1000::/4`, `4000::/3`, `6000::/3`, `8000::/3`, `a000::/3`, `c000::/3`, `e000::/4`, `f000::/5`, `f800::/6`, `fe00::/9`.
 
-Build identity in this order:
+After admission, build identity from the accepted targets in this order:
 
-1. Normalize valid CIDRs to network/prefix, addresses to compressed canonical spelling with zone unchanged, and names to lowercase while preserving a trailing dot.
-2. Deduplicate and lexicographically sort canonical tokens, including valid tokens whose hosts overlap another token. Sort unique TCP ports numerically.
+1. Normalize accepted CIDRs to network/prefix, addresses to compressed canonical spelling with zone unchanged, and names to lowercase while preserving a trailing dot.
+2. Deduplicate and lexicographically sort canonical tokens, including accepted tokens whose hosts overlap another token. Sort unique TCP ports numerically.
 3. Re-expand these sorted tokens; keep the first occurrence of each host. A subnet's hosts are in numeric address order. DNS answers are **not** part of this host list or key.
 4. SHA-256 the UTF-8 encoding of Python-compatible compact JSON `[tokens, ports, hosts]`, with no spaces or newline. Match Python `json.dumps(..., separators=(",", ":"))` escaping, including ASCII escaping of any non-ASCII zone text; do not use Go's default HTML escaping. The full lowercase 64-hex key is stored; display its first 8 characters.
 
@@ -79,7 +81,19 @@ Golden example: targets `10.1.2.5/30 Web01.EXAMPLE.NET`, ports `443,22`, produce
 [["10.1.2.4/30","web01.example.net"],[22,443],["10.1.2.5","10.1.2.6","web01.example.net"]]
 ```
 
-and key `1f48106300cacd9a109b91a8ddc79c64920f0feb58e7840459ff80b639b7cb46` (display `1f481063`). Reordering/duplicating equivalent inputs does not change it. Different canonical targets, ports, or expansion does; file path and content order alone do not. A stored request always retains its stored host list and key when read, even if a future expansion policy changes.
+and key `1f48106300cacd9a109b91a8ddc79c64920f0feb58e7840459ff80b639b7cb46` (display `1f481063`). The identity invariant applies to **equal accepted canonical target sets, TCP ports and deterministic expanded host lists**: reorderings, duplicates and equivalent spellings with those same accepted inputs produce the same key. Reordering raw input near the TCP cap can change admission and therefore the key. Different accepted canonical targets, ports, or expansion distinguish requests; file path is not part of identity, while file content order matters only if it changes admission. A stored request always retains its stored host list and key when read, even if a future expansion policy changes.
+
+Required TCP admission/identity fixtures (all with `--tcp 443`; `10.0.0.0/22` expands to 1,022 hosts):
+
+| Raw collected targets, in order | Accepted canonical targets | Rejected raw target | Final hosts / displayed ID |
+| --- | --- | --- | --- |
+| `10.0.0.0/22 10.0.4.1 10.0.4.2` | `10.0.0.0/22`, `10.0.4.1`, `10.0.4.2` | None | 1,024 / `23fa8108` |
+| `10.0.4.2 10.0.4.1 10.0.0.0/22` | Same accepted set as preceding row | None | 1,024 / `23fa8108` |
+| `10.0.0.0/22 10.0.4.1 10.0.4.2 10.0.4.3` | `10.0.0.0/22`, `10.0.4.1`, `10.0.4.2` | `10.0.4.3` | 1,024 / `23fa8108` |
+| `10.0.4.3 10.0.4.2 10.0.4.1 10.0.0.0/22` | `10.0.4.1`, `10.0.4.2`, `10.0.4.3` | `10.0.0.0/22` | 3 / `3242fd9d` |
+| `10.0.0.0/22 HOST01 host01 HOST02` | `10.0.0.0/22`, `host01` | `HOST02` | 1,023; case variants consumed two admission slots |
+
+The two numeric fixture keys are `23fa8108eae6b8e943340ecdf476aefc3572eee18971523ee8822e74bfae63dd` and `3242fd9d5a9b6a2ef1e306ef4dcab9cb491a8ce1bc3e1a70f552d52b9c0d8615`. Rows with rejected targets continue accepted probes and normally exit 2, subject to execution/history failure precedence. These fixtures preserve source-order admission rather than imposing a new order-independent selection policy.
 
 Resolve each name again in every round, using the first OS-resolver IPv4 answer, or first IPv6 answer only when no IPv4 answer is available. Resolve a name once per round and use that address for both ICMP and TCP. An unresolved name produces `no such host`, observation `?`, and blank TCP fields. A run's final `not_found` includes names never resolved during that run; one successful resolution removes a name from that list even if it later fails. DNS completion order must not reorder hosts. Cancellation must stop waiting for a resolver without keeping the process alive.
 
@@ -154,7 +168,7 @@ An online period has `to: null` only when the host was seen in the latest includ
 
 ## 7. SQLite history and read modes
 
-Use `modernc.org/sqlite` through `database/sql` for a native, CGO-free binary. Pin an audited version and its complete transitive module graph in `go.mod`/`go.sum` during the foundation milestone. Preserve the reference **schema version 1 read/write contract**. Existing cn-tool history may be explicitly selected with `--history-file`; no import command, automatic migration, automatic discovery, or overwrite is required. The separate default file avoids surprising cn-tool users. Continuing an old database is supported only after interoperability tests pass; stored keys and positional host lists are never recomputed or rewritten.
+Use `modernc.org/sqlite` through `database/sql` for a native, CGO-free binary. Pin an audited version and its complete transitive module graph in `go.mod`/`go.sum` during the foundation milestone. Preserve the reference **schema version 1 read/write contract** and default `~/.cn-ping-history.db`, as defined in [ping_monitor.py, lines 355–358](https://github.com/evdanil/cn-tool/blob/2e2f3c40ef6718486f1ca4477f9145029ec495fa/cn_tool/modules/ping_monitor.py#L355-L358). Existing cn-tool history at that path is used without an override; `--history-file` selects another database when desired. No import command, automatic migration, search for other database paths, or overwrite is required. Continuing an old database is supported only after interoperability tests pass; stored keys and positional host lists are never recomputed or rewritten.
 
 Logical schema (column names and meanings are compatibility requirements):
 
@@ -242,8 +256,8 @@ These IDs are implementation/review traceability, not claims that the tests alre
 | --- | --- |
 | CLI-01 | Every mode/option combination, interspersed options, no-argument invocation, help/version, invalid durations/IDs/ports, and exit precedence behave as specified; no prompt occurs |
 | CLI-02 | BOM/comments/file/stdin/duplicate `-` cases collect exact targets once; unreadable and invalid UTF-8 input exit 2 |
-| TGT-01 | Canonicalization reproduces the golden SHA-256; reordering/duplicates/case/host-bit CIDRs agree; trailing-dot names, ports and changed expansion distinguish requests |
-| TGT-02 | `/16`, `/112`, `/31`, `/32`, `/127`, `/128`, equivalent IPv4 dotted netmasks/hostmasks, invalid masks, reserved/loopback/multicast exclusions, mapped IPv6, scoped link-local, malformed numeric tokens, and aggregate 1,024 TCP boundary match fixtures |
+| TGT-01 | Canonicalization reproduces the golden SHA-256; reordering/duplicates/case/host-bit CIDRs agree when accepted canonical target sets, ports and expansion agree; changed accepted sets, trailing-dot names, ports and expansion distinguish requests |
+| TGT-02 | `/16`, `/112`, `/31`, `/32`, `/127`, `/128`, equivalent IPv4 dotted netmasks/hostmasks, invalid masks, reserved/loopback/multicast exclusions, mapped IPv6, scoped link-local and malformed numeric tokens match fixtures; TCP boundary cases preserve pre-canonical input-order admission, equal accepted sets after reordering give equal keys, changed admitted sets may give different keys, and case-variant names count separately before canonicalization |
 | DNS-01 | Names resolve IPv4-first afresh each round; DNS address changes affect both probes together without changing request ID; unresolved/resolved transitions and cancellation are correct |
 | PRB-01 | Native IPv4 and IPv6 loopback each send/count two distinct requests; one reply is partial, duplicate/out-of-order replies never inflate count, and 3-second silence terminates |
 | PRB-02 | Packet fixtures cover each supported ICMP error type/family, target/intermediate sender, minimum quote, IPv6 extensions, malformed/truncated/unrelated/late packets, reply-over-error precedence, filter acceptance, and senderless Windows behavior |
@@ -256,7 +270,7 @@ These IDs are implementation/review traceability, not claims that the tests alre
 | RUN-02 | Cancellation in DNS, queued work, active probing, waiting, history lock/read, and finalization restores terminal promptly; incomplete rounds vanish; a completed round stopped during commit remains |
 | RUN-03 | Earlier snapshot/since filtering, cancelled single-round cron-spacing correction, current-round counts, retained success with new silence, and current-versus-earlier failure precedence are exact |
 | DB-01 | Transaction fault injection never leaves half a round or orphan request; killed writers retain completed rounds; read/write failures continue in memory and exit 3 |
-| DB-02 | Python schema-1 fixtures are read and appended correctly; cn-tool can read Go-written fixtures; IDs/host positions/rows are stable; foreign/corrupt/newer DBs remain unchanged |
+| DB-02 | Existing schema-1 history at `~/.cn-ping-history.db` is read and continued without `--history-file`; an explicit override selects another file; Python fixtures are read/appended correctly and cn-tool reads Go-written fixtures; IDs/host positions/rows are stable; foreign/corrupt/newer DBs remain unchanged |
 | DB-03 | Readers do not create missing history or mutate history/schema/statuses; SQLite coordination sidecars are distinguished from history changes; concurrent writers/readers, lock timeout/cancel, retention, live zero-round runs and long-interval runs behave correctly |
 | HIS-01 | List ordering/counts/states, prefix ambiguity, missing history/ID, local PID disappearance, heartbeat threshold, and inaccessible PID outcomes are correct |
 | HIS-02 | Follow sees new runs, late commits, median changes, pruning and same-key recreation; stop affects only follower; completed-round changes are emitted once |
