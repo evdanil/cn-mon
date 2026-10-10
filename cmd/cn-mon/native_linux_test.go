@@ -154,6 +154,7 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		"--tcp", fmt.Sprint(port), "--every", "10s", "--for", "1m", "127.0.0.1",
 	)
 	command.Env = nativeCommandEnv(t, directory, database, logPath)
+	command.Env = replaceNativeCommandEnv(command.Env, "NO_COLOR", "")
 	command.Stdin, command.Stderr = slave, slave
 	command.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	stdout, err := command.StdoutPipe()
@@ -190,6 +191,9 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 			if pollErr != nil {
 				return
 			}
+			if fds[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
+				return
+			}
 			if fds[0].Revents&unix.POLLIN == 0 {
 				continue
 			}
@@ -214,6 +218,12 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	}
 	if !terminalOutput.contains([]byte("\x1b[?25l")) {
 		t.Fatal("live screen did not hide cursor while drawing")
+	}
+	if bytes.Contains(terminalOutput.bytes(), []byte("38;2;")) || bytes.Contains(terminalOutput.bytes(), []byte("48;2;")) {
+		t.Fatalf("NO_COLOR= still allowed RGB color in the live screen: %q", terminalOutput.bytes())
+	}
+	if !bytes.Contains(terminalOutput.bytes(), []byte("\x1b[1m")) {
+		t.Fatalf("NO_COLOR= removed text attributes along with color: %q", terminalOutput.bytes())
 	}
 	if _, err := master.Write([]byte("\x1b")); err != nil {
 		t.Fatalf("send Escape through PTY input: %v", err)
@@ -308,8 +318,12 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		t.Fatalf("q-stop history: %v", err)
 	}
 	close(terminalStop)
-	<-terminalDone
-	t.Logf("CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored report=complete termios=restored cursor=visible history=finished icmp_exit=%d", code)
+	select {
+	case <-terminalDone:
+	case <-time.After(time.Second):
+		t.Fatal("PTY output collector did not stop after q completion")
+	}
+	t.Logf("CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored no-color=attrs-only report=complete termios=restored cursor=visible history=finished icmp_exit=%d", code)
 }
 
 func TestNativeCommandLinuxPTYKeysRemainActiveWithRedirectedStderr(t *testing.T) {
@@ -462,13 +476,22 @@ func TestNativeCommandLinuxRestoresScreenBeforeBlockedFinalReport(t *testing.T) 
 		}
 	}()
 	terminalOutput := &nativePTYOutput{}
+	terminalStop := make(chan struct{})
 	terminalDone := make(chan struct{})
 	go func() {
 		defer close(terminalDone)
 		buffer := make([]byte, 2048)
 		for {
+			select {
+			case <-terminalStop:
+				return
+			default:
+			}
 			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
 			if _, pollErr := unix.Poll(fds, 100); pollErr != nil {
+				return
+			}
+			if fds[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
 				return
 			}
 			if fds[0].Revents&unix.POLLIN == 0 {
@@ -481,6 +504,15 @@ func TestNativeCommandLinuxRestoresScreenBeforeBlockedFinalReport(t *testing.T) 
 			if readErr != nil && !errors.Is(readErr, unix.EAGAIN) {
 				return
 			}
+		}
+	}()
+	defer func() {
+		close(terminalStop)
+		_ = master.Close()
+		select {
+		case <-terminalDone:
+		case <-time.After(time.Second):
+			t.Error("PTY output collector did not stop after terminal close")
 		}
 	}()
 	if !terminalOutput.waitContains([]byte("ended"), 25*time.Second) {
@@ -512,8 +544,6 @@ func TestNativeCommandLinuxRestoresScreenBeforeBlockedFinalReport(t *testing.T) 
 			t.Fatalf("blocked-report command exit: %v", err)
 		}
 	}
-	_ = master.Close()
-	<-terminalDone
 	t.Logf("CNMON_NATIVE_COMMAND_LINUX_PTY blocked-report prefilled=%d termios=restored-before-drain report=completed", filled)
 }
 

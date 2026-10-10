@@ -91,7 +91,7 @@ try {
 
     $adminArgs = @(
         '-test.v',
-        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization)$',
+        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ|NoColorQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun|NativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization)$',
         '-test.count=1',
         '-test.timeout=8m'
     )
@@ -107,6 +107,9 @@ try {
         '--- PASS: TestNativeCommandWindowsPrivateConsoleQRestoresConsole',
         '--- PASS: TestNativeCommandWindowsPrivateConsoleQLeavesWriterActive',
         '--- PASS: TestNativeCommandWindowsPrivateConsoleUppercaseQRestoresConsole',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleNoColorQRestoresConsole',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked',
         '--- PASS: TestNativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole',
         '--- PASS: TestNativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole',
         '--- PASS: TestNativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization',
@@ -116,6 +119,9 @@ try {
         "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=$elevatedSid",
         "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=follower-only writer=still-running restored=true sid=$elevatedSid",
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q report=NO_COLOR-empty console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE output-loss=product-stderr-only useful-rounds>=2 q=input-alive report=complete history=stopped input=restored',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked selection=verified write=pending db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored blocked-parent=preserved cause=logged',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful exit=0 history=stopped input=restored output=restored cursor=restored',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful second=hard-blocked-finalization=pass input=restored output=restored cursor=restored'
@@ -132,6 +138,15 @@ try {
     }
     if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped') -ne 1) {
         throw 'private-console uppercase-Q test did not emit exactly one key and restoration marker'
+    }
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q report=NO_COLOR-empty console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped') -ne 1) {
+        throw 'private-console NO_COLOR-empty test did not emit exactly one key and restoration marker'
+    }
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE output-loss=product-stderr-only useful-rounds>=2 q=input-alive report=complete history=stopped input=restored') -ne 1) {
+        throw 'private-console output-handle-loss test did not emit exactly one useful-work and report marker'
+    }
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked selection=verified write=pending db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored') -ne 1) {
+        throw 'private-console display-block test did not prove real selection, blocked write, persisted stop, and emergency restore'
     }
     if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored blocked-parent=preserved cause=logged') -ne 1) {
         throw 'private-console error-path test did not emit exactly one restoration/preservation marker'

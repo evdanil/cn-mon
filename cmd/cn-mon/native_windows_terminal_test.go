@@ -19,11 +19,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/evdanil/gotest/internal/history"
@@ -32,12 +34,16 @@ import (
 )
 
 var (
-	nativeWriteConsoleInput = windowsKernel32.NewProc("WriteConsoleInputW")
-	nativeGetConsoleCursor  = windowsKernel32.NewProc("GetConsoleCursorInfo")
-	nativeSetConsoleCursor  = windowsKernel32.NewProc("SetConsoleCursorInfo")
-	nativeReadConsoleOutput = windowsKernel32.NewProc("ReadConsoleOutputCharacterW")
-	nativeReadConsoleAttrs  = windowsKernel32.NewProc("ReadConsoleOutputAttribute")
-	nativeSetConsoleWindow  = windowsKernel32.NewProc("SetConsoleWindowInfo")
+	nativeWriteConsoleInput  = windowsKernel32.NewProc("WriteConsoleInputW")
+	nativeGetConsoleCursor   = windowsKernel32.NewProc("GetConsoleCursorInfo")
+	nativeSetConsoleCursor   = windowsKernel32.NewProc("SetConsoleCursorInfo")
+	nativeReadConsoleOutput  = windowsKernel32.NewProc("ReadConsoleOutputCharacterW")
+	nativeReadConsoleAttrs   = windowsKernel32.NewProc("ReadConsoleOutputAttribute")
+	nativeSetConsoleWindow   = windowsKernel32.NewProc("SetConsoleWindowInfo")
+	nativeGetConsoleWindow   = windowsKernel32.NewProc("GetConsoleWindow")
+	nativeGetSelectionInfo   = windowsKernel32.NewProc("GetConsoleSelectionInfo")
+	nativeUser32             = windows.NewLazySystemDLL("user32.dll")
+	nativeSendMessageTimeout = nativeUser32.NewProc("SendMessageTimeoutW")
 )
 
 const nativeWindowsEnableVT = 0x0004
@@ -61,6 +67,14 @@ type nativeConsoleKeyEvent struct {
 	UnicodeChar     uint16
 	ControlKeyState uint32
 }
+
+type nativeConsoleSelectionInfo struct {
+	Flags     uint32
+	Selection windows.SmallRect
+	Anchor    windows.Coord
+}
+
+const nativeConsoleSelectionInProgress = 0x0001
 
 func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	requireNativeCommand(t)
@@ -501,6 +515,309 @@ func TestNativeCommandWindowsPrivateConsoleUppercaseQRestoresConsole(t *testing.
 	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped")
 }
 
+func TestNativeCommandWindowsPrivateConsoleNoColorQRestoresConsole(t *testing.T) {
+	requireNativeCommand(t)
+	t.Setenv("NO_COLOR", "")
+	binary := buildNativeCommand(t)
+	directory := t.TempDir()
+	database := filepath.Join(directory, "private-console-no-color.db")
+	logPath := filepath.Join(directory, "private-console-no-color.log")
+	listener, port := nativeLoopbackListener(t)
+	defer listener.Close()
+	request, rejected, err := target.Build([]string{"127.0.0.1"}, []int{port})
+	if err != nil || len(rejected) != 0 {
+		t.Fatalf("build NO_COLOR request: request=%+v rejected=%+v err=%v", request, rejected, err)
+	}
+	args := []string{"--format", "table", "--theme", "dark", "--history-file", database, "--log-file", logPath,
+		"--tcp", strconv.Itoa(port), "--every", "10s", "--for", "1m", "127.0.0.1"}
+	encodedArgs, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, output, done := startNativeWindowsConsoleBootstrap(t, directory, database, logPath, map[string]string{
+		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP": "1",
+		"CNMON_WINDOWS_PRODUCT_BINARY":    binary,
+		"CNMON_WINDOWS_PRODUCT_ARGS":      string(encodedArgs),
+		"CNMON_WINDOWS_PRODUCT_STDOUT":    "CONOUT$",
+	})
+	defer control.Close()
+	ready := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_READY", 20*time.Second)
+	var baselineInput, baselineOutput uint32
+	var baselineCursor bool
+	var childPID int
+	var baselineAttr uint16
+	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
+		t.Fatalf("parse NO_COLOR bootstrap readiness %q: pid=%d err=%v", ready, childPID, err)
+	}
+	if !baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
+		t.Fatalf("NO_COLOR table fixture baseline cursor_visible=%t output_mode=%#x; want visible cursor and VT disabled", baselineCursor, baselineOutput)
+	}
+	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds > 0 }); err != nil {
+		t.Fatalf("wait for active NO_COLOR round: %v", err)
+	}
+	if _, err := io.WriteString(control, "quit-Q\n"); err != nil {
+		t.Fatalf("send Q to NO_COLOR run: %v", err)
+	}
+	_ = readNativeWindowsMarker(t, output, "CNMON_WINDOWS_KEY_INJECTED", 5*time.Second)
+	if finished := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CHILD_DONE", 20*time.Second); !strings.Contains(finished, "exit=0") {
+		t.Fatalf("NO_COLOR Q exit marker=%q", finished)
+	}
+	state := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_RESTORED", 5*time.Second)
+	var restoredInput, restoredOutput uint32
+	var restoredCursor bool
+	if _, err := fmt.Sscanf(state, "CNMON_WINDOWS_CONSOLE_RESTORED state_ok=true input_mode=%x output_mode=%x cursor_visible=%t", &restoredInput, &restoredOutput, &restoredCursor); err != nil {
+		t.Fatalf("parse NO_COLOR restoration %q: %v", state, err)
+	}
+	if restoredInput != baselineInput || restoredOutput != baselineOutput || restoredCursor != baselineCursor {
+		t.Fatalf("NO_COLOR console restoration=%q, want exact fixture modes/cursor", state)
+	}
+	if !strings.Contains(state, "report_header=true") || !strings.Contains(state, "literal_escape=false") {
+		t.Fatalf("NO_COLOR final report was not rendered cleanly on console: %q", state)
+	}
+	var headerAttr uint16
+	var headerFound bool
+	if _, err := fmt.Sscanf(state, "CNMON_WINDOWS_CONSOLE_RESTORED state_ok=true input_mode=%x output_mode=%x cursor_visible=%t fingerprint=%s size=%dx%d table_header=%t stop_note=%t report_header=%t literal_escape=%t header_attr=%x header_found=%t", new(uint32), new(uint32), new(bool), new(string), new(int), new(int), new(bool), new(bool), new(bool), new(bool), &headerAttr, &headerFound); err != nil || !headerFound {
+		t.Fatalf("parse NO_COLOR report header attribute from %q: %v", state, err)
+	}
+	if headerAttr&0x0007 != baselineAttr&0x0007 {
+		t.Fatalf("empty NO_COLOR did not preserve console report foreground: baseline=%#x header=%#x", baselineAttr, headerAttr)
+	}
+	if _, err := done(); err != nil {
+		t.Fatalf("NO_COLOR bootstrap: %v", err)
+	}
+	if _, err := assertNativeWindowsStoppedHistory(database, request.Key, "127.0.0.1", "127.0.0.1", port, "OK"); err != nil {
+		t.Fatalf("NO_COLOR stopped history: %v", err)
+	}
+	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q report=NO_COLOR-empty console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped")
+}
+
+func TestNativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun(t *testing.T) {
+	requireNativeCommand(t)
+	binary := buildNativeCommand(t)
+	directory := t.TempDir()
+	database := filepath.Join(directory, "private-console-output-loss.db")
+	logPath := filepath.Join(directory, "private-console-output-loss.log")
+	stdoutPath := filepath.Join(directory, "private-console-output-loss.stdout.json")
+	listener, port := nativeLoopbackListener(t)
+	defer listener.Close()
+	request, rejected, err := target.Build([]string{"127.0.0.1"}, []int{port})
+	if err != nil || len(rejected) != 0 {
+		t.Fatalf("build output-handle-loss request: request=%+v rejected=%+v err=%v", request, rejected, err)
+	}
+	args := []string{"--format", "json", "--history-file", database, "--log-file", logPath,
+		"--tcp", strconv.Itoa(port), "--every", "10s", "--for", "1m", "127.0.0.1"}
+	encodedArgs, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, output, done := startNativeWindowsConsoleBootstrap(t, directory, database, logPath, map[string]string{
+		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP":   "1",
+		"CNMON_WINDOWS_PRODUCT_BINARY":      binary,
+		"CNMON_WINDOWS_PRODUCT_ARGS":        string(encodedArgs),
+		"CNMON_WINDOWS_PRODUCT_STDOUT":      stdoutPath,
+		"CNMON_WINDOWS_PRODUCT_RAW_HANDLES": "1",
+	})
+	defer control.Close()
+	ready := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_READY", 20*time.Second)
+	var baselineInput, baselineOutput uint32
+	var baselineCursor bool
+	var childPID int
+	var baselineAttr uint16
+	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
+		t.Fatalf("parse output-loss readiness %q: pid=%d err=%v", ready, childPID, err)
+	}
+	if !baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
+		t.Fatalf("output-loss fixture baseline cursor_visible=%t output_mode=%#x; want visible cursor and VT disabled", baselineCursor, baselineOutput)
+	}
+	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds >= 1 }); err != nil {
+		t.Fatalf("wait for first round before output-handle loss: %v", err)
+	}
+	active := waitNativeWindowsConsoleActive(t, control, output, "output-loss command")
+	if !strings.Contains(active, "state_ok=true") {
+		t.Fatalf("product was not attached to a live console before handle loss: %q", active)
+	}
+	if _, err := io.WriteString(control, "close-stderr\n"); err != nil {
+		t.Fatalf("request product stderr handle loss: %v", err)
+	}
+	closed := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_OUTPUT_HANDLE_LOST", 5*time.Second)
+	if !strings.Contains(closed, "source_invalid=true") {
+		t.Fatalf("stderr handle close was not confirmed: %q", closed)
+	}
+	postLossBaseline, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds >= 1 })
+	if err != nil {
+		t.Fatalf("read history baseline immediately after output-handle loss: %v", err)
+	}
+	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds > postLossBaseline.Rounds }); err != nil {
+		t.Fatalf("monitor did not complete useful work after console output-handle loss: %v", err)
+	}
+	if _, err := io.WriteString(control, "quit-q\n"); err != nil {
+		t.Fatalf("send q through still-attached real console input: %v", err)
+	}
+	_ = readNativeWindowsMarker(t, output, "CNMON_WINDOWS_KEY_INJECTED", 5*time.Second)
+	if finished := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CHILD_DONE", 20*time.Second); !strings.Contains(finished, "exit=0") {
+		t.Fatalf("output-loss child exit marker=%q", finished)
+	}
+	lostState := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_OUTPUT_LOST_STATE", 5*time.Second)
+	var afterInput, afterOutput uint32
+	var afterCursor bool
+	if _, err := fmt.Sscanf(lostState, "CNMON_WINDOWS_CONSOLE_OUTPUT_LOST_STATE state_ok=true input_mode=%x output_mode=%x cursor_visible=%t", &afterInput, &afterOutput, &afterCursor); err != nil {
+		t.Fatalf("parse output-loss state %q: %v", lostState, err)
+	}
+	if afterInput != baselineInput {
+		t.Fatalf("product did not restore surviving console input mode: got %#x want %#x", afterInput, baselineInput)
+	}
+	fixture := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_FIXTURE_RESTORED", 5*time.Second)
+	if !strings.Contains(fixture, "mode_restored=true cursor_restored=true") {
+		t.Fatalf("test bootstrap did not restore private console fixture after output loss: %q", fixture)
+	}
+	if _, err := done(); err != nil {
+		t.Fatalf("output-loss bootstrap: %v", err)
+	}
+	data, err := os.ReadFile(stdoutPath)
+	if err != nil {
+		t.Fatalf("read report captured independently of lost console output: %v", err)
+	}
+	var report struct {
+		Latest  []map[string]any `json:"latest"`
+		Summary []struct {
+			Rounds int `json:"rounds"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("decode post-loss report: %v; stdout=%q", err, data)
+	}
+	if len(report.Latest) != 1 || report.Latest[0]["tcp_"+strconv.Itoa(port)] != "open" || len(report.Summary) != 1 {
+		t.Fatalf("post-loss report=%+v, want latest TCP-open row and summary", report)
+	}
+	storedRounds, err := assertNativeWindowsStoppedHistory(database, request.Key, "127.0.0.1", "127.0.0.1", port, "OK")
+	if err != nil {
+		t.Fatalf("post-loss stopped history: %v", err)
+	}
+	if report.Summary[0].Rounds != storedRounds || storedRounds < 2 {
+		t.Fatalf("post-loss report rounds=%d, stored rounds=%d; want matching work including post-loss round", report.Summary[0].Rounds, storedRounds)
+	}
+	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE output-loss=product-stderr-only useful-rounds>=2 q=input-alive report=complete history=stopped input=restored")
+}
+
+func TestNativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked(t *testing.T) {
+	requireNativeCommand(t)
+	binary := buildNativeCommand(t)
+	directory := t.TempDir()
+	database := filepath.Join(directory, "private-console-display-block.db")
+	logPath := filepath.Join(directory, "private-console-display-block.log")
+	stdoutPath := filepath.Join(directory, "private-console-display-block.stdout.json")
+	listener, port := nativeLoopbackListener(t)
+	defer listener.Close()
+	request, rejected, err := target.Build([]string{"127.0.0.1"}, []int{port})
+	if err != nil || len(rejected) != 0 {
+		t.Fatalf("build blocked-display request: request=%+v rejected=%+v err=%v", request, rejected, err)
+	}
+	args := []string{"--format", "json", "--history-file", database, "--log-file", logPath,
+		"--tcp", strconv.Itoa(port), "--every", "10s", "--for", "1m", "127.0.0.1"}
+	encodedArgs, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, output, done := startNativeWindowsConsoleBootstrap(t, directory, database, logPath, map[string]string{
+		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP": "1",
+		"CNMON_WINDOWS_PRODUCT_BINARY":    binary,
+		"CNMON_WINDOWS_PRODUCT_ARGS":      string(encodedArgs),
+		"CNMON_WINDOWS_PRODUCT_STDOUT":    stdoutPath,
+	})
+	defer control.Close()
+	ready := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_READY", 20*time.Second)
+	var baselineInput, baselineOutput uint32
+	var baselineCursor bool
+	var childPID int
+	var baselineAttr uint16
+	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
+		t.Fatalf("parse blocked-display readiness %q: pid=%d err=%v", ready, childPID, err)
+	}
+	if !baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
+		t.Fatalf("blocked-display baseline cursor_visible=%t output_mode=%#x; want visible cursor and VT disabled", baselineCursor, baselineOutput)
+	}
+	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds > 0 }); err != nil {
+		t.Fatalf("wait for completed round before blocked display: %v", err)
+	}
+	lockDB, err := sql.Open("sqlite3", windowsSQLiteURI(database))
+	if err != nil {
+		t.Fatalf("open finalization lock connection: %v", err)
+	}
+	lockDB.SetMaxOpenConns(1)
+	defer lockDB.Close()
+	lockConn, err := lockDB.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("acquire finalization lock connection: %v", err)
+	}
+	defer lockConn.Close()
+	if _, err := lockConn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("hold SQLite finalization lock: %v", err)
+	}
+	if err := sendPrivateConsoleCtrlC(childPID); err != nil {
+		t.Fatalf("send first real Ctrl+C: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state := requestNativeWindowsConsoleState(t, control, output)
+		if strings.Contains(state, "stop_note=true") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("first Ctrl+C stop note not drawn before display block: %q", state)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if _, err := io.WriteString(control, "begin-mark-block\n"); err != nil {
+		t.Fatalf("request actual console Mark selection: %v", err)
+	}
+	blocked := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_WRITE_BLOCKED", 5*time.Second)
+	if !strings.Contains(blocked, "selection=true write_pending=true metadata=true") {
+		t.Fatalf("console display freeze was not witnessed: %q", blocked)
+	}
+	if _, err := lockConn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
+		t.Fatalf("release SQLite barrier while display remains blocked: %v", err)
+	}
+	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "stopped" && run.Rounds > 0 }); err != nil {
+		t.Fatalf("first interrupt did not persist stopped history after releasing DB barrier: %v", err)
+	}
+	if !nativeWindowsProcessIsRunning(uint32(childPID)) {
+		t.Fatalf("product exited after persisted stop despite blocked final display")
+	}
+	for start := time.Now(); time.Since(start) < 750*time.Millisecond; {
+		info, err := os.Stat(stdoutPath)
+		if err != nil {
+			t.Fatalf("stat independently captured report while display blocked: %v", err)
+		}
+		if info.Size() != 0 {
+			t.Fatalf("final report escaped while LiveEnded display was blocked: %d bytes", info.Size())
+		}
+		if !nativeWindowsProcessIsRunning(uint32(childPID)) {
+			t.Fatalf("product exited before second Ctrl+C while final display was blocked")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := sendPrivateConsoleCtrlC(childPID); err != nil {
+		t.Fatalf("send second real Ctrl+C during blocked final display: %v", err)
+	}
+	finished := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CHILD_DONE", 10*time.Second)
+	if !strings.Contains(finished, "exit=130") {
+		t.Fatalf("second Ctrl+C during blocked display exit marker=%q", finished)
+	}
+	restored := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_RESTORED", 5*time.Second)
+	var restoredInput, restoredOutput uint32
+	var restoredCursor bool
+	if _, err := fmt.Sscanf(restored, "CNMON_WINDOWS_CONSOLE_RESTORED state_ok=true input_mode=%x output_mode=%x cursor_visible=%t", &restoredInput, &restoredOutput, &restoredCursor); err != nil {
+		t.Fatalf("parse blocked-display emergency restore: %q: %v", restored, err)
+	}
+	if restoredInput != baselineInput || restoredOutput != baselineOutput || restoredCursor != baselineCursor {
+		t.Fatalf("blocked-display emergency restore=%q, want baseline modes/cursor", restored)
+	}
+	if _, err := done(); err != nil {
+		t.Fatalf("blocked-display bootstrap: %v", err)
+	}
+	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked selection=verified write=pending db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored")
+}
+
 func TestNativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization(t *testing.T) {
 	requireNativeCommand(t)
 	binary := buildNativeCommand(t)
@@ -697,7 +1014,6 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 		windows.CloseHandle(stderrHandle)
 		t.Fatalf("duplicate console handle for product stdin: %v", err)
 	}
-	product := exec.Command(os.Getenv("CNMON_WINDOWS_PRODUCT_BINARY"), args...)
 	privateDirectory := os.Getenv("HOME")
 	if privateDirectory == "" {
 		stdoutFile.Close()
@@ -705,34 +1021,86 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 		windows.CloseHandle(stdinHandle)
 		t.Fatal("bootstrap has no private HOME directory")
 	}
-	product.Dir = privateDirectory
-	product.Env = nativeCommandEnv(t, privateDirectory,
+	stdinFile := os.NewFile(uintptr(stdinHandle), "CONIN$")
+	stderrFile := os.NewFile(uintptr(stderrHandle), "CONOUT$")
+	productEnv := nativeCommandEnv(t, privateDirectory,
 		os.Getenv("CNMON_NATIVE_HISTORY"), os.Getenv("CNMON_NATIVE_LOG"))
-	product.Stdin = os.NewFile(uintptr(stdinHandle), "CONIN$")
-	product.Stdout = stdoutFile
-	product.Stderr = os.NewFile(uintptr(stderrHandle), "CONOUT$")
-	if err := product.Start(); err != nil {
-		stdoutFile.Close()
-		product.Stdin.(*os.File).Close()
-		product.Stderr.(*os.File).Close()
-		t.Fatalf("start product in private console: %v", err)
+	rawProduct := os.Getenv("CNMON_WINDOWS_PRODUCT_RAW_HANDLES") == "1"
+	var childPID int
+	var childWait func() error
+	var childKill func() error
+	var childRelease func() error
+	var rawStderrHandle windows.Handle
+	if rawProduct {
+		process, err := startNativeWindowsRawProduct(t, os.Getenv("CNMON_WINDOWS_PRODUCT_BINARY"), args, productEnv, privateDirectory,
+			stdinHandle, windows.Handle(stdoutFile.Fd()), stderrHandle)
+		if err != nil {
+			stdinFile.Close()
+			stdoutFile.Close()
+			stderrFile.Close()
+			t.Fatalf("start raw-handle product in private console: %v", err)
+		}
+		childPID = int(process.ProcessId)
+		rawStderrHandle = stderrHandle
+		_ = windows.CloseHandle(process.Thread)
+		childWait = func() error {
+			if _, err := windows.WaitForSingleObject(process.Process, windows.INFINITE); err != nil {
+				return fmt.Errorf("wait for product process: %w", err)
+			}
+			var code uint32
+			if err := windows.GetExitCodeProcess(process.Process, &code); err != nil {
+				return fmt.Errorf("read product exit code: %w", err)
+			}
+			if code != 0 {
+				return nativeWindowsProcessExitError(code)
+			}
+			return nil
+		}
+		childKill = func() error { return windows.TerminateProcess(process.Process, 1) }
+		childRelease = func() error { return windows.CloseHandle(process.Process) }
+	} else {
+		product := exec.Command(os.Getenv("CNMON_WINDOWS_PRODUCT_BINARY"), args...)
+		product.Dir = privateDirectory
+		product.Env = productEnv
+		product.Stdin = stdinFile
+		product.Stdout = stdoutFile
+		product.Stderr = stderrFile
+		if err := product.Start(); err != nil {
+			stdinFile.Close()
+			stdoutFile.Close()
+			stderrFile.Close()
+			t.Fatalf("start product in private console: %v", err)
+		}
+		childPID = product.Process.Pid
+		childWait = product.Wait
+		childKill = product.Process.Kill
+		childRelease = product.Process.Release
 	}
-	_ = product.Stdin.(*os.File).Close()
+	_ = stdinFile.Close()
 	_ = stdoutFile.Close()
-	_ = product.Stderr.(*os.File).Close()
-	fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%08x output_mode=%08x cursor_visible=%t default_attr=%04x\n", product.Process.Pid, inputModeBeforeBootstrap, outputModeBeforeBootstrap, baselineCursor.Visible != 0, initialScreen.Attributes)
+	_ = stderrFile.Close()
+	fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%08x output_mode=%08x cursor_visible=%t default_attr=%04x\n", childPID, inputModeBeforeBootstrap, outputModeBeforeBootstrap, baselineCursor.Visible != 0, initialScreen.Attributes)
 	childDone := make(chan error, 1)
-	go func() { childDone <- product.Wait() }()
+	go func() { childDone <- childWait() }()
 	childFinished := false
+	outputHandleLost := false
+	selectionActive := false
+	var consoleWriteDone chan error
 	defer func() {
 		if childFinished {
+			if selectionActive {
+				_ = endNativeWindowsConsoleSelection(input)
+			}
 			return
 		}
-		_ = product.Process.Kill()
+		_ = childKill()
+		if selectionActive {
+			_ = endNativeWindowsConsoleSelection(input)
+		}
 		select {
 		case <-childDone:
 		case <-time.After(5 * time.Second):
-			_ = product.Process.Release()
+			_ = childRelease()
 		}
 	}()
 	commands := make(chan string, 4)
@@ -749,25 +1117,89 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 		select {
 		case err := <-childDone:
 			childFinished = true
+			_ = childRelease()
+			if selectionActive {
+				if err := endNativeWindowsConsoleSelection(input); err != nil {
+					t.Fatalf("leave real console Mark selection after child exit: %v", err)
+				}
+				selectionActive = false
+				if consoleWriteDone != nil {
+					select {
+					case writeErr := <-consoleWriteDone:
+						if writeErr != nil {
+							t.Fatalf("drain console write after leaving selection: %v", writeErr)
+						}
+					case <-time.After(5 * time.Second):
+						t.Fatal("console write remained blocked after leaving Mark selection")
+					}
+				}
+			}
 			stdoutFile.Close()
 			exit := 0
 			if err != nil {
 				var processExit *exec.ExitError
 				if errors.As(err, &processExit) {
 					exit = processExit.ExitCode()
+				} else if processExit, ok := err.(nativeWindowsProcessExitError); ok {
+					exit = int(processExit)
 				} else {
 					t.Fatalf("wait for product: %v", err)
 				}
 			}
 			fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CHILD_DONE exit=%d\n", exit)
-			printNativeWindowsConsoleState("CNMON_WINDOWS_CONSOLE_RESTORED", input, consoleOut)
+			if outputHandleLost {
+				printNativeWindowsConsoleState("CNMON_WINDOWS_CONSOLE_OUTPUT_LOST_STATE", input, consoleOut)
+				if err := restoreNativeWindowsConsoleFixture(consoleOut, outputModeBeforeBootstrap, baselineCursor); err != nil {
+					t.Fatalf("restore private console fixture after output-handle loss: %v", err)
+				}
+				fmt.Fprintln(os.Stdout, "CNMON_WINDOWS_CONSOLE_FIXTURE_RESTORED mode_restored=true cursor_restored=true")
+			} else {
+				printNativeWindowsConsoleState("CNMON_WINDOWS_CONSOLE_RESTORED", input, consoleOut)
+			}
 			return
 		case command, ok := <-commands:
 			if !ok {
-				_ = product.Process.Kill()
+				_ = childKill()
 				t.Fatal("private-console controller closed before product finished")
 			}
 			switch command {
+			case "close-stderr":
+				if rawStderrHandle == 0 {
+					t.Fatal("close-stderr requires the raw explicit-handle product launcher")
+				}
+				if err := closeNativeWindowsChildHandle(uint32(childPID), rawStderrHandle); err != nil {
+					t.Fatalf("close and verify product stderr handle: %v", err)
+				}
+				outputHandleLost = true
+				fmt.Fprintln(os.Stdout, "CNMON_WINDOWS_OUTPUT_HANDLE_LOST stream=stderr source_invalid=true")
+			case "begin-mark-block":
+				if selectionActive {
+					t.Fatal("console Mark selection is already active")
+				}
+				if err := beginNativeWindowsConsoleSelection(); err != nil {
+					t.Fatalf("enter actual console Mark selection: %v", err)
+				}
+				selectionActive = true
+				var inputMode, outputMode uint32
+				var cursor nativeConsoleCursorInfo
+				if err := windows.GetConsoleMode(input, &inputMode); err != nil {
+					t.Fatalf("query console input mode during selection: %v", err)
+				}
+				if err := windows.GetConsoleMode(consoleOut, &outputMode); err != nil {
+					t.Fatalf("query console output mode during selection: %v", err)
+				}
+				cursorResult, _, cursorErr := nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&cursor)))
+				if cursorResult == 0 {
+					t.Fatalf("query cursor during selection: %v", cursorErr)
+				}
+				consoleWriteDone = make(chan error, 1)
+				go func() { consoleWriteDone <- writeNativeWindowsConsoleProbe(consoleOut) }()
+				select {
+				case writeErr := <-consoleWriteDone:
+					t.Fatalf("real console write completed during Mark selection; metadata=%#x/%#x cursor=%+v error=%v", inputMode, outputMode, cursor, writeErr)
+				case <-time.After(500 * time.Millisecond):
+					fmt.Fprintln(os.Stdout, "CNMON_WINDOWS_CONSOLE_WRITE_BLOCKED selection=true write_pending=true metadata=true")
+				}
 			case "q":
 				if err := writeNativeWindowsConsoleKey(input, 'q', 'Q', true); err != nil {
 					t.Fatalf("inject q key-down: %v", err)
@@ -836,7 +1268,7 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 				fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_KEY_INJECTED key=%s down_up=true\n", command)
 			}
 		case <-timer.C:
-			_ = product.Process.Kill()
+			_ = childKill()
 			t.Fatal("product exceeded private-console timeout")
 		}
 	}
@@ -896,6 +1328,220 @@ func assertNativeWindowsStoppedHistory(filename, key, host, address string, port
 		return 0, fmt.Errorf("close read-only stopped history: %w", closeErr)
 	}
 	return count, nil
+}
+
+type nativeWindowsProcessExitError uint32
+
+func (e nativeWindowsProcessExitError) Error() string {
+	return fmt.Sprintf("product exited with code %d", uint32(e))
+}
+
+func startNativeWindowsRawProduct(t *testing.T, binary string, args, env []string, directory string, stdin, stdout, stderr windows.Handle) (windows.ProcessInformation, error) {
+	t.Helper()
+	handles := []windows.Handle{stdin, stdout, stderr}
+	for _, handle := range handles {
+		if err := windows.SetHandleInformation(handle, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+			return windows.ProcessInformation{}, fmt.Errorf("mark standard handle inheritable: %w", err)
+		}
+	}
+	attributes, err := windows.NewProcThreadAttributeList(1)
+	if err != nil {
+		return windows.ProcessInformation{}, fmt.Errorf("allocate process handle allowlist: %w", err)
+	}
+	defer attributes.Delete()
+	if err := attributes.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
+		return windows.ProcessInformation{}, fmt.Errorf("set process standard-handle allowlist: %w", err)
+	}
+	startup := windows.StartupInfoEx{StartupInfo: windows.StartupInfo{
+		Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{})), Flags: windows.STARTF_USESTDHANDLES,
+		StdInput: stdin, StdOutput: stdout, StdErr: stderr,
+	}, ProcThreadAttributeList: attributes.List()}
+	application, err := windows.UTF16PtrFromString(binary)
+	if err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	commandLine, err := windows.UTF16PtrFromString(windows.ComposeCommandLine(append([]string{binary}, args...)))
+	if err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	workingDirectory, err := windows.UTF16PtrFromString(directory)
+	if err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	orderedEnv := append([]string(nil), env...)
+	sort.Slice(orderedEnv, func(i, j int) bool { return strings.ToUpper(orderedEnv[i]) < strings.ToUpper(orderedEnv[j]) })
+	envText := strings.Join(orderedEnv, "\x00") + "\x00\x00"
+	envBlock := utf16.Encode([]rune(envText))
+	var envPointer *uint16
+	if len(envBlock) != 0 {
+		envPointer = &envBlock[0]
+	}
+	var process windows.ProcessInformation
+	flags := uint32(windows.CREATE_UNICODE_ENVIRONMENT | windows.EXTENDED_STARTUPINFO_PRESENT)
+	if err := windows.CreateProcess(application, commandLine, nil, nil, true, flags, envPointer, workingDirectory, &startup.StartupInfo, &process); err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	return process, nil
+}
+
+func closeNativeWindowsChildHandle(pid uint32, handle windows.Handle) error {
+	process, err := windows.OpenProcess(windows.PROCESS_DUP_HANDLE, false, pid)
+	if err != nil {
+		return fmt.Errorf("open product for handle close: %w", err)
+	}
+	defer windows.CloseHandle(process)
+	var duplicate windows.Handle
+	closeErr := windows.DuplicateHandle(process, handle, windows.CurrentProcess(), &duplicate, 0, false, windows.DUPLICATE_CLOSE_SOURCE)
+	if duplicate != 0 {
+		_ = windows.CloseHandle(duplicate)
+	}
+	var probe windows.Handle
+	probeErr := windows.DuplicateHandle(process, handle, windows.CurrentProcess(), &probe, 0, false, 0)
+	if probeErr == nil {
+		_ = windows.CloseHandle(probe)
+		return errors.New("product stderr handle remained duplicable after close-source request")
+	}
+	if !errors.Is(probeErr, windows.ERROR_INVALID_HANDLE) {
+		return fmt.Errorf("product stderr handle is not valid after close-source request, but probe failed unexpectedly: close=%v probe=%w", closeErr, probeErr)
+	}
+	return nil
+}
+
+func nativeWindowsProcessIsRunning(pid uint32) bool {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(process)
+	var code uint32
+	return windows.GetExitCodeProcess(process, &code) == nil && code == 259 // STILL_ACTIVE
+}
+
+func nativeConsoleSelection() (bool, error) {
+	var info nativeConsoleSelectionInfo
+	result, _, callErr := nativeGetSelectionInfo.Call(uintptr(unsafe.Pointer(&info)))
+	if result == 0 {
+		if callErr == syscall.Errno(0) {
+			callErr = errors.New("GetConsoleSelectionInfo failed")
+		}
+		return false, callErr
+	}
+	return info.Flags&nativeConsoleSelectionInProgress != 0, nil
+}
+
+func sendNativeWindowsConsoleMessage(message, wparam, lparam uintptr, timeout uint32) error {
+	hwnd, _, callErr := nativeGetConsoleWindow.Call()
+	if hwnd == 0 {
+		return errors.New("GetConsoleWindow returned no private console window")
+	}
+	var result uintptr
+	callResult, _, callErr := nativeSendMessageTimeout.Call(hwnd, message, wparam, lparam, 0x0002|0x0001, uintptr(timeout), uintptr(unsafe.Pointer(&result))) // SMTO_ABORTIFHUNG | SMTO_BLOCK
+	if callResult == 0 {
+		if callErr == syscall.Errno(0) {
+			callErr = errors.New("SendMessageTimeoutW failed")
+		}
+		return callErr
+	}
+	return nil
+}
+
+func beginNativeWindowsConsoleSelection() error {
+	if active, err := nativeConsoleSelection(); err != nil {
+		return err
+	} else if active {
+		return errors.New("console selection was already active")
+	}
+	if err := sendNativeWindowsConsoleMessage(0x0112, 0xFFF2, 0, 2_000); err != nil { // WM_SYSCOMMAND, ID_CONSOLE_MARK (Windows Terminal's public conhost resource.h)
+		return fmt.Errorf("request console Mark command: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		active, err := nativeConsoleSelection()
+		if err != nil {
+			return err
+		}
+		if active {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return errors.New("console Mark command did not enter selection mode")
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func endNativeWindowsConsoleSelection(input windows.Handle) error {
+	if active, err := nativeConsoleSelection(); err != nil {
+		return err
+	} else if !active {
+		return nil
+	}
+	if err := sendNativeWindowsConsoleMessage(0x0100, 0x1B, 0, 2_000); err != nil { // WM_KEYDOWN VK_ESCAPE
+		return fmt.Errorf("send Escape to leave console Mark mode: %w", err)
+	}
+	if err := sendNativeWindowsConsoleMessage(0x0101, 0x1B, 0, 2_000); err != nil { // WM_KEYUP VK_ESCAPE
+		return fmt.Errorf("send Escape key-up to leave console Mark mode: %w", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	fallbackUsed := false
+	for {
+		active, err := nativeConsoleSelection()
+		if err != nil {
+			return err
+		}
+		if !active {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			if fallbackUsed {
+				return errors.New("console remained in Mark selection after bounded Escape fallback")
+			}
+			// Some conhost implementations consume the Escape input record instead
+			// of the window message; provide one actual key-event fallback.
+			if err := writeNativeWindowsConsoleKey(input, '\x1b', 0x1B, true); err != nil {
+				return err
+			}
+			if err := writeNativeWindowsConsoleKey(input, '\x1b', 0x1B, false); err != nil {
+				return err
+			}
+			fallbackUsed = true
+			deadline = time.Now().Add(2 * time.Second)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func writeNativeWindowsConsoleProbe(consoleOut windows.Handle) error {
+	text := strings.Repeat("DISPLAY-BLOCK-PROBE ", 128)
+	encoded, err := windows.UTF16FromString(text)
+	if err != nil {
+		return err
+	}
+	var written uint32
+	return windows.WriteConsole(consoleOut, &encoded[0], uint32(len(encoded)-1), &written, nil)
+}
+
+func restoreNativeWindowsConsoleFixture(consoleOut windows.Handle, outputMode uint32, cursor nativeConsoleCursorInfo) error {
+	if err := windows.SetConsoleMode(consoleOut, outputMode); err != nil {
+		return fmt.Errorf("set output mode: %w", err)
+	}
+	var observedMode uint32
+	if err := windows.GetConsoleMode(consoleOut, &observedMode); err != nil || observedMode != outputMode {
+		return fmt.Errorf("output mode after restore=%#x want %#x: %v", observedMode, outputMode, err)
+	}
+	result, _, callErr := nativeSetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&cursor)))
+	if result == 0 {
+		if callErr == syscall.Errno(0) {
+			callErr = errors.New("SetConsoleCursorInfo failed")
+		}
+		return fmt.Errorf("set cursor visibility: %w", callErr)
+	}
+	var observedCursor nativeConsoleCursorInfo
+	result, _, callErr = nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&observedCursor)))
+	if result == 0 || observedCursor.Visible != cursor.Visible || observedCursor.Size != cursor.Size {
+		return fmt.Errorf("cursor after restore=%+v want %+v: %v", observedCursor, cursor, callErr)
+	}
+	return nil
 }
 
 func startNativeWindowsConsoleBootstrap(t *testing.T, directory, database, logPath string, extra map[string]string) (io.WriteCloser, chan []byte, func() ([]byte, error)) {
