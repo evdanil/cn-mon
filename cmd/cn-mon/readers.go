@@ -109,7 +109,9 @@ func runReaderCLI(
 		fmt.Fprintln(stderr, "cn-mon: --follow requires stderr to be a terminal")
 		var empty monitor.ReadOutcome
 		empty.Run = monitor.RunOutcome{Seen: []monitor.HostSummary{}, Latest: []monitor.LatestRow{}, Unresolved: []string{}}
-		code := write(2, output.WriteHistory(stdout, empty, formatOptions))
+		code := write(2, writeCommandReport(control, stdout, formatOptions, func() error {
+			return output.WriteHistory(stdout, empty, formatOptions)
+		}))
 		logFailure(logger.Log("INFO", "follow requires stderr terminal"))
 		return finish(code)
 	}
@@ -163,14 +165,18 @@ func runReaderCLI(
 			closeCommandScreen(runtime.screenState)
 			commandNote(runtime.screenState, stderr, "history operation failed: "+err.Error())
 			logFailure(logger.Log("ERROR", "history operation failed"))
-			code := write(3, output.WriteRequests(stdout, []monitor.RequestRow{}, formatOptions))
+			code := write(3, writeCommandReport(control, stdout, formatOptions, func() error {
+				return output.WriteRequests(stdout, []monitor.RequestRow{}, formatOptions)
+			}))
 			return finish(code)
 		}
 		ordinary := 1
 		if len(rows) != 0 {
 			ordinary = 0
 		}
-		if err := output.WriteRequests(stdout, rows, formatOptions); err != nil {
+		if err := writeCommandReport(control, stdout, formatOptions, func() error {
+			return output.WriteRequests(stdout, rows, formatOptions)
+		}); err != nil {
 			ordinary = write(ordinary, err)
 		}
 		logFailure(logger.Log("INFO", "list operation finished"))
@@ -184,7 +190,9 @@ func runReaderCLI(
 			logFailure(logger.Log("ERROR", "history operation failed"))
 			var empty monitor.ReadOutcome
 			empty.Run = monitor.RunOutcome{Seen: []monitor.HostSummary{}, Latest: []monitor.LatestRow{}, Unresolved: []string{}}
-			code := write(3, output.WriteHistory(stdout, empty, formatOptions))
+			code := write(3, writeCommandReport(control, stdout, formatOptions, func() error {
+				return output.WriteHistory(stdout, empty, formatOptions)
+			}))
 			return finish(code)
 		}
 		closeCommandScreen(runtime.screenState)
@@ -192,7 +200,9 @@ func runReaderCLI(
 		if out.Problem != "" {
 			deps.Note(out.Problem)
 		}
-		if err := output.WriteHistory(stdout, out, formatOptions); err != nil {
+		if err := writeCommandReport(control, stdout, formatOptions, func() error {
+			return output.WriteHistory(stdout, out, formatOptions)
+		}); err != nil {
 			code = write(code, err)
 		}
 		logFailure(logger.Log("INFO", readerModeName(opts.Mode)+" operation finished"))
@@ -262,4 +272,13 @@ func commandReportOptionsFor(runtime commandRuntime, writer io.Writer, format, t
 		}
 	}
 	return options
+}
+
+func writeCommandReport(control *commandControl, writer io.Writer, options output.ReportOptions, write func() error) error {
+	needsVT := options.Terminal && (options.Format == "" || options.Format == "table")
+	var addEmergencyRestore func(func())
+	if control != nil {
+		addEmergencyRestore = control.AddEmergencyRestore
+	}
+	return withReportConsoleVT(writer, needsVT, addEmergencyRestore, write)
 }

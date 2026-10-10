@@ -264,3 +264,19 @@ func TestSecondInterruptRunsEmergencyRestoreBeforePromptExit(t *testing.T) {
 		t.Fatalf("hard exit code=%d, want 130", code)
 	}
 }
+
+func TestAddedEmergencyRestoreComposesCallbacks(t *testing.T) {
+	control := newCommandControl(func() {}, func(int) {})
+	order := make(chan string, 2)
+	control.SetEmergencyRestore(func() { order <- "screen" })
+	control.AddEmergencyRestore(func() { order <- "report" })
+	control.EnterRunning()
+	control.Interrupt()
+	control.Interrupt()
+	if got := <-order; got != "screen" {
+		t.Fatalf("first restore=%q, want screen", got)
+	}
+	if got := <-order; got != "report" {
+		t.Fatalf("second restore=%q, want report", got)
+	}
+}

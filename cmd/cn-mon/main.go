@@ -146,7 +146,10 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 			Unresolved: []string{},
 		}
 		closeCommandScreen(runtime.screenState)
-		err = output.WriteRun(stdout, request, outcome, rejected, commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme))
+		reportOptions := commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme)
+		err = writeCommandReport(control, stdout, reportOptions, func() error {
+			return output.WriteRun(stdout, request, outcome, rejected, reportOptions)
+		})
 		code := reportExitCode(2, err, stdout, stderr)
 		logFailure(logger.Close())
 		return code
@@ -225,7 +228,10 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		logFailure(logger.Log("ERROR", "target probe failed"))
 	}
 	closeCommandScreen(runtime.screenState)
-	if err := output.WriteRun(stdout, request, outcome, rejected, commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme)); err != nil {
+	reportOptions := commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme)
+	if err := writeCommandReport(control, stdout, reportOptions, func() error {
+		return output.WriteRun(stdout, request, outcome, rejected, reportOptions)
+	}); err != nil {
 		if !isClosedOutputPipe(err, stdout) {
 			logFailure(logger.Log("ERROR", "report write failed"))
 			commandNote(runtime.screenState, stderr, "write report: "+err.Error())

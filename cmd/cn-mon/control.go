@@ -70,6 +70,23 @@ func (c *commandControl) SetEmergencyRestore(restore func()) {
 	c.mu.Unlock()
 }
 
+func (c *commandControl) AddEmergencyRestore(restore func()) {
+	if restore == nil {
+		return
+	}
+	c.mu.Lock()
+	previous := c.emergencyRestore
+	if previous == nil {
+		c.emergencyRestore = restore
+	} else {
+		c.emergencyRestore = func() {
+			previous()
+			restore()
+		}
+	}
+	c.mu.Unlock()
+}
+
 func (c *commandControl) RequestStop(reason string) {
 	c.mu.Lock()
 	if c.phase == commandFinished {
