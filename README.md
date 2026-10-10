@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components and their Linux/Windows runtime gates are complete; target execution through the CLI, history storage, live display, and reports remain pending. This is not yet an operational network monitor.
+`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components passed their Linux and Windows gates. M3 adds persistent history APIs and cross-language Linux/Windows gates; local Linux interoperability passes, and the Windows history result remains a required CI check. The CLI does not yet connect these components, and live display and reports remain pending. This is not yet an operational network monitor.
 
 ## Current CLI
 
@@ -15,7 +15,7 @@ Help and version exit successfully without reading configuration or opening log,
 
 ## Build and test
 
-Use Go 1.27.2 for the current workflow; the module requires Go 1.25 or newer. M2 has a local copy of the reviewed pro-bing core and pins its full Go dependency graph and checksums. With Go installed and available on `PATH`, run these commands from the repository root.
+Use Go 1.27.2 for the current workflow; the root module requires Go 1.26.0 or newer. The repository contains the reviewed pro-bing core and pins the Go SQLite driver with the checksums required for its build and tests. SQLite is supplied as generated Go code, so the history store does not require a system SQLite library or CGO. With Go installed and available on `PATH`, run these commands from the repository root.
 
 On Linux:
 
@@ -83,6 +83,42 @@ The job artifacts contain the native phase logs and platform details. Package
 tests and cross-compilation alone do not establish native network support or
 raw ICMP permission behavior. See [third-party notices](THIRD_PARTY_NOTICES.md)
 for source provenance and license details.
+CI also runs `govulncheck` v1.8.0 against the Linux and Windows production
+package imports using the official Go vulnerability database.
+
+## History foundation
+
+M3 adds a source-compatible schema-v1 history store API. It reads and writes
+history databases compatible with the pinned cn-tool `PingStore`; application
+startup does not yet open history or prune it. The test-only Python helper uses
+the pinned cn-tool source to verify both directions of database interoperability
+and concurrent WAL access, including held reader snapshots, pruning, and killed
+writers in both languages. To run that native gate locally, provide Python
+3.12.14 and a checkout of cn-tool at commit
+`2e2f3c40ef6718486f1ca4477f9145029ec495fa`, then run:
+
+```sh
+CNMON_HISTORY_INTEROP=1 \
+CNMON_CN_TOOL_SOURCE=/path/to/cn-tool \
+CNMON_PYTHON=python3 \
+CGO_ENABLED=0 go test -v -timeout=8m \
+  -run '^Test(PythonSourceFixtureSemantics|NativeHistoryPythonGoInterop|NativeHistoryConcurrentPythonGoWALAndPrune|NativeHistoryKilledPythonWriterRecovers|NativeHistoryKilledGoWriterRecovers|NativeHistoryHeldGoSnapshotAcrossPythonPrune|NativeHistoryHeldPythonSnapshotAcrossGoPrune)$' \
+  ./internal/history
+```
+
+The native interop gate records the Python and Go SQLite versions, source
+revision and checksums, WAL page details and bounded WAL growth during held
+snapshots, and sampled Go heap usage. The checked-in fallback history path is
+`~/.cn-ping-history.db` with 30-day retention; the five INI settings and CLI
+override precedence are listed in [Configuration foundation](#configuration-foundation).
+History databases are local files for use on one machine; WAL on NFS/SMB or
+shared concurrently across machines is unsupported. For a backup, use SQLite's
+online-backup facility, or stop every writer, complete a successful checkpoint
+and close the database, then copy it. Do not copy only a live `.db` file while
+its WAL may contain committed pages. Linux interoperability, including the
+pure-Go test binary, has passed locally; native Windows interoperability and
+the official vulnerability scans remain required hosted CI checks. The Python
+dependency is test-only and is not part of the application runtime.
 
 ## Configuration foundation
 

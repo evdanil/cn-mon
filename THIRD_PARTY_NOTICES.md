@@ -57,20 +57,60 @@ The root [LICENSE](LICENSE) contains the Apache-2.0 text.
 
 ## Go module dependency inventory
 
-The reviewed pro-bing module graph uses the following modules and versions.
-The root module pins this graph and its checksums; `go mod verify` passed. The
-resolved licenses are permissive.
+The root `go.mod` selects the application dependencies and Go resolves the
+complete graph from their module metadata. `go mod verify` passed for modules
+downloaded into the module cache; root `go.sum` contains checksums required by
+the resolved build and test graph, not a separate line for each graph-only
+module.
+`go list -deps` on both Linux/amd64 and Windows/amd64 confirms these modules
+are imported by the application packages:
 
 | Module | Version | License | Copyright / attribution |
 | --- | --- | --- | --- |
-| `github.com/prometheus-community/pro-bing` | `v0.9.2-0.20261008151844-bcbba8f702ab` | MIT; source headers Apache-2.0 | The Prometheus Authors; Cameron Sparr and contributors |
+| `github.com/prometheus-community/pro-bing` | `v0.9.2-0.20261008151844-bcbba8f702ab` | MIT; retained source headers Apache-2.0 | The Prometheus Authors; Cameron Sparr and contributors |
 | `github.com/google/uuid` | `v1.6.0` | BSD-3-Clause | Google Inc. (2009, 2014) |
-| `golang.org/x/crypto` | `v0.53.0` | BSD-3-Clause | The Go Authors (2009) |
+| `github.com/ncruces/go-sqlite3` | `v0.35.6` | MIT | Nuno Cruces (2023, 2026) |
+| `github.com/ncruces/go-sqlite3-wasm/v6` | `v6.3.35304` | MIT No Attribution for remaining wrapper code; generated Go retains upstream licenses, including SQLite public domain | Nuno Cruces (2026); SQLite authors |
+| `github.com/ncruces/julianday` | `v1.0.0` | MIT | Nuno Cruces (2022) |
 | `golang.org/x/net` | `v0.56.0` | BSD-3-Clause | The Go Authors (2009) |
-| `golang.org/x/sync` | `v0.21.0` | BSD-3-Clause | The Go Authors (2009) |
-| `golang.org/x/sys` | `v0.46.0` | BSD-3-Clause | The Go Authors (2009) |
+| `golang.org/x/sync` | `v0.23.0` | BSD-3-Clause | The Go Authors (2009) |
+| `golang.org/x/sys` | `v0.48.0` | BSD-3-Clause | The Go Authors (2009) |
+
+The full module graph also contains non-imported dependencies used by upstream
+build tooling, tests, and module metadata. These are inherited through the
+resolved module graph but are not compiled into the application. For example,
+the M3 history
+driver's production import closure on both supported operating systems contains
+`go-sqlite3`, generated Go translation of SQLite, `julianday`, and `x/sys`; it
+does not link a system SQLite library or require CGO. The translation was
+produced with `wasm2go`; that generator is build-time tooling, not a runtime
+dependency. The generated compatibility shims, including the TLSF allocator,
+retain wasm2go's MIT notice. The bundled `stb_sprintf.h` source offers MIT and
+public-domain alternatives; this distribution retains its MIT notice
+(Sean Barrett, 2017). SQLite code remains public domain. The history interop gate
+reported SQLite 3.53.4 through the Go driver and source Python SQLite 3.53.1
+on Linux.
+The native Windows job records its own versions and results in CI artifacts and
+annotations.
+
+The resolved root module graph additionally includes these transitive
+metadata/tooling modules, which are not in the Linux/Windows application import
+closure. These versions come from the resolved graph and are recorded here for
+inventory; they are inherited through dependency metadata, not all direct
+requirements or individually listed in root `go.sum`:
+
+| Module | Version | License | Copyright / attribution |
+| --- | --- | --- | --- |
+| `github.com/dchest/siphash` | `v1.2.3` | CC0-1.0 | No attribution required by license |
+| `github.com/ncruces/sort` | `v1.0.2` | MIT No Attribution | Nuno Cruces (2026) |
+| `github.com/ncruces/wasm2go` | `v0.4.15` | MIT | Nuno Cruces |
+| `github.com/ncruces/wbt` | `v1.0.0` | MIT | Nuno Cruces |
+| `github.com/psanford/httpreadat` | `v0.1.0` | MIT | Upstream authors |
+| `golang.org/x/crypto` | `v0.57.0` | BSD-3-Clause | The Go Authors (2009) |
 | `golang.org/x/term` | `v0.44.0` | BSD-3-Clause | The Go Authors (2009) |
-| `golang.org/x/text` | `v0.38.0` | BSD-3-Clause | The Go Authors (2009) |
+| `golang.org/x/text` | `v0.42.0` | BSD-3-Clause | The Go Authors (2009) |
+| `golang.org/x/tools` | `v0.50.0` | BSD-3-Clause | The Go Authors (2009) |
+| `lukechampine.com/adiantum` | `v1.1.1` | MIT | Luke Champine (2019) |
 
 The Google UUID license text follows.
 
@@ -162,4 +202,89 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+The SQLite driver and `julianday` use the MIT License; the driver and generated
+Go compatibility sources carry these upstream notices:
+
+```text
+MIT License
+
+Copyright (c) 2023 Nuno Cruces
+Copyright (c) 2022 Nuno Cruces
+Copyright (c) 2026 Nuno Cruces
+Copyright (c) 2017 Sean Barrett
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The untranslated wrapper/build material in `go-sqlite3-wasm` uses MIT No
+Attribution. Generated Go translation code retains the upstream licenses
+described above. The MIT-0 license text follows.
+
+```text
+MIT No Attribution License
+
+Copyright (c) 2026 Nuno Cruces
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+SQLite code translated into generated Go remains public domain. The SQLite
+distribution's license notice follows.
+
+```text
+SQLite Is Public Domain
+
+All of the code and documentation in SQLite has been dedicated to the public
+domain by the authors. All code authors, and representatives of the companies
+they work for, have signed affidavits dedicating their contributions to the
+public domain and originals of those signed affidavits are stored in a firesafe
+at the main offices of Hwaci. Anyone is free to copy, modify, publish, use,
+compile, sell, or distribute the original SQLite code, either in source code
+form or as a compiled binary, for any purpose, commercial or non-commercial,
+and by any means.
+
+The previous paragraph applies to the deliverable code and documentation in
+SQLite - those parts of the SQLite library that you actually bundle and ship
+with a larger application. Some scripts used as part of the build process (for
+example the "configure" scripts generated by autoconf) might fall under other
+open-source licenses. Nothing from these build scripts ever reaches the final
+deliverable SQLite library, however, and the licenses associated with those
+scripts should not be a factor in assessing your rights to copy and use the
+SQLite library.
+
+All of the deliverable code in SQLite has been written from scratch. No code
+has been taken from other projects or from the open internet. Every line of
+code can be traced back to its original author, and all of those authors have
+public domain dedications on file.
 ```
