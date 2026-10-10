@@ -1,0 +1,4 @@
+[logging]
+logfile = run.log
+level = ERROR
+

@@ -1,0 +1,4 @@
+[DEFAULT]
+history_days = 19
+[DEFAULT]
+HISTORY_DAYS = 23

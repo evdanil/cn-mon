@@ -1,0 +1,8 @@
+[DEFAULT]
+history_days = 45
+[DEFAULT]
+level = ERROR
+[ping]
+history_file = selected.db
+[logging]
+logfile = run.log
