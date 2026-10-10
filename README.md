@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 configuration, logging, target-input and model foundation, M2 native probes, and M3 persistent history/interoperability are merged. M3 merged in [PR 10](https://github.com/evdanil/gotest/pull/10); all 12 CI checks passed, and external review reported no remaining findings. M4 connects target runs to persistent history and emits final JSON when `--format json` is explicit. Internal production approval and all affected Sol medium reviews are complete, including suspension scheduling, Windows roles, documentation, and the deterministic heartbeat fixture. Current component unit/vet checks and the actual Linux pause/resume command case passed; the heartbeat fixture also passed 500 independent stress iterations. Current-head native CI, external review and merge remain pending. The hosted Linux built-command gate passed at `6cb848d`; Windows elevated command tests passed, while the corrected ordinary-role assertion needs a new CI run. Table/CSV/Markdown reports and live display/readers remain M5 work; the final default format is still table.
+`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. M1–M3 are merged; M3 merged in [PR 10](https://github.com/evdanil/gotest/pull/10) after all 12 checks passed and external review reported no remaining findings. M4 is merged in [PR 11](https://github.com/evdanil/gotest/pull/11) at `e54f4266177eb1319d9216c79809ced7e05f078d`; [all 16 checks passed](https://github.com/evdanil/gotest/actions/runs/38089907904), and [external review found no remaining issues](https://github.com/evdanil/gotest/pull/11#issuecomment-6102685974). M4 enables target runs only when `--format json` is explicit. M5 planning is active; reader commands, human formats, and live display are not implemented yet. The final default format remains table.
 
 ## Current CLI
 
@@ -11,13 +11,13 @@ go run ./cmd/cn-mon --help
 go run ./cmd/cn-mon --version
 ```
 
-Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. A target run must explicitly request JSON during M4:
+Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. The only implemented operational target run requires an explicit JSON format:
 
 ```sh
 go run ./cmd/cn-mon --format json --tcp 443 example.com
 ```
 
-That command collects input, resolves configuration and logging, opens history, probes targets, and writes the final JSON report. Exit 0 means the selected success condition was met, exit 1 means the completed run had no selected success, and exit 3 reports probe/history or other execution failure. `--list`, `--show`, `--follow`, and target runs using `table`, `md`, or `csv` remain unavailable until M5 and exit 3 before data I/O.
+That command collects input, resolves configuration and logging, opens history, probes targets, and writes the final JSON report. Exit 0 means the selected success condition was met, exit 1 means the completed run had no selected success, and exit 3 reports probe/history or other execution failure. `--list`, `--show`, `--follow`, and target runs using `table`, `md`, or `csv` are still unavailable and exit 3 before data I/O while M5 implementation is pending.
 
 For scheduled runs resuming after system suspension, M4 retains the selected slot through ordinary timer jitter, then reselects the first aligned slot at or after the corrected run time once the following slot has arrived. It skips expired slots rather than replaying them. This is an explicit native correction to the pinned Python implementation's overdue-wait behavior, not a claim of Python parity.
 
@@ -95,18 +95,7 @@ CI also runs `govulncheck` v1.8.0 against the Linux and Windows production
 package imports using the official Go vulnerability database.
 
 The M4 built-command checks exercise the compiled CLI and are separate from the
-probe-package gates above. They verify config-driven history retention, loopback
-TCP/history/JSON readback, startup and active-run signals, second-interrupt
-finalization, pause/resume, and closed stdout. The full hosted Linux built-command
-gate passed at `6cb848d` in [PR run 38088392325, job 114319603783](https://github.com/evdanil/gotest/actions/runs/38088392325/job/114319603783), including both elevated/granted and capability-denied ICMP roles.
-The Windows elevated command suite passed, including the blocked-stdin pre-input
-interrupt case. The ordinary-role harness now checks the expected SID, elevation,
-and enabled Administrators membership for both the test process and its actual
-child command. It accepts ordinary ICMP success or a structurally verified
-permission denial; both outcomes must preserve TCP, JSON, and finished history.
-The earlier Windows run exposed that ordinary probing can succeed, so this
-corrected assertion needs a new native CI run before the Windows command gate is
-complete.
+probe-package gates above. In [PR run 38089907904](https://github.com/evdanil/gotest/actions/runs/38089907904), the hosted Linux command gate passed [job 114324033360](https://github.com/evdanil/gotest/actions/runs/38089907904/job/114324033360) with granted and capability-denied ICMP roles, and the hosted Windows command gate passed [job 114324033125](https://github.com/evdanil/gotest/actions/runs/38089907904/job/114324033125) with elevated and ordinary roles. The strict gates preserve real JSON, TCP, completed history, cancellation, and closed-pipe behavior. Windows verifies the expected SID, elevation, and enabled Administrators membership in both the test process and its actual child; ordinary ICMP may succeed or return structurally verified permission denial.
 On Linux, the standard Go runtime resets an inherited ignored `SIGTERM` before
 `main`; the command therefore keeps default pre-run `SIGTERM` behavior while
 handling `SIGTERM` gracefully during a run. Inherited ignored `SIGHUP` and
@@ -123,9 +112,8 @@ scripts/test-native-command-linux.sh
 ./scripts/test-native-command-windows.ps1
 ```
 
-The Windows ordinary-role correction still needs current-head native CI; current-head
-native CI, external review and merge remain pending. Cross-compilation and component
-tests do not replace those gates.
+M4 native command gates passed at the merged code head. Cross-compilation and
+component tests alone do not replace those runtime gates.
 
 ## History foundation
 

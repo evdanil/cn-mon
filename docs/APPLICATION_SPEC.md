@@ -1,6 +1,6 @@
 # cn-mon application specification
 
-Status: [M0 specification](https://github.com/evdanil/gotest/pull/7), [M1 foundation](https://github.com/evdanil/gotest/pull/8), [M2 native probes](https://github.com/evdanil/gotest/pull/9) and [M3 history](https://github.com/evdanil/gotest/pull/10) are merged. M3 merged as `e5b49af` after all 12 checks passed at `f0825828`, internal Astra approval and [external review without remaining findings](https://github.com/evdanil/gotest/pull/10#issuecomment-6096607314). The active M4 branch implements target runs explicitly selecting `--format json`, including orchestration, history integration, command control and final JSON. Independent Sol medium review has approved the implementation. External review and native command validation remain pending; M4 has not passed its review/CI/merge gate. Human formats, live terminal and history-reader commands remain M5 work.
+Status: [M0 specification](https://github.com/evdanil/gotest/pull/7), [M1 foundation](https://github.com/evdanil/gotest/pull/8), [M2 native probes](https://github.com/evdanil/gotest/pull/9), [M3 history](https://github.com/evdanil/gotest/pull/10) and [M4 target runs](https://github.com/evdanil/gotest/pull/11) are merged. M3 merged as `e5b49af` after its recorded component/native/review gate. M4 merged as `e54f4266177eb1319d9216c79809ced7e05f078d` after the required checks passed at `685d113683e5fadec53fc79d03ee10eecdaf0ffd`, independent Sol medium approval and [completed external review](https://github.com/evdanil/gotest/pull/11#issuecomment-6102685974). It implements target runs explicitly selecting `--format json`, including native probes, scheduling, history and command control. M5 is active with a reviewed architecture for history readers, human formats and live terminal behavior; those features are not yet implemented. Section 10.2 defines the M5 contracts and the development plan defines their implementation gates.
 
 Destination: `evdanil/gotest`. Product and executable: **cn-mon** (`cn-mon.exe` on Windows).
 
@@ -31,7 +31,7 @@ cn-mon -v|--version
 COMMON: [-c|--config PATH] [-t|--theme THEME] [-l|--log-file PATH] [--log-level LEVEL]
 ```
 
-Milestone boundary: the active M4 branch implements target runs explicitly selecting `--format json`, while merged M0–M3 provide the underlying components and parsing/help/version. M4 engine/integration review and native command gates are still pending. Recognized human formats and reader modes continue to exit 3 before target/configuration/log/history/network I/O until M5. The final default remains `table`, so a target invocation without `--format json` still reaches that temporary unavailable-format guard. Help/README must describe this boundary accurately.
+Milestone boundary: merged M4 implements target runs explicitly selecting `--format json`; M5's history readers, human formats and live terminal are under implementation. Until each integrated path is implemented and verified, recognized unavailable formats/reader modes continue to exit 3 before target/configuration/log/history/network I/O. The final default remains `table`, so a target invocation without `--format json` still reaches that temporary guard at M5's start. Help/README must describe the actual enabled paths and remove the guard and temporary wording together when M5 completes them.
 
 Options work before or after targets; `--` ends option parsing. No arguments prints a usage diagnostic and exits 2; it never opens a menu. `-h/--help` and `-v/--version` exit 0 without reading configuration/targets or opening logs, history or network sockets. Reject unknown options, malformed option values, and combinations outside the four modes; repeated scalar options use their last value, including when short and long spellings are mixed, as in the reference CLI. `--list`, `--show`, and `--follow` are mutually exclusive and accept no targets, `-f/--file`, `--tcp`, `--every`, or `--for`; `--list` also rejects `--since`. `--history-days` applies to target runs only; common options apply to all four modes. A request ID is a case-insensitive hexadecimal prefix of 4–64 characters; it must identify exactly one stored full key.
 
@@ -60,7 +60,7 @@ Source framework flags outside the approved utility scope are rejected as unknow
 
 Preserve only the narrow INI compatibility defined below; no cn-mon-specific configuration format, environment-variable override scheme, configuration writer, or general-purpose framework is introduced. `NO_COLOR` is honored. History storage is a local file on one machine; SQLite WAL over NFS/SMB or simultaneous use of a database from different machines is unsupported and documented.
 
-Examples (the M4 target path is implemented with review/native gates pending; reader examples describe planned M5):
+Examples (target JSON is implemented in merged M4; reader and human-format examples remain planned until M5 integration):
 
 ```sh
 cn-mon 10.1.2.0/24 --for 2h --every 1m --format json
@@ -181,7 +181,7 @@ Permission denial is reported clearly and yields exit 3 as a probe execution fai
 
 The completed-round stderr diagnostic in section 10.1 preserves the underlying execution cause, including errors masked by a successful reply. When any ICMP execution error in that round identifies access denial, append the platform remedy: on Linux, grant `CAP_NET_RAW` to the installed binary or use an authorized elevated process; on Windows, use an authorized elevated Administrator terminal. Identify permission errors structurally through their wrapped causes (`os.ErrPermission`, and Windows Winsock `WSAEACCES`/10013), never localized message matching. This advice performs no privilege or system change.
 
-M2 component evidence: [Linux](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322) and [Windows](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856) native jobs passed for commit `80541a7` in PR #9. The controlled harnesses exercised IPv4/IPv6 echo, target/intermediate error delivery and correlation, and platform privilege contexts through actual sockets. Windows error injection verifies correlated callbacks after the first echo and before the second, preserving echo precedence; it does not claim an echo-suppressed Windows rejection-only aggregate. [Run logs and artifacts](https://github.com/evdanil/gotest/actions/runs/38037349729) retain the observed privilege outcomes. Command output/exit-code integration is implemented in the active M4 branch with review/native command gates pending; these M2 passes do not validate that integration. Release-binary qualification remains M6 work.
+M2 component evidence: [Linux](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322) and [Windows](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856) native jobs passed for commit `80541a7` in PR #9. The controlled harnesses exercised IPv4/IPv6 echo, target/intermediate error delivery and correlation, and platform privilege contexts through actual sockets. Windows error injection verifies correlated callbacks after the first echo and before the second, preserving echo precedence; it does not claim an echo-suppressed Windows rejection-only aggregate. [Run logs and artifacts](https://github.com/evdanil/gotest/actions/runs/38037349729) retain the observed privilege outcomes. Command output/exit-code integration passed the M4 gate in [PR #11](https://github.com/evdanil/gotest/pull/11); M2 evidence remains evidence of probe APIs. Release-binary qualification remains M6 work.
 
 ## 5. Rounds, scheduling and shutdown
 
@@ -233,7 +233,7 @@ The implemented M3 boundary is `internal/history`; it imports neither the monito
 | Reads | `View` provides a transaction-bound `Snapshot` with `Find`, `Request`, `Requests`, `Runs`, `Window`, `Rounds` and `Spacing`; returned values outlive the callback, the Snapshot does not |
 | Liveness | `LocalPIDState` distinguishes alive/dead/unknown; `RunState` computes lost state without database writes, including overflow-safe long-interval comparisons |
 
-Snapshots capture a global round-ID high-water mark and use opaque cursors retaining original SQLite REAL sort keys. Page limits default/cap at 500; round pages additionally bound the host-detail budget. `Spacing` calculates the selected lower median in SQLite rather than retaining every start in Go. Nullable times/intervals and SQL NULL versus `{}` TCP details stay distinct. Transactions use context-aware manual BEGIN/COMMIT, with an independent bounded rollback on failure; failed cleanup discards the connection and fails the Store. M3 provides store APIs only. The active M4 target path now composes startup pruning and in-memory fallback/exit 3 with those APIs; operational readers remain M5 work. M3 component evidence does not establish the pending M4 command gate.
+Snapshots capture a global round-ID high-water mark and use opaque cursors retaining original SQLite REAL sort keys. Page limits default/cap at 500; round pages additionally bound the host-detail budget. `Spacing` calculates the selected lower median in SQLite rather than retaining every start in Go. Nullable times/intervals and SQL NULL versus `{}` TCP details stay distinct. Transactions use context-aware manual BEGIN/COMMIT, with an independent bounded rollback on failure; failed cleanup discards the connection and fails the Store. M3 provides store APIs. Merged M4 composes startup pruning, in-memory fallback and exit 3 with those APIs; M5 adds operational readers under section 10.2. The earlier M3 component evidence and later command evidence remain separate.
 
 M3 native evidence at final PR head `f0825828ad9e3b8176c80f55d7d449ccd2707cc2` in [PR #10 run 38045035366](https://github.com/evdanil/gotest/actions/runs/38045035366):
 
@@ -334,7 +334,7 @@ Release versioned `cn-mon_<version>_linux_amd64.tar.gz` and `cn-mon_<version>_wi
 
 ### 10.1. M4 run-engine contract
 
-The active M4 branch implements this contract against merged M3 `e5b49af`; final engine/integration review and native command gates remain pending. `internal/monitor` now contains orchestration beside the pure tracker, `internal/output` emits target JSON, and `cmd/cn-mon` supplies startup/signals/logger/exit. One state owner mutates tracker/history state. The injected boundaries are a clock, the existing probe methods and the existing history methods; snapshots remain concrete M3 values, with real temporary SQLite in integration tests. No generic task/event/store framework is needed.
+M4 implemented this contract against merged M3 `e5b49af` and passed its native/ordinary/review gate in [PR #11](https://github.com/evdanil/gotest/pull/11), merged as `e54f4266177eb1319d9216c79809ced7e05f078d`. `internal/monitor` owns orchestration beside the pure tracker, `internal/output` emits target JSON, and `cmd/cn-mon` supplies startup/signals/logger/exit. One state owner mutates tracker/history state. The injected boundaries are a clock, the existing probe methods and the existing history methods; snapshots remain concrete M3 values, with real temporary SQLite in integration tests. Section 10.2 extends these APIs for M5; it does not replace M4's completion, cancellation, scheduling or permission contracts. No generic task/event/store framework is needed.
 
 The shared declarations are fixed as follows; existing `Row`, `Stats`, `HostSummary`, target/probe types and history DTOs retain their merged meanings:
 
@@ -421,15 +421,154 @@ A narrow first-use addition, `history.CancellationOnly(err, cause error) bool`, 
 
 Mark every independently observed rollback/discard/connection-close/store-close failure as cleanup. This includes reader `closeRows`/`failRows` and pruning `closePruneRows`, both standalone and joined failures, even when the close error equals the cancellation sentinel or is BUSY/INTERRUPT. The history-bridge owner alone edits those narrow sites in values/tx/store/read/prune and the new classifier/tests; retention predicates, status/scalar validation and successful-COMMIT semantics stay unchanged. Explicit Store.Close failure always remains a history failure. Tests must prove that intentional cancellation cannot hide cleanup failure.
 
-Command startup remains parse/validate → requested input → settings/logging → canonical request → run. Reject still-unimplemented modes/formats before data I/O. Input read failure/empty collection exits 2 before config/logging; all-rejected input prints empty JSON sections plus rejections and exits 2 without history/network. Mixed input continues. Before the run phase, subscribe only to non-ignored Ctrl+C, which exits 130 promptly even with held stdin. On Linux add TERM and non-ignored HUP only at the running transition, before opening history. Before that transition, TERM terminates and HUP retains default termination unless inherited ignored; preserve inherited ignored HUP/INT and apply only section 5's approved inherited-TERM exception. In the running phase TERM/non-ignored HUP request graceful stop. Keep control active through finalization/reporting; install no terminal modes/keyboard reader until M5.
+Command startup remains parse/validate → requested input → settings/logging → canonical request → run. Reject still-unimplemented modes/formats before data I/O. Input read failure/empty collection exits 2 before config/logging; all-rejected input prints empty JSON sections plus rejections and exits 2 without history/network. Mixed input continues. Before the run phase, subscribe only to non-ignored Ctrl+C, which exits 130 promptly even with held stdin. On Linux add TERM and non-ignored HUP only at the running transition, before opening history. Before that transition, TERM terminates and HUP retains default termination unless inherited ignored; preserve inherited ignored HUP/INT and apply only section 5's approved inherited-TERM exception. In the running phase TERM/non-ignored HUP request graceful stop. Keep control active through finalization/reporting; M4 itself installs no terminal modes/keyboard reader; section 10.2 governs their M5 addition.
 
 When the engine reaches graceful finalization, it emits the one-time status `stopping; preparing the final summary` through `RunDeps.Note`, if supplied, after joining work and retaining any completed round, before `endHistory`/EndRun. The command sends this status only to stderr. This is a native status diagnostic, not a source-literal or new report field. Normal completion and hard-only abort do not emit it. The signal handler and stop-forwarder perform no logging/writer I/O; a blocked Note must not block the independent second-interrupt exit path. The neutral wording also applies to q/TERM/HUP without implying those count as a first Ctrl+C.
 
-The JSON writer performs no configuration/history/network I/O and uses section 8's exact typed fields, arrays and UTC-second `+00:00` times. Emit canonical-order seen/latest rows, numerically ordered TCP fields, every sampled period, four arrays even when empty and exactly one final newline. Final target periods are closed; no new persistence/status/error fields are introduced. Input rejections precede sorted never-resolved names. Human-format default table remains unchanged while unavailable until M5. A structurally identified closed downstream pipe adds no pipe/report-write diagnostic and retains the already-computed ordinary exit; legitimate probe/history/lifecycle diagnostics remain allowed. Other output errors return 3. Native tests must cover Go's stdout SIGPIPE behavior and Windows pipe error mapping rather than suppressing arbitrary EINVAL.
+The JSON writer performs no configuration/history/network I/O and uses section 8's exact typed fields, arrays and UTC-second `+00:00` times. Emit canonical-order seen/latest rows, numerically ordered TCP fields, every sampled period, four arrays even when empty and exactly one final newline. Final target periods are closed; no new persistence/status/error fields are introduced. Input rejections precede sorted never-resolved names. The default remains table; M5 activates its renderer under section 10.2. A structurally identified closed downstream pipe adds no pipe/report-write diagnostic and retains the already-computed ordinary exit; legitimate probe/history/lifecycle diagnostics remain allowed. Other output errors return 3. Native tests must cover Go's stdout SIGPIPE behavior and Windows pipe error mapping rather than suppressing arbitrary EINVAL.
 
 Native command permission gates follow section 4 and PRB-03. Linux requires genuinely granted and capability-denied roles. Windows uses elevated and ordinary roles, independently verified against the expected token user SID, elevation and enabled Administrators membership in both the test process and its child command. Elevated controlled loopback must return `OK`/exit 0. Ordinary Windows may return full echo success/exit 0 or structurally established ICMP access denial with `ERROR`/exit 3; any other failure fails the gate. Both branches require open TCP, exact completed-round JSON/history agreement and the verified account identity. Establish the denial branch with a typed permission witness from the existing Prober under the same verified ordinary token; JSON text alone cannot prove structural denial. Only actual access denial requires the bounded observed OS cause/Administrator-remedy diagnostic; never manufacture denial or label successful ordinary probing denied. Query the child token while held stdin prevents startup completion, then release EOF to run normally; this is a test-only synchronization mechanism, not a product hook.
 
 The history-bridge owner moves only the generated ExpectedSpacing cross-package equivalence test from same-package history tests into `monitor/run_history_test.go`, seeded through public Store APIs. This removes the history-test → monitor → history cycle; keep history-local spacing/malformed/raw-REAL fixtures and do not duplicate the median algorithm. The development plan assigns exclusive files and required native/TDD gates.
+
+### 10.2. M5 readers, reports and live terminal contract
+
+M5 completes the existing four command modes and four output formats. Keep the current packages: `monitor` owns read/follow aggregation and mutable tracker state, `output` owns reports/pure layout/thin OS terminal handling, and the command owns settings/logging/control and actual terminal construction. `history` gains no new API or production change. Reuse its read-only snapshots, opaque REAL-preserving cursors and spacing queries, M4's stored-round conversions, and the existing typed JSON construction. No menu, Python runtime, UI framework or event bus is added.
+
+The shared additions are:
+
+```go
+// internal/monitor/read_types.go — reader owner
+// A genuine nondeterministic boundary; Snapshot stays concrete.
+type Reader interface {
+    Close() error
+    View(context.Context, func(*history.Snapshot) error) error
+}
+type ReadDeps struct {
+    Clock       Clock
+    OpenHistory func(context.Context, string) (Reader, error)
+    Hostname    string
+    PIDState    func(int64) history.PIDState
+    Stop        <-chan struct{}
+    EnterFollowing func() // command control transition after the initial live snapshot
+    Live        *LiveHooks
+    Note        func(string)
+}
+type ReadPlan struct {
+    HistoryFile string
+    Prefix      string
+    Since       *time.Time
+    Follow      bool
+}
+type RequestRow struct {
+    ID, Targets, TCP string
+    Runs, Rounds     int64
+    LastRound        *time.Time
+    State, Detail    string
+}
+type ReadOutcome struct {
+    Request target.Request
+    Run     RunOutcome
+    Found   bool
+    Running bool
+    Problem string // missing/ambiguous prefix, not a history failure
+}
+func List(ctx context.Context, path string, deps ReadDeps) ([]RequestRow, error)
+func Read(ctx context.Context, plan ReadPlan, deps ReadDeps) (ReadOutcome, error)
+func ReadExitCode(out ReadOutcome) int
+
+// internal/monitor/live_types.go — live bridge/terminal owner
+// Small display-only values, without per-host period/TCP histories.
+type LiveRow struct {
+    Index             int
+    Host, Latest      string
+    Cell              byte
+    LastSeen          time.Time
+    SeenRounds, Rounds int
+}
+type LiveData struct {
+    Stats            Stats
+    Cells            []byte
+    Changed, Partial []int
+    Rows             []LiveRow
+    Seen             int // committed-ever seen plus newly seen pending hosts
+}
+type LivePhase uint8
+const (
+    LiveResolving LivePhase = iota
+    LiveProbing
+    LiveWaiting
+    LiveFollowing
+    LiveEnded
+)
+type LiveUpdate struct {
+    Request                  target.Request
+    Data                     LiveData
+    Phase                    LivePhase
+    Now, Origin              time.Time
+    Until                    *time.Time
+    Interval                 *time.Duration
+    Source                   *string
+    CurrentRounds            int
+    SkippedSlots              int64
+    Done, Total               int
+    NextIn                    *time.Duration
+}
+type LiveHooks struct {
+    Enabled func() bool
+    Draw    func(LiveUpdate)
+    Change  func(Change)
+}
+// M5's only RunDeps extension:
+//     Live *LiveHooks
+// Existing M4 callers leave it nil with identical behavior.
+
+// internal/output/report.go — report/layout owner
+// Width concerns human table output; structured formats ignore display options.
+type ReportOptions struct {
+    Format, Theme     string
+    Width             int
+    Terminal, NoColor bool
+}
+func WriteRun(w io.Writer, request target.Request, out monitor.RunOutcome,
+    rejected []target.Rejection, options ReportOptions) error
+func WriteHistory(w io.Writer, out monitor.ReadOutcome, options ReportOptions) error
+func WriteRequests(w io.Writer, rows []monitor.RequestRow, options ReportOptions) error
+// Keep WriteRunJSON as the compatible JSON-only wrapper.
+
+// internal/output/terminal.go — live bridge/terminal owner
+type KeyHandlers struct { Quit, Interrupt func() }
+func OpenScreen(in, errOut *os.File, theme string, noColor bool,
+    keys KeyHandlers) *Screen
+func (*Screen) Enabled() bool
+func (*Screen) Draw(monitor.LiveUpdate)
+func (*Screen) Change(monitor.Change)
+func (*Screen) Note(string) // ordinary stderr status/diagnostic, serialized with a live frame
+func (*Screen) Close()
+func (*Screen) EmergencyRestore()
+```
+
+A `Reader` adapts the existing `*history.Store` at the genuine I/O boundary; Snapshot remains concrete. `ReadDeps.EnterFollowing` is optional and synchronous: call it exactly once after the initial successful found/live snapshot and hard-context check, before the first follow draw/poll, whether drawing is enabled, disabled or absent. The command binds its existing running-control transition. Do not call it for list/show, missing/ambiguous history, no live writer, failed initial reads or preexisting hard cancellation. It performs no terminal/history/report I/O.
+
+Reader startup is parse/semantic validation → settings/logger → mode-specific terminal prerequisite → OpenReader. Readers never collect target input, resolve DNS, construct a prober or prune history. Follow requires stderr to be a TTY before opening history. An absent database creates no parent/database; readers never fall back to write mode or change schema/status/retention. WAL/SHM coordination is distinct from database mutation. Missing list history yields empty requests/exit 1; missing/ambiguous show/follow yields empty sections/exit 2. Open/query/validation/transaction/Close failure yields empty reader sections/exit 3, never a partial report. Historical probe errors alone do not imply reader exit 3.
+
+List folds paged request summaries and running-state pages within one View. Keep only final small request rows and the selected live run, not every request's host array or all run IDs. Source labels use the newest run's source basename independently of the selected live run; target token labels use the characterized 44-code-point budget with the first token always retained. Show/follow use stored request tokens/ports/hosts/key as authoritative, without rebuilding identity. Apply the fixed Since, compute spacing in SQLite and fold ordered pages by their original opaque `(REAL started,id)` cursors. Only the last selected round's own live writer permits its final online period to remain open; another live run does not. Compute state/detail and long-interval arithmetic without duration overflow.
+
+Follow keeps both the current snapshot Through value, which may decrease after pruning, and a monotonically increasing observedThrough, which never resets across rebuild or same-key recreation. In one frozen View, detect changed request identity/metadata/window endpoints/count or selected newly committed IDs beyond observedThrough, including late earlier-started commits. Rebuild an unpublished aggregate from bounded ordered pages with current fixed spacing only when selected data changes; otherwise update liveness. Publish aggregate/request/watermark only after the View succeeds. Keep at most old/new aggregates, required report periods, a bounded page and current display state; never cache all starts, rounds, IDs or change notes. New same-key requests use their new integer ID and authoritative hosts. A successful missing/no-live snapshot ends the follower; it does not wait for a later recreation.
+
+Initial history produces no change notes. Later folds emit only changes from IDs greater than the previous observedThrough, one at a time in source start order. Notes remain permanently above the live frame/in scrollback; at most three are retained as redraw state. A later read failure produces empty final sections/exit 3 without retrying already emitted committed observations. Graceful stop during a poll lets that fixed View finish under the hard context, publishes its watermark, then performs one fresh final View; stop while idle directly performs that final View. Hard cancellation aborts promptly. Idle reads occur within two seconds and redraw waits within 500ms, without promising a large SQL fold finishes within two seconds. A follower's q never stops its writer.
+
+Live hooks are synchronous on the monitor state owner. New LiveData slices are read-only display values; borrowed request slices cannot be retained or mutated. Nil hooks preserve M4 behavior. Display pending resolving/batch results only at the source's completed-batch granularity; no Prober extension is required. Pending display never changes Tracker, history, JSON/CSV or exit flags. Preserve the final successful-batch completion boundary, direct Stop observation at startup/finalization and the shared heartbeat deadline across work/waits. Draw ticks must not defer heartbeats or sample the mutable run clock independently. Preserve section 5's post-wait slot reselection, ordinary-jitter tolerance defined by the next full interval, exclusive cutoff and first-round exemption. After reselection and synchronous skipped-slot Note publication, the state owner re-enters its actual-start check even when the replacement was exactly current; a blocked Note may have crossed another slot or cutoff. The eventual final cutoff and round stamp share one reading, while retaining the selected index prevents duplicate skipped counts. Capture Tracker.Add changes only after completed persistence/fold/count/latest publication and the existing diagnostic.
+
+While a screen exists, route ordinary status/diagnostic output through Screen.Note, preserving the command's prefix, logging and error behavior. Keep M4's exact one-time graceful note and bounded completed-round probe note, including masked execution errors, actual causes/counts and structural permission remedies. No diagnostic moves into a partial batch or is regenerated from historical rows. Draws and notes share terminal-write serialization; key input only invokes control or changes the screen's view preference, never Tracker/Store. Hard-exit control must not wait for the draw mutex, logging, workers or database cleanup.
+
+Reuse typed JSON for all formats: target has four sections, show/follow three, list only requests. Arrays stay arrays, timestamps/counts/interval/TCP retain their types and canonical ordering, and only eligible historical periods have `to:null`. Human formats omit empty sections and produce empty output when all sections are empty. CSV uses the source human headers with `section` plus their ordered union, standard quoting and LF; Markdown preserves source section order, pipe/newline escaping and all periods. Table alone abbreviates to the last three periods plus the earlier count; it retains all final records. Structured reports retain data values and format escaping without ANSI or terminal sanitization. Human terminal paths escape controls, crop by grapheme/display cells and preserve the characterized four-theme source palette, including its twice-advanced column cycle. NO_COLOR presence disables hue; real-terminal bold/dim/reverse remain, while redirected output contains no ANSI.
+
+Pure layout reuses a first-use `target.LayoutInputs(tokens []string) []LayoutInput` helper, where `LayoutInput` has `Network netip.Prefix` and `Hosts []string`. It uses existing parsing and token-order first-occurrence host admission without a TCP cap or identity rebuild. Omit fully covered later tokens/subnets; retain a partially overlapping subnet's full grid positions and only newly contributed single/list labels. Stored request hosts remain authoritative. Build grid indexes once per metadata change; use source 64/32/16 widths, counter fallback, legend and table overlay. Recompute dimensions on resize, handle 1×1/tiny terminals safely and never scroll solely because a frame exceeds available height. Layout returns semantic styled segments; the shared output helper alone generates trusted ANSI.
+
+Terminal startup is best effort and does not determine report success. Only real eligible handles change modes. Linux uses foreground-aware cbreak with ISIG retained, bounded input polling, source key-sequence handling, and restoration before suspend; resume does not imply foreground ownership. Preserve inherited HUP/INT/nohup and the approved standard-Go inherited-TERM exception. Windows uses actual console modes/key events/dimensions, processed Ctrl+C and restored VT/input modes; redirected handles remain untouched. Normal/error/graceful paths restore exactly changed modes and cursor state. A command-owned optional emergency callback extends the existing hard-exit path without held control/draw locks or waits. Restore through bounded OS operations; Linux emergency cursor output uses an independently opened nonblocking terminal handle and never changes shared inherited descriptor flags. Test vanished terminals and blocked output; do not promise restoration after uncatchable process death.
+
+Select `golang.org/x/term v0.44.0` (BSD-3-Clause) for terminal detection/dimensions and `github.com/rivo/uniseg v0.4.7` (MIT with applicable permissive Unicode data notice) for grapheme/display width, alongside existing x/sys. Do not use MakeRaw, regenerate/download Unicode tables or add a terminal framework/CGO. These source-reviewed selections retain the Go 1.26 floor; first-use module/checksum/license inventory, native integration and official per-target vulnerability checks remain M5 gates. Preserve cn-tool attribution for adapted rendering/control behavior.
 
 ## 11. Acceptance scenarios
 
