@@ -2,6 +2,7 @@ package history
 
 import (
 	"context"
+	"math"
 	"math/big"
 	"reflect"
 	"strings"
@@ -266,6 +267,271 @@ func TestPruneRejectsMalformedStoredRunStatusWithoutMutation(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPruneRejectsMalformedRetentionScalarsBeforeMutation(t *testing.T) {
+	tests := []struct {
+		name         string
+		table        string
+		column       string
+		value        any
+		sqlType      string
+		withOldRound bool
+	}{
+		{"round-before-year-one", "round", "started", float64(-62135596801), "real", true},
+		{"round-negative-infinity", "round", "started", math.Inf(-1), "real", true},
+		{"round-text", "round", "started", "nonsense", "text", true},
+		{"round-numeric-blob", "round", "started", []byte("1"), "blob", true},
+		{"round-year-ten-thousand", "round", "started", float64(253402300800), "real", true},
+		{"heartbeat-before-year-one", "run", "heartbeat", float64(-62135596801), "real", false},
+		{"heartbeat-negative-infinity", "run", "heartbeat", math.Inf(-1), "real", false},
+		{"heartbeat-text", "run", "heartbeat", "nonsense", "text", false},
+		{"heartbeat-numeric-blob", "run", "heartbeat", []byte("1"), "blob", false},
+		{"heartbeat-invalid-with-old-round", "run", "heartbeat", math.Inf(-1), "real", true},
+		{"interval-negative", "run", "interval", float64(-1), "real", false},
+		{"interval-negative-infinity", "run", "interval", math.Inf(-1), "real", false},
+		{"interval-text", "run", "interval", "nonsense", "text", false},
+		{"interval-numeric-blob", "run", "interval", []byte("1"), "blob", false},
+		{"interval-over-duration", "run", "interval", float64(9223372037), "real", false},
+		{"interval-rounds-past-duration-endpoint", "run", "interval", float64(9223372036.854776), "real", false},
+		{"interval-invalid-with-old-round", "run", "interval", float64(9223372037), "real", true},
+	}
+	for i, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := writeTestOpen(t)
+			ctx := context.Background()
+			now := writeTestTime(8000)
+			old := now.Add(-45 * 24 * time.Hour)
+			runID := "prune-scalar-suspect-" + test.name
+			request := writeTestRequest(strings.Repeat(string("abcdef0123456789"[i%16]), 64))
+			if _, err := store.BeginRun(ctx, request, writeTestRun(runID, old)); err != nil {
+				t.Fatalf("BeginRun suspect: %v", err)
+			}
+			if test.withOldRound {
+				pruneTestRecord(t, store, runID, old)
+				if test.table == "round" {
+					if err := store.EndRun(ctx, runID, old, "finished"); err != nil {
+						t.Fatalf("EndRun malformed-round fixture: %v", err)
+					}
+				}
+			}
+			validRequest := writeTestRequest(strings.Repeat(string("0123456789abcdef"[(i+1)%16]), 64))
+			validRunID := "prune-scalar-valid-prunable"
+			if _, err := store.BeginRun(ctx, validRequest, writeTestRun(validRunID, old)); err != nil {
+				t.Fatalf("BeginRun otherwise-prunable fixture: %v", err)
+			}
+			pruneTestRecord(t, store, validRunID, old)
+			if err := store.EndRun(ctx, validRunID, old, "finished"); err != nil {
+				t.Fatalf("EndRun otherwise-prunable fixture: %v", err)
+			}
+			var injectErr error
+			if test.table == "round" {
+				_, injectErr = store.db.ExecContext(ctx, `UPDATE round SET started = ? WHERE run_id = ?`, test.value, runID)
+			} else {
+				_, injectErr = store.db.ExecContext(ctx, `UPDATE run SET `+test.column+` = ? WHERE id = ?`, test.value, runID)
+			}
+			if injectErr != nil {
+				t.Fatalf("inject %s.%s=%#v: %v", test.table, test.column, test.value, injectErr)
+			}
+			rowKey := "id"
+			if test.table == "round" {
+				rowKey = "run_id"
+			}
+			var gotType string
+			if err := store.db.QueryRowContext(ctx, `SELECT typeof(`+test.column+`) FROM `+test.table+` WHERE `+rowKey+` = ?`, runID).Scan(&gotType); err != nil {
+				t.Fatalf("read injected scalar type: %v", err)
+			}
+			if gotType != test.sqlType {
+				t.Fatalf("SQLite stored %s.%s as %s, want %s", test.table, test.column, gotType, test.sqlType)
+			}
+			before := pruneTestRawState(t, store)
+			deleted, err := store.Prune(ctx, now, big.NewInt(30))
+			if err == nil {
+				t.Fatalf("Prune accepted malformed %s.%s=%#v and deleted %d rounds", test.table, test.column, test.value, deleted)
+			}
+			if deleted != 0 {
+				t.Fatalf("Prune reported %d deleted rounds for malformed retention scalars", deleted)
+			}
+			after := pruneTestRawState(t, store)
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("Prune changed raw history for malformed %s.%s=%#v: before=%#v after=%#v", test.table, test.column, test.value, before, after)
+			}
+		})
+	}
+}
+
+func TestPruneAcceptsIntegerRealAndLargeValidRetentionScalars(t *testing.T) {
+	store := writeTestOpen(t)
+	ctx := context.Background()
+	now := writeTestTime(9000)
+	old := now.Add(-45 * 24 * time.Hour)
+	request := writeTestRequest(strings.Repeat("a", 64))
+	finishedRunID := "prune-valid-numeric-rounds"
+	if _, err := store.BeginRun(ctx, request, writeTestRun(finishedRunID, old)); err != nil {
+		t.Fatalf("BeginRun finished fixture: %v", err)
+	}
+	intRoundID, err := store.RecordRound(ctx, finishedRunID, writeTestRound(old))
+	if err != nil {
+		t.Fatalf("RecordRound integer fixture: %v", err)
+	}
+	if _, err := store.RecordRound(ctx, finishedRunID, writeTestRound(old.Add(time.Hour))); err != nil {
+		t.Fatalf("RecordRound real fixture: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE round SET started = ? WHERE id = ?`, old.Unix(), intRoundID); err != nil {
+		t.Fatalf("set integer round timestamp: %v", err)
+	}
+	if err := store.EndRun(ctx, finishedRunID, old.Add(2*time.Hour), "finished"); err != nil {
+		t.Fatalf("EndRun finished fixture: %v", err)
+	}
+	integerRequest := writeTestRequest(strings.Repeat("b", 64))
+	integerRunID := "prune-valid-integer-empty-run"
+	if _, err := store.BeginRun(ctx, integerRequest, writeTestRun(integerRunID, old)); err != nil {
+		t.Fatalf("BeginRun integer empty fixture: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE run SET heartbeat = ?, interval = ? WHERE id = ?`, old.Unix(), int64(1), integerRunID); err != nil {
+		t.Fatalf("set integer running scalars: %v", err)
+	}
+	largeRequest := writeTestRequest(strings.Repeat("c", 64))
+	largeRunID := "prune-valid-9999-weeks"
+	largeInterval := 9999 * 7 * 24 * time.Hour
+	if _, err := store.BeginRun(ctx, largeRequest, func() RunStart {
+		run := writeTestRun(largeRunID, old)
+		run.Interval = &largeInterval
+		return run
+	}()); err != nil {
+		t.Fatalf("BeginRun large interval fixture: %v", err)
+	}
+	var integerArgumentType, realType, integerIntervalArgumentType string
+	if err := store.db.QueryRowContext(ctx, `SELECT typeof(started) FROM round WHERE id = ?`, intRoundID).Scan(&integerArgumentType); err != nil {
+		t.Fatalf("read integer-argument timestamp type: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT typeof(started) FROM round WHERE run_id = ? AND started > ?`, finishedRunID, old.Unix()).Scan(&realType); err != nil {
+		t.Fatalf("read real timestamp type: %v", err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT typeof(interval) FROM run WHERE id = ?`, integerRunID).Scan(&integerIntervalArgumentType); err != nil {
+		t.Fatalf("read integer-argument interval type: %v", err)
+	}
+	if integerArgumentType != "real" || realType != "real" || integerIntervalArgumentType != "real" {
+		t.Fatalf("REAL-column affinity types integer-argument-round=%q real-round=%q integer-argument-interval=%q", integerArgumentType, realType, integerIntervalArgumentType)
+	}
+	deleted, err := store.Prune(ctx, now, big.NewInt(30))
+	if err != nil || deleted != 2 {
+		t.Fatalf("Prune valid numeric scalars deleted=%d err=%v, want two rounds", deleted, err)
+	}
+	if got := writeTestRequestAndRuns(t, store, request.Key); got.request != nil {
+		t.Fatalf("Prune retained fully expired finalized run: %+v", got)
+	}
+	if got := writeTestRequestAndRuns(t, store, integerRequest.Key); got.request != nil {
+		t.Fatalf("Prune retained stale empty integer run: %+v", got)
+	}
+	if got := writeTestRequestAndRuns(t, store, largeRequest.Key); got.request == nil || got.request.ID <= 0 || len(got.runs) != 1 || got.runs[0].Interval == nil || *got.runs[0].Interval != largeInterval {
+		t.Fatalf("Prune did not preserve supported 9,999-week live interval: %+v", got)
+	}
+}
+
+func TestPruneSkipsUnusedMalformedScalarsOnRunningRunsWithSurvivingRounds(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		value any
+		age   time.Duration
+	}{
+		// Equality matters here: the retention predicate preserves rounds at
+		// the cutoff, so malformed heartbeat data on that still-live run is
+		// unused and must not block pruning elsewhere.
+		{"heartbeat", "nonsense", 30 * 24 * time.Hour},
+		{"interval", []byte("nonsense"), time.Hour},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			store := writeTestOpen(t)
+			ctx := context.Background()
+			now := writeTestTime(10000)
+			surviving := writeTestRequest(strings.Repeat("d", 64))
+			liveRunID := "prune-malformed-retained-" + tc.field
+			if _, err := store.BeginRun(ctx, surviving, writeTestRun(liveRunID, now)); err != nil {
+				t.Fatalf("BeginRun live fixture: %v", err)
+			}
+			pruneTestRecord(t, store, liveRunID, now.Add(-tc.age))
+			if _, err := store.db.ExecContext(ctx, `UPDATE run SET `+tc.field+` = ? WHERE id = ?`, tc.value, liveRunID); err != nil {
+				t.Fatalf("inject retained run scalar: %v", err)
+			}
+			eligible := writeTestRequest(strings.Repeat("e", 64))
+			eligibleRunID := "prune-valid-eligible-retained-scalar"
+			old := now.Add(-45 * 24 * time.Hour)
+			if _, err := store.BeginRun(ctx, eligible, writeTestRun(eligibleRunID, old)); err != nil {
+				t.Fatalf("BeginRun eligible fixture: %v", err)
+			}
+			pruneTestRecord(t, store, eligibleRunID, old)
+			if err := store.EndRun(ctx, eligibleRunID, old, "finished"); err != nil {
+				t.Fatalf("EndRun eligible fixture: %v", err)
+			}
+			deleted, err := store.Prune(ctx, now, big.NewInt(30))
+			if err != nil || deleted != 1 {
+				t.Fatalf("Prune with unused malformed scalar deleted=%d err=%v, want unrelated round deleted", deleted, err)
+			}
+			var liveRounds int
+			if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM round WHERE run_id = ?`, liveRunID).Scan(&liveRounds); err != nil {
+				t.Fatalf("count surviving round: %v", err)
+			}
+			if liveRounds != 1 {
+				t.Fatalf("Prune removed surviving round: count=%d", liveRounds)
+			}
+			if got := writeTestReadRequest(t, store, eligible.Key); got != nil {
+				t.Fatalf("Prune retained unrelated eligible request: %+v", got)
+			}
+		})
+	}
+}
+
+func TestPruneHugeRetentionSkipsUnusedMalformedScalars(t *testing.T) {
+	store := writeTestOpen(t)
+	ctx := context.Background()
+	now := writeTestTime(11000)
+	withRound := writeTestRequest(strings.Repeat("1", 64))
+	oldRunID := "prune-huge-malformed-round"
+	old := time.Date(1, 1, 2, 0, 0, 0, 0, time.UTC)
+	if _, err := store.BeginRun(ctx, withRound, writeTestRun(oldRunID, old)); err != nil {
+		t.Fatalf("BeginRun malformed round fixture: %v", err)
+	}
+	pruneTestRecord(t, store, oldRunID, old)
+	if err := store.EndRun(ctx, oldRunID, old, "finished"); err != nil {
+		t.Fatalf("EndRun malformed round fixture: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE round SET started = 'nonsense' WHERE run_id = ?`, oldRunID); err != nil {
+		t.Fatalf("inject unused malformed round timestamp: %v", err)
+	}
+	running := writeTestRequest(strings.Repeat("2", 64))
+	runningID := "prune-huge-malformed-running"
+	if _, err := store.BeginRun(ctx, running, writeTestRun(runningID, old)); err != nil {
+		t.Fatalf("BeginRun malformed running fixture: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE run SET heartbeat = -62135596801, interval = 'nonsense' WHERE id = ?`, runningID); err != nil {
+		t.Fatalf("inject unused malformed running scalars: %v", err)
+	}
+	finalized := writeTestRequest(strings.Repeat("3", 64))
+	if _, err := store.BeginRun(ctx, finalized, writeTestRun("prune-huge-finalized-empty", now)); err != nil {
+		t.Fatalf("BeginRun finalized empty fixture: %v", err)
+	}
+	if err := store.EndRun(ctx, "prune-huge-finalized-empty", now, "finished"); err != nil {
+		t.Fatalf("EndRun finalized empty fixture: %v", err)
+	}
+	days := new(big.Int).Exp(big.NewInt(10), big.NewInt(100), nil)
+	deleted, err := store.Prune(ctx, now, days)
+	if err != nil || deleted != 0 {
+		t.Fatalf("Prune huge retention deleted=%d err=%v, want success with no round deletion", deleted, err)
+	}
+	var retainedRounds int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM round WHERE run_id = ?`, oldRunID).Scan(&retainedRounds); err != nil {
+		t.Fatalf("count retained malformed round: %v", err)
+	}
+	if retainedRounds != 1 {
+		t.Fatalf("huge retention removed round whose timestamp was not interpreted: rounds=%d", retainedRounds)
+	}
+	if got := writeTestReadRequest(t, store, running.Key); got == nil {
+		t.Fatal("huge retention deleted empty running run whose malformed fields were unused")
+	}
+	if got := writeTestReadRequest(t, store, finalized.Key); got != nil {
+		t.Fatalf("huge retention failed to delete finalized empty request: %+v", got)
 	}
 }
 

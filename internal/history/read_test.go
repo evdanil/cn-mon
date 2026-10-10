@@ -304,6 +304,111 @@ func TestReadFindReturnsMissingUniqueAmbiguousAndCaseInsensitivePrefixes(t *test
 	}
 }
 
+func TestRunsRunningOnlyRejectsInvalidStatusesBeforeFiltering(t *testing.T) {
+	writer, reader, _ := readTestOpenPair(t)
+	key := strings.Repeat("c", 64)
+	readTestExec(t, writer, `INSERT INTO request(key,targets,tcp_ports,hosts) VALUES(?,?,?,?)`, key, `["reader"]`, `[]`, `["reader"]`)
+	var requestID int64
+	err := reader.View(context.Background(), func(snapshot *Snapshot) error {
+		matches, err := snapshot.Find(key[:4])
+		if err != nil {
+			return err
+		}
+		if len(matches) != 1 {
+			t.Fatalf("request matches = %+v", matches)
+		}
+		requestID = matches[0].ID
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Find test request: %v", err)
+	}
+
+	for i, status := range []string{"running", "finished", "stopped", "failed"} {
+		readTestExec(t, writer, `INSERT INTO run(id,request_id,started,host,pid,heartbeat,status) VALUES(?,?,?,?,?,?,?)`,
+			fmt.Sprintf("known-status-%d", i), requestID, float64(100+i*100), "fixture", 123, float64(100+i*100), status)
+	}
+	if err := reader.View(context.Background(), func(snapshot *Snapshot) error {
+		all, err := snapshot.Runs(requestID, false, nil, 10)
+		if err != nil {
+			return err
+		}
+		if len(all.Items) != 4 {
+			t.Fatalf("known statuses returned %d rows, want 4", len(all.Items))
+		}
+		live, err := snapshot.Runs(requestID, true, nil, 10)
+		if err != nil {
+			return err
+		}
+		if len(live.Items) != 1 || live.Items[0].Status != "running" {
+			t.Fatalf("running-only rows = %+v", live.Items)
+		}
+		missing, err := snapshot.Runs(99999, true, nil, 1)
+		if err != nil {
+			return err
+		}
+		if len(missing.Items) != 0 || missing.Next != nil {
+			t.Fatalf("unknown positive request ID returned runs: %+v", missing)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read known statuses: %v", err)
+	}
+
+	otherKey := strings.Repeat("d", 64)
+	readTestExec(t, writer, `INSERT INTO request(key,targets,tcp_ports,hosts) VALUES(?,?,?,?)`, otherKey, `["other"]`, `[]`, `["other"]`)
+	var otherID int64
+	if err := reader.View(context.Background(), func(snapshot *Snapshot) error {
+		matches, err := snapshot.Find(otherKey[:4])
+		if err != nil {
+			return err
+		}
+		otherID = matches[0].ID
+		return nil
+	}); err != nil {
+		t.Fatalf("Find unrelated request: %v", err)
+	}
+	readTestExec(t, writer, `INSERT INTO run(id,request_id,started,host,pid,heartbeat,status) VALUES(?,?,?,?,?,?,?)`,
+		"other-invalid-status", otherID, 500, "fixture", 123, 500, "lost")
+	if err := reader.View(context.Background(), func(snapshot *Snapshot) error {
+		live, err := snapshot.Runs(requestID, true, nil, 10)
+		if err != nil {
+			return err
+		}
+		if len(live.Items) != 1 || live.Items[0].Status != "running" {
+			t.Fatalf("unrelated corrupt request changed live rows: %+v", live.Items)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("unrelated request corruption blocked read: %v", err)
+	}
+
+	// Each malformed value is isolated. The rows have higher rowids than the
+	// valid rows but starts newer than the cursor, so the normal page query
+	// cannot see them.
+	for i, status := range []string{"", "bogus", "lost"} {
+		readTestExec(t, writer, `INSERT INTO run(id,request_id,started,host,pid,heartbeat,status) VALUES(?,?,?,?,?,?,?)`,
+			fmt.Sprintf("invalid-status-%d", i), requestID, float64(10-i), "fixture", 123, float64(10-i), status)
+		err = reader.View(context.Background(), func(snapshot *Snapshot) error {
+			_, err := snapshot.Runs(requestID, true, &RunCursor{started: 5, rowID: 1}, 1)
+			return err
+		})
+		if err == nil {
+			t.Fatalf("running-only page concealed stored status %q outside its cursor", status)
+		}
+		var count int
+		if err := writer.withTx(context.Background(), false, func(conn *sql.Conn) error {
+			return conn.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM run WHERE request_id=? AND status=?`, requestID, status).Scan(&count)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("status %q was mutated while reading: count=%d", status, count)
+		}
+		readTestExec(t, writer, `DELETE FROM run WHERE id=?`, fmt.Sprintf("invalid-status-%d", i))
+	}
+}
+
 func TestRoundPagesOrderStartedThenIDNotCommitOrder(t *testing.T) {
 	writer, reader, _ := readTestOpenPair(t)
 	for _, started := range []float64{200, 199, 199} {

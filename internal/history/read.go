@@ -414,6 +414,21 @@ func (s *Snapshot) Runs(requestID int64, runningOnly bool, after *RunCursor, lim
 	if after != nil && (after.rowID <= 0 || !finiteFloat(after.started)) {
 		return RunPage{}, errors.New("invalid run cursor")
 	}
+	if runningOnly {
+		var invalidStatus sql.NullString
+		err := s.conn.QueryRowContext(s.ctx, `SELECT status FROM run
+WHERE request_id = ? AND (status IS NULL OR status NOT IN ('running','finished','stopped','failed'))
+LIMIT 1`, requestID).Scan(&invalidStatus)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return RunPage{}, s.normalize(err)
+		}
+		if err == nil {
+			if !invalidStatus.Valid {
+				return RunPage{}, errors.New("request contains an invalid stored run status")
+			}
+			return RunPage{}, fmt.Errorf("unknown stored run status %q", invalidStatus.String)
+		}
+	}
 	query := `SELECT r.id, r.request_id, r.source, r.started, r.interval, r.until,
        r.host, r.pid, r.heartbeat, r.round_seconds, r.ended, r.status,
        (SELECT COUNT(*) FROM round rd WHERE rd.run_id=r.id AND rd.id <= ?), r.rowid

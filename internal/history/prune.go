@@ -47,6 +47,11 @@ func (s *Store) Prune(ctx context.Context, now time.Time, days *big.Int) (int64,
 		if !errors.Is(err, sql.ErrNoRows) {
 			return normalizeDBError(ctx, err)
 		}
+		if canDeleteRounds {
+			if err := validatePruneOperands(ctx, conn, cutoff); err != nil {
+				return err
+			}
+		}
 
 		canDeleteRoundsInt := 0
 		if canDeleteRounds {
@@ -88,6 +93,82 @@ func (s *Store) Prune(ctx context.Context, now time.Time, days *big.Int) (int64,
 		return 0, err
 	}
 	return deletedRounds, nil
+}
+
+// validatePruneOperands checks only stored scalars used by the subsequent
+// retention predicates. It streams one row at a time and closes each result
+// set before issuing the next query or any DELETE.
+func validatePruneOperands(ctx context.Context, conn *sql.Conn, cutoff float64) error {
+	rows, err := conn.QueryContext(ctx, `SELECT id, started, typeof(started) FROM round`)
+	if err != nil {
+		return normalizeDBError(ctx, err)
+	}
+	for rows.Next() {
+		var id int64
+		var started sql.NullFloat64
+		var storageType string
+		if err := rows.Scan(&id, &started, &storageType); err != nil {
+			return closePruneRows(ctx, rows, normalizeDBError(ctx, err))
+		}
+		if !started.Valid || (storageType != "integer" && storageType != "real") {
+			return closePruneRows(ctx, rows, fmt.Errorf("round %d has nonnumeric started value", id))
+		}
+		if _, err := timeFromEpoch(started.Float64); err != nil {
+			return closePruneRows(ctx, rows, fmt.Errorf("round %d has invalid started value: %w", id, err))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return closePruneRows(ctx, rows, normalizeDBError(ctx, err))
+	}
+	if err := closePruneRows(ctx, rows, nil); err != nil {
+		return err
+	}
+
+	rows, err = conn.QueryContext(ctx, `SELECT id, heartbeat, typeof(heartbeat), interval, typeof(interval)
+		FROM run
+		WHERE status = 'running'
+		AND NOT EXISTS (SELECT 1 FROM round WHERE round.run_id = run.id AND round.started >= ?)`, cutoff)
+	if err != nil {
+		return normalizeDBError(ctx, err)
+	}
+	for rows.Next() {
+		var id, heartbeatType, intervalType string
+		var heartbeat, interval sql.NullFloat64
+		if err := rows.Scan(&id, &heartbeat, &heartbeatType, &interval, &intervalType); err != nil {
+			return closePruneRows(ctx, rows, normalizeDBError(ctx, err))
+		}
+		if !heartbeat.Valid || (heartbeatType != "integer" && heartbeatType != "real") {
+			return closePruneRows(ctx, rows, fmt.Errorf("running run %q has nonnumeric heartbeat", id))
+		}
+		if _, err := timeFromEpoch(heartbeat.Float64); err != nil {
+			return closePruneRows(ctx, rows, fmt.Errorf("running run %q has invalid heartbeat: %w", id, err))
+		}
+		if interval.Valid {
+			if intervalType != "integer" && intervalType != "real" {
+				return closePruneRows(ctx, rows, fmt.Errorf("running run %q has nonnumeric interval", id))
+			}
+			if _, err := durationFromSeconds(interval.Float64); err != nil {
+				return closePruneRows(ctx, rows, fmt.Errorf("running run %q has invalid interval: %w", id, err))
+			}
+		} else if intervalType != "null" {
+			return closePruneRows(ctx, rows, fmt.Errorf("running run %q has invalid nullable interval", id))
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return closePruneRows(ctx, rows, normalizeDBError(ctx, err))
+	}
+	return closePruneRows(ctx, rows, nil)
+}
+
+func closePruneRows(ctx context.Context, rows *sql.Rows, primary error) error {
+	if closeErr := rows.Close(); closeErr != nil {
+		closeErr = normalizeDBError(ctx, closeErr)
+		if primary != nil {
+			return errors.Join(primary, closeErr)
+		}
+		return closeErr
+	}
+	return primary
 }
 
 // pruneCutoff copies and clamps days before doing arithmetic. When the requested
