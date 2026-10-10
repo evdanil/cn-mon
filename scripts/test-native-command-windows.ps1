@@ -121,7 +121,7 @@ try {
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q report=NO_COLOR-empty console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE output-loss=product-stderr-only useful-rounds>=2 q=input-alive report=complete history=stopped input=restored',
-        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked selection=verified write=pending db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked console-suspend=pause write=pending metadata=responsive db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored blocked-parent=preserved cause=logged',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful exit=0 history=stopped input=restored output=restored cursor=restored',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful second=hard-blocked-finalization=pass input=restored output=restored cursor=restored'
@@ -145,8 +145,8 @@ try {
     if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE output-loss=product-stderr-only useful-rounds>=2 q=input-alive report=complete history=stopped input=restored') -ne 1) {
         throw 'private-console output-handle-loss test did not emit exactly one useful-work and report marker'
     }
-    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked selection=verified write=pending db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored') -ne 1) {
-        throw 'private-console display-block test did not prove real selection, blocked write, persisted stop, and emergency restore'
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked console-suspend=pause write=pending metadata=responsive db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored') -ne 1) {
+        throw 'private-console display-block test did not prove console output suspension, blocked write, persisted stop, and emergency restore'
     }
     if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored blocked-parent=preserved cause=logged') -ne 1) {
         throw 'private-console error-path test did not emit exactly one restoration/preservation marker'

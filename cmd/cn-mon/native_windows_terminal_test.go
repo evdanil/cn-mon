@@ -35,16 +35,12 @@ import (
 )
 
 var (
-	nativeWriteConsoleInput  = windowsKernel32.NewProc("WriteConsoleInputW")
-	nativeGetConsoleCursor   = windowsKernel32.NewProc("GetConsoleCursorInfo")
-	nativeSetConsoleCursor   = windowsKernel32.NewProc("SetConsoleCursorInfo")
-	nativeReadConsoleOutput  = windowsKernel32.NewProc("ReadConsoleOutputCharacterW")
-	nativeReadConsoleAttrs   = windowsKernel32.NewProc("ReadConsoleOutputAttribute")
-	nativeSetConsoleWindow   = windowsKernel32.NewProc("SetConsoleWindowInfo")
-	nativeGetConsoleWindow   = windowsKernel32.NewProc("GetConsoleWindow")
-	nativeGetSelectionInfo   = windowsKernel32.NewProc("GetConsoleSelectionInfo")
-	nativeUser32             = windows.NewLazySystemDLL("user32.dll")
-	nativeSendMessageTimeout = nativeUser32.NewProc("SendMessageTimeoutW")
+	nativeWriteConsoleInput = windowsKernel32.NewProc("WriteConsoleInputW")
+	nativeGetConsoleCursor  = windowsKernel32.NewProc("GetConsoleCursorInfo")
+	nativeSetConsoleCursor  = windowsKernel32.NewProc("SetConsoleCursorInfo")
+	nativeReadConsoleOutput = windowsKernel32.NewProc("ReadConsoleOutputCharacterW")
+	nativeReadConsoleAttrs  = windowsKernel32.NewProc("ReadConsoleOutputAttribute")
+	nativeSetConsoleWindow  = windowsKernel32.NewProc("SetConsoleWindowInfo")
 )
 
 const nativeWindowsEnableVT = 0x0004
@@ -68,14 +64,6 @@ type nativeConsoleKeyEvent struct {
 	UnicodeChar     uint16
 	ControlKeyState uint32
 }
-
-type nativeConsoleSelectionInfo struct {
-	Flags     uint32
-	Selection windows.SmallRect
-	Anchor    windows.Coord
-}
-
-const nativeConsoleSelectionInProgress = 0x0001
 
 func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	requireNativeCommand(t)
@@ -768,12 +756,18 @@ func TestNativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked(t *tes
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	if _, err := io.WriteString(control, "begin-mark-block\n"); err != nil {
-		t.Fatalf("request actual console Mark selection: %v", err)
+	if _, err := io.WriteString(control, "begin-pause-block\n"); err != nil {
+		t.Fatalf("request actual console output suspension: %v", err)
 	}
 	blocked := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_WRITE_BLOCKED", 5*time.Second)
-	if !strings.Contains(blocked, "selection=true write_pending=true metadata=true") {
-		t.Fatalf("console display freeze was not witnessed: %q", blocked)
+	var pauseRecordsWritten uint32
+	_, pauseRecordErr := fmt.Sscanf(blocked, "CNMON_WINDOWS_CONSOLE_WRITE_BLOCKED pause_requested=true pause_records_written=%d", &pauseRecordsWritten)
+	if !strings.Contains(blocked, "pause_requested=true") ||
+		!strings.Contains(blocked, "write_pending=true") ||
+		!strings.Contains(blocked, "metadata=true") ||
+		!strings.Contains(blocked, "input_mode_restored=true") ||
+		pauseRecordErr != nil || pauseRecordsWritten > 1 {
+		t.Fatalf("console output suspension was not witnessed: %q", blocked)
 	}
 	if _, err := lockConn.ExecContext(context.Background(), "ROLLBACK"); err != nil {
 		t.Fatalf("release SQLite barrier while display remains blocked: %v", err)
@@ -816,7 +810,7 @@ func TestNativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked(t *tes
 	if _, err := done(); err != nil {
 		t.Fatalf("blocked-display bootstrap: %v", err)
 	}
-	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked selection=verified write=pending db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored")
+	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE display-output=blocked console-suspend=pause write=pending metadata=responsive db=stopped second-ctrl-c=130 input=restored output=restored cursor=restored")
 }
 
 func TestNativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization(t *testing.T) {
@@ -1085,23 +1079,28 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 	go func() { childDone <- childWait() }()
 	childFinished := false
 	outputHandleLost := false
-	selectionActive := false
+	consoleOutputMayBeSuspended := false
 	var consoleWriteDone chan error
 	defer func() {
-		if childFinished {
-			if selectionActive {
-				_ = endNativeWindowsConsoleSelection(input)
+		if !childFinished {
+			_ = childKill()
+		}
+		if consoleOutputMayBeSuspended {
+			_ = resumeNativeWindowsConsoleOutput(input)
+			consoleOutputMayBeSuspended = false
+		}
+		if consoleWriteDone != nil {
+			select {
+			case <-consoleWriteDone:
+			case <-time.After(2 * time.Second):
 			}
-			return
 		}
-		_ = childKill()
-		if selectionActive {
-			_ = endNativeWindowsConsoleSelection(input)
-		}
-		select {
-		case <-childDone:
-		case <-time.After(5 * time.Second):
-			_ = childRelease()
+		if !childFinished {
+			select {
+			case <-childDone:
+			case <-time.After(5 * time.Second):
+				_ = childRelease()
+			}
 		}
 	}()
 	commands := make(chan string, 4)
@@ -1119,20 +1118,20 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 		case err := <-childDone:
 			childFinished = true
 			_ = childRelease()
-			if selectionActive {
-				if err := endNativeWindowsConsoleSelection(input); err != nil {
-					t.Fatalf("leave real console Mark selection after child exit: %v", err)
+			if consoleOutputMayBeSuspended {
+				if err := resumeNativeWindowsConsoleOutput(input); err != nil {
+					t.Fatalf("resume private console after child exit: %v", err)
 				}
-				selectionActive = false
-				if consoleWriteDone != nil {
-					select {
-					case writeErr := <-consoleWriteDone:
-						if writeErr != nil {
-							t.Fatalf("drain console write after leaving selection: %v", writeErr)
-						}
-					case <-time.After(5 * time.Second):
-						t.Fatal("console write remained blocked after leaving Mark selection")
+				consoleOutputMayBeSuspended = false
+			}
+			if consoleWriteDone != nil {
+				select {
+				case writeErr := <-consoleWriteDone:
+					if writeErr != nil {
+						t.Fatalf("drain console write after output resume: %v", writeErr)
 					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("console write remained blocked after resuming output")
 				}
 			}
 			stdoutFile.Close()
@@ -1173,33 +1172,39 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 				}
 				outputHandleLost = true
 				fmt.Fprintln(os.Stdout, "CNMON_WINDOWS_OUTPUT_HANDLE_LOST stream=stderr source_invalid=true")
-			case "begin-mark-block":
-				if selectionActive {
-					t.Fatal("console Mark selection is already active")
+			case "begin-pause-block":
+				if consoleOutputMayBeSuspended {
+					t.Fatal("console output suspension is already active")
 				}
-				if err := beginNativeWindowsConsoleSelection(); err != nil {
-					t.Fatalf("enter actual console Mark selection: %v", err)
+				pauseWritten, suspended, err := suspendNativeWindowsConsoleOutput(input)
+				if suspended {
+					consoleOutputMayBeSuspended = true
 				}
-				selectionActive = true
-				var inputMode, outputMode uint32
-				var cursor nativeConsoleCursorInfo
-				if err := windows.GetConsoleMode(input, &inputMode); err != nil {
-					t.Fatalf("query console input mode during selection: %v", err)
-				}
-				if err := windows.GetConsoleMode(consoleOut, &outputMode); err != nil {
-					t.Fatalf("query console output mode during selection: %v", err)
-				}
-				cursorResult, _, cursorErr := nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&cursor)))
-				if cursorResult == 0 {
-					t.Fatalf("query cursor during selection: %v", cursorErr)
+				if err != nil {
+					t.Fatalf("suspend actual console output with VK_PAUSE: %v", err)
 				}
 				consoleWriteDone = make(chan error, 1)
 				go func() { consoleWriteDone <- writeNativeWindowsConsoleProbe(consoleOut) }()
 				select {
 				case writeErr := <-consoleWriteDone:
-					t.Fatalf("real console write completed during Mark selection; metadata=%#x/%#x cursor=%+v error=%v", inputMode, outputMode, cursor, writeErr)
+					t.Fatalf("real console write completed despite VK_PAUSE suspension: %v", writeErr)
 				case <-time.After(500 * time.Millisecond):
-					fmt.Fprintln(os.Stdout, "CNMON_WINDOWS_CONSOLE_WRITE_BLOCKED selection=true write_pending=true metadata=true")
+					var inputMode, outputMode uint32
+					var cursor nativeConsoleCursorInfo
+					if err := windows.GetConsoleMode(input, &inputMode); err != nil {
+						t.Fatalf("query input metadata while WriteConsole is blocked: %v", err)
+					}
+					if err := windows.GetConsoleMode(consoleOut, &outputMode); err != nil {
+						t.Fatalf("query output metadata while WriteConsole is blocked: %v", err)
+					}
+					cursorResult, _, cursorErr := nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&cursor)))
+					if cursorResult == 0 {
+						t.Fatalf("query cursor metadata while WriteConsole is blocked: %v", cursorErr)
+					}
+					if inputMode&windows.ENABLE_LINE_INPUT != 0 {
+						t.Fatalf("fixture did not restore active input mode while console output was suspended: %#x", inputMode)
+					}
+					fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CONSOLE_WRITE_BLOCKED pause_requested=true pause_records_written=%d write_pending=true metadata=true input_mode_restored=true input_mode=%08x output_mode=%08x cursor_visible=%t\n", pauseWritten, inputMode, outputMode, cursor.Visible != 0)
 				}
 			case "q":
 				if err := writeNativeWindowsConsoleKey(input, 'q', 'Q', true); err != nil {
@@ -1418,98 +1423,81 @@ func nativeWindowsProcessIsRunning(pid uint32) bool {
 	return windows.GetExitCodeProcess(process, &code) == nil && code == 259 // STILL_ACTIVE
 }
 
-func nativeConsoleSelection() (bool, error) {
-	var info nativeConsoleSelectionInfo
-	result, _, callErr := nativeGetSelectionInfo.Call(uintptr(unsafe.Pointer(&info)))
-	if result == 0 {
-		if callErr == syscall.Errno(0) {
-			callErr = errors.New("GetConsoleSelectionInfo failed")
-		}
-		return false, callErr
+func suspendNativeWindowsConsoleOutput(input windows.Handle) (uint32, bool, error) {
+	var activeMode uint32
+	if err := windows.GetConsoleMode(input, &activeMode); err != nil {
+		return 0, false, fmt.Errorf("read active console input mode: %w", err)
 	}
-	return info.Flags&nativeConsoleSelectionInProgress != 0, nil
+	if activeMode&windows.ENABLE_LINE_INPUT != 0 {
+		return 0, false, fmt.Errorf("expected active cbreak input mode, got %#x", activeMode)
+	}
+	if err := windows.SetConsoleMode(input, activeMode|windows.ENABLE_LINE_INPUT); err != nil {
+		return 0, false, fmt.Errorf("temporarily enable line input for VK_PAUSE: %w", err)
+	}
+	written, writeErr := writeNativeWindowsConsoleControlKey(input, 0x13) // VK_PAUSE is intercepted by conhost while line input is enabled.
+	suspended := writeErr == nil
+	restoreErr := restoreNativeWindowsConsoleInputMode(input, activeMode)
+	if writeErr != nil {
+		return written, suspended, writeErr
+	}
+	if restoreErr != nil {
+		return written, suspended, restoreErr
+	}
+	if written > 1 {
+		return written, suspended, fmt.Errorf("WriteConsoleInputW reported more records than requested for VK_PAUSE: written=%d", written)
+	}
+	return written, suspended, nil
 }
 
-func sendNativeWindowsConsoleMessage(message, wparam, lparam uintptr, timeout uint32) error {
-	hwnd, _, callErr := nativeGetConsoleWindow.Call()
-	if hwnd == 0 {
-		return errors.New("GetConsoleWindow returned no private console window")
+func resumeNativeWindowsConsoleOutput(input windows.Handle) error {
+	var activeMode uint32
+	if err := windows.GetConsoleMode(input, &activeMode); err != nil {
+		return fmt.Errorf("read console input mode before resume: %w", err)
 	}
-	var result uintptr
-	callResult, _, callErr := nativeSendMessageTimeout.Call(hwnd, message, wparam, lparam, 0x0002|0x0001, uintptr(timeout), uintptr(unsafe.Pointer(&result))) // SMTO_ABORTIFHUNG | SMTO_BLOCK
-	if callResult == 0 {
-		if callErr == syscall.Errno(0) {
-			callErr = errors.New("SendMessageTimeoutW failed")
-		}
-		return callErr
+	if err := windows.SetConsoleMode(input, activeMode|windows.ENABLE_LINE_INPUT); err != nil {
+		return fmt.Errorf("temporarily enable line input for resume key: %w", err)
+	}
+	_, writeErr := writeNativeWindowsConsoleControlKey(input, 0x20) // Space is consumed by conhost to clear CONSOLE_SUSPENDED.
+	restoreErr := restoreNativeWindowsConsoleInputMode(input, activeMode)
+	if writeErr != nil {
+		return writeErr
+	}
+	if restoreErr != nil {
+		return restoreErr
 	}
 	return nil
 }
 
-func beginNativeWindowsConsoleSelection() error {
-	if active, err := nativeConsoleSelection(); err != nil {
-		return err
-	} else if active {
-		return errors.New("console selection was already active")
+func restoreNativeWindowsConsoleInputMode(input windows.Handle, mode uint32) error {
+	if err := windows.SetConsoleMode(input, mode); err != nil {
+		return fmt.Errorf("restore console input mode: %w", err)
 	}
-	if err := sendNativeWindowsConsoleMessage(0x0112, 0xFFF2, 0, 2_000); err != nil { // WM_SYSCOMMAND, ID_CONSOLE_MARK (Windows Terminal's public conhost resource.h)
-		return fmt.Errorf("request console Mark command: %w", err)
+	var observed uint32
+	if err := windows.GetConsoleMode(input, &observed); err != nil || observed != mode {
+		return fmt.Errorf("console input mode after restore=%#x want %#x: %v", observed, mode, err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		active, err := nativeConsoleSelection()
-		if err != nil {
-			return err
-		}
-		if active {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return errors.New("console Mark command did not enter selection mode")
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
+	return nil
 }
 
-func endNativeWindowsConsoleSelection(input windows.Handle) error {
-	if active, err := nativeConsoleSelection(); err != nil {
-		return err
-	} else if !active {
-		return nil
-	}
-	if err := sendNativeWindowsConsoleMessage(0x0100, 0x1B, 0, 2_000); err != nil { // WM_KEYDOWN VK_ESCAPE
-		return fmt.Errorf("send Escape to leave console Mark mode: %w", err)
-	}
-	if err := sendNativeWindowsConsoleMessage(0x0101, 0x1B, 0, 2_000); err != nil { // WM_KEYUP VK_ESCAPE
-		return fmt.Errorf("send Escape key-up to leave console Mark mode: %w", err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	fallbackUsed := false
-	for {
-		active, err := nativeConsoleSelection()
-		if err != nil {
-			return err
+func writeNativeWindowsConsoleControlKey(input windows.Handle, virtualKey uint16) (uint32, error) {
+	var event nativeConsoleInputRecord
+	event.EventType = 0x0001 // KEY_EVENT
+	key := (*nativeConsoleKeyEvent)(unsafe.Pointer(&event.Event[0]))
+	key.KeyDown = 1
+	key.RepeatCount = 1
+	key.VirtualKeyCode = virtualKey
+	written := uint32(0)
+	result, _, callErr := nativeWriteConsoleInput.Call(uintptr(input), uintptr(unsafe.Pointer(&event)), 1, uintptr(unsafe.Pointer(&written)))
+	if result == 0 {
+		if callErr == syscall.Errno(0) {
+			callErr = errors.New("WriteConsoleInputW failed for conhost control key")
 		}
-		if !active {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			if fallbackUsed {
-				return errors.New("console remained in Mark selection after bounded Escape fallback")
-			}
-			// Some conhost implementations consume the Escape input record instead
-			// of the window message; provide one actual key-event fallback.
-			if err := writeNativeWindowsConsoleKey(input, '\x1b', 0x1B, true); err != nil {
-				return err
-			}
-			if err := writeNativeWindowsConsoleKey(input, '\x1b', 0x1B, false); err != nil {
-				return err
-			}
-			fallbackUsed = true
-			deadline = time.Now().Add(2 * time.Second)
-		}
-		time.Sleep(25 * time.Millisecond)
+		return written, callErr
 	}
+	if written > 1 {
+		return written, fmt.Errorf("WriteConsoleInputW reported %d records for one conhost control key", written)
+	}
+	return written, nil
 }
 
 func writeNativeWindowsConsoleProbe(consoleOut windows.Handle) error {
