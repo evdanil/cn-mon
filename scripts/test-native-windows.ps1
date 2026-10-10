@@ -17,6 +17,8 @@ $createdAliases = [System.Collections.Generic.List[object]]::new()
 $createdRules = [System.Collections.Generic.List[string]]::new()
 $createdUser = $null
 $userCredential = $null
+$ip4If = $null
+$ip6If = $null
 $nativeExe = Join-Path $artifactDir 'probe-native.test.exe'
 $nestedNativeExe = Join-Path $artifactDir 'pro-bing-native.test.exe'
 
@@ -108,13 +110,23 @@ try {
 
     $ip4If = (Get-NetIPAddress -AddressFamily IPv4 -IPAddress '127.0.0.1' -ErrorAction Stop | Select-Object -First 1).InterfaceIndex
     $ip6If = (Get-NetIPAddress -AddressFamily IPv6 -IPAddress '::1' -ErrorAction Stop | Select-Object -First 1).InterfaceIndex
+    foreach ($interface in @(@{ Index = $ip4If; Family = 'IPv4' }, @{ Index = $ip6If; Family = 'IPv6' })) {
+        Get-NetIPInterface -InterfaceIndex $interface.Index -AddressFamily $interface.Family |
+            Select-Object InterfaceIndex, InterfaceAlias, AddressFamily, Dhcp, ConnectionState, InterfaceMetric |
+            Format-List | Out-String | ForEach-Object { Write-Log "native test interface:`n$_" }
+    }
     foreach ($address in @('127.0.0.2', 'fd42:636e:1::2')) {
         if (Get-NetIPAddress -IPAddress $address -ErrorAction SilentlyContinue) { throw "refusing to reuse preexisting test alias $address" }
     }
-    $alias4 = New-NetIPAddress -InterfaceIndex $ip4If -IPAddress '127.0.0.2' -PrefixLength 8 -SkipAsSource $true -ErrorAction Stop
+    $alias4 = New-NetIPAddress -InterfaceIndex $ip4If -IPAddress '127.0.0.2' -PrefixLength 8 -SkipAsSource $true -PolicyStore ActiveStore -ErrorAction Stop
     $createdAliases.Add($alias4)
-    $alias6 = New-NetIPAddress -InterfaceIndex $ip6If -IPAddress 'fd42:636e:1::2' -PrefixLength 128 -SkipAsSource $true -ErrorAction Stop
+    $alias6 = New-NetIPAddress -InterfaceIndex $ip6If -IPAddress 'fd42:636e:1::2' -PrefixLength 128 -SkipAsSource $true -PolicyStore ActiveStore -ErrorAction Stop
     $createdAliases.Add($alias6)
+    foreach ($interface in @(@{ Index = $ip4If; Family = 'IPv4' }, @{ Index = $ip6If; Family = 'IPv6' })) {
+        Get-NetIPAddress -InterfaceIndex $interface.Index -AddressFamily $interface.Family |
+            Select-Object IPAddress, AddressFamily, PrefixLength, AddressState, SkipAsSource, PolicyStore |
+            Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log "native test interface addresses:`n$_" }
+    }
     foreach ($expected in @(@{ Address = '127.0.0.2'; Family = 'IPv4' }, @{ Address = 'fd42:636e:1::2'; Family = 'IPv6' })) {
         $ready = $false
         for ($attempt = 0; $attempt -lt 50; $attempt++) {
@@ -161,7 +173,10 @@ try {
 } catch {
     $exitCode = 1
     Write-Log "FAIL $($_.Exception.Message)`n$($_.ScriptStackTrace)"
-    Write-GitHubFailure 'cn-mon native Windows harness' $_.Exception.Message
+    $failureDetails = $_.Exception.Message
+    if ($_.InvocationInfo.PositionMessage) { $failureDetails += "`n$($_.InvocationInfo.PositionMessage)" }
+    if ($_.ScriptStackTrace) { $failureDetails += "`n$($_.ScriptStackTrace)" }
+    Write-GitHubFailure 'cn-mon native Windows harness' $failureDetails
 } finally {
     foreach ($group in $createdRules) {
         try {
@@ -179,7 +194,7 @@ try {
     }
     foreach ($address in @($createdAliases | Sort-Object { $_.IPAddress } -Descending)) {
         try {
-            Remove-NetIPAddress -InterfaceIndex $address.InterfaceIndex -IPAddress $address.IPAddress -Confirm:$false -ErrorAction Stop
+            Remove-NetIPAddress -InterfaceIndex $address.InterfaceIndex -IPAddress $address.IPAddress -PolicyStore ActiveStore -Confirm:$false -ErrorAction Stop
             Write-Log "removed temporary alias=$($address.IPAddress)"
         } catch {
             $exitCode = 1
