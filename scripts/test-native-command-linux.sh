@@ -99,11 +99,26 @@ run_permission_role() {
 	fi
 }
 
+permission_dir=$(mktemp -d /tmp/cn-mon-native-command-role.XXXXXX)
+trap 'rm -rf -- "$permission_dir"' EXIT
+chmod 755 "$permission_dir"
+install -m 755 "$command_binary" "$permission_dir/cn-mon"
+install -m 755 "$test_binary" "$permission_dir/cn-mon-command.test"
+if [[ -n "$(getcap -n "$permission_dir/cn-mon" "$permission_dir/cn-mon-command.test")" ]]; then
+	message='staged native command role executables unexpectedly carry file capabilities'
+	echo "::error title=cn-mon Linux permission setup::$message" >&2
+	exit 1
+fi
+
 run_permission_role granted sudo -n env CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 \
-	CNMON_NATIVE_COMMAND_EXPECT_PROBE=granted CNMON_NATIVE_COMMAND_BINARY="$command_binary" "$test_binary"
-run_permission_role denied sudo -n setpriv --reuid=65534 --regid=65534 --clear-groups \
-	--bounding-set=-net_raw --inh-caps=-net_raw --ambient-caps=-net_raw env \
-	CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 CNMON_NATIVE_COMMAND_EXPECT_PROBE=denied \
-	CNMON_NATIVE_COMMAND_BINARY="$command_binary" "$test_binary"
+	CNMON_NATIVE_COMMAND_EXPECT_PROBE=granted CNMON_NATIVE_COMMAND_BINARY="$permission_dir/cn-mon" \
+	"$permission_dir/cn-mon-command.test"
+(
+	cd /tmp
+	run_permission_role denied sudo -n setpriv --reuid=65534 --regid=65534 --clear-groups \
+		--bounding-set=-net_raw --inh-caps=-net_raw --ambient-caps=-net_raw env \
+		TMPDIR=/tmp CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 CNMON_NATIVE_COMMAND_EXPECT_PROBE=denied \
+		CNMON_NATIVE_COMMAND_BINARY="$permission_dir/cn-mon" "$permission_dir/cn-mon-command.test"
+)
 
 echo '::notice title=cn-mon native Linux command::linux/amd64 CGO=0 built-command history/JSON, INI/CLI retention, signals/private processes, pause/resume, closed stdout, and explicit CAP_NET_RAW granted/denied ICMP roles passed'

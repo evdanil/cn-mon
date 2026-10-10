@@ -47,7 +47,7 @@ var (
 	windowsAttachConsole         = windowsKernel32.NewProc("AttachConsole")
 	windowsSetConsoleCtrlHandler = windowsKernel32.NewProc("SetConsoleCtrlHandler")
 	windowsGenerateCtrlEvent     = windowsKernel32.NewProc("GenerateConsoleCtrlEvent")
-	windowsPeekNamedPipe         = windowsKernel32.NewProc("PeekNamedPipe")
+	windowsGetNamedPipeInfo      = windowsKernel32.NewProc("GetNamedPipeInfo")
 )
 
 type nativeWindowsCommand struct {
@@ -178,15 +178,41 @@ func TestNativeCommandWindowsPreInputCtrlCDoesNoStartupIO(t *testing.T) {
 	}
 	defer stdinRead.Close()
 	defer stdinWrite.Close()
+	input := "127.0.0.1\n" + strings.Repeat("# held input\n", 128*1024)
+	inBufferSize, outBufferSize, err := windowsPipeBufferSizes(stdinRead)
+	if err != nil {
+		t.Fatalf("get held stdin pipe buffer sizes: %v", err)
+	}
+	bufferSize := max(inBufferSize, outBufferSize)
+	if bufferSize == 0 || uint64(bufferSize) >= uint64(len(input)) {
+		t.Fatalf("held stdin length %d must exceed measured pipe buffer sizes %d/%d", len(input), inBufferSize, outBufferSize)
+	}
 	command := startWindowsCommandWithStdin(t, binary, directory, database, logFile, []string{"--format", "json", "--file", "-"}, stdinRead, stdinWrite)
 	defer command.killIfRunning()
-	// Feed a valid object but retain the write end. PeekNamedPipe reaching zero
-	// proves ReadObjects consumed that data and is now waiting for EOF.
-	if _, err := io.WriteString(stdinWrite, "127.0.0.1\n"); err != nil {
-		t.Fatalf("write held stdin object: %v", err)
+	// Keep stdin open after writing more than the measured anonymous pipe buffer.
+	// Completion proves the child consumed some input into ReadObjects' io.ReadAll;
+	// because the write end remains open, io.ReadAll cannot return and startup I/O
+	// must not begin. Using PeekNamedPipe here can block on this synchronous pipe.
+	written := make(chan error, 1)
+	go func() {
+		count, err := io.WriteString(stdinWrite, input)
+		if err == nil && count != len(input) {
+			err = io.ErrShortWrite
+		}
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatalf("write held stdin input: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("child did not consume held stdin input within 10s")
 	}
-	if err := waitWindowsPipeDrained(stdinRead, 5*time.Second); err != nil {
-		t.Fatalf("wait until target input was consumed: %v", err)
+	select {
+	case <-command.done:
+		t.Fatal("child exited after consuming stdin input but before Ctrl+C")
+	default:
 	}
 	if err := sendPrivateConsoleCtrlC(command.cmd.Process.Pid); err != nil {
 		t.Fatalf("send startup Ctrl+C: %v", err)
@@ -540,23 +566,22 @@ func sendPrivateConsoleCtrlC(pid int) error {
 	return nil
 }
 
-func waitWindowsPipeDrained(pipe *os.File, limit time.Duration) error {
-	deadline := time.Now().Add(limit)
-	for time.Now().Before(deadline) {
-		var available uint32
-		ok, _, callErr := windowsPeekNamedPipe.Call(pipe.Fd(), 0, 0, 0, uintptr(unsafe.Pointer(&available)), 0)
-		if ok == 0 {
-			if callErr != syscall.Errno(0) {
-				return fmt.Errorf("PeekNamedPipe: %w", callErr)
-			}
-			return errors.New("PeekNamedPipe failed")
+func windowsPipeBufferSizes(pipe *os.File) (uint32, uint32, error) {
+	var flags, outBufferSize, inBufferSize, maxInstances uint32
+	result, _, callErr := windowsGetNamedPipeInfo.Call(
+		pipe.Fd(),
+		uintptr(unsafe.Pointer(&flags)),
+		uintptr(unsafe.Pointer(&outBufferSize)),
+		uintptr(unsafe.Pointer(&inBufferSize)),
+		uintptr(unsafe.Pointer(&maxInstances)),
+	)
+	if result == 0 {
+		if callErr != syscall.Errno(0) {
+			return 0, 0, callErr
 		}
-		if available == 0 {
-			return nil
-		}
-		time.Sleep(20 * time.Millisecond)
+		return 0, 0, errors.New("GetNamedPipeInfo failed")
 	}
-	return fmt.Errorf("stdin still has unread bytes after %s", limit)
+	return inBufferSize, outBufferSize, nil
 }
 
 func detachWindowsConsole() error {
