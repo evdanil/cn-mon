@@ -109,7 +109,8 @@ func TestCLIListAndShowRenderEveryFormat(t *testing.T) {
 			}
 			seedCommandHistory(t, database, request)
 			runtime := commandTestRuntime(dir, logPath, monitor.RunDeps{})
-			for _, mode := range [][]string{{"--list"}, {"--show", request.Key[:8]}} {
+			runtime.isTerminal = func(io.Writer) bool { return true }
+			for _, mode := range [][]string{{"--list"}, {"--show", request.Key[:8]}, {"--follow", request.Key[:8]}} {
 				args := append([]string(nil), mode...)
 				if format != "" {
 					args = append(args, "--format", format)

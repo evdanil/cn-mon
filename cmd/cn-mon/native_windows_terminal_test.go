@@ -34,6 +34,7 @@ import (
 var (
 	nativeWriteConsoleInput = windowsKernel32.NewProc("WriteConsoleInputW")
 	nativeGetConsoleCursor  = windowsKernel32.NewProc("GetConsoleCursorInfo")
+	nativeSetConsoleCursor  = windowsKernel32.NewProc("SetConsoleCursorInfo")
 	nativeReadConsoleOutput = windowsKernel32.NewProc("ReadConsoleOutputCharacterW")
 	nativeReadConsoleAttrs  = windowsKernel32.NewProc("ReadConsoleOutputAttribute")
 	nativeSetConsoleWindow  = windowsKernel32.NewProc("SetConsoleWindowInfo")
@@ -297,7 +298,12 @@ func TestNativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole(t *testin
 	requireNativeCommand(t)
 	binary := buildNativeCommand(t)
 	directory := t.TempDir()
-	database := filepath.Join(directory, "missing-parent", "history.db")
+	blockedParent := filepath.Join(directory, "blocked-parent")
+	blockedParentContents := []byte("regular-file-blocking-history-directory")
+	if err := os.WriteFile(blockedParent, blockedParentContents, 0o600); err != nil {
+		t.Fatalf("create regular-file history parent blocker: %v", err)
+	}
+	database := filepath.Join(blockedParent, "history.db")
 	logPath := filepath.Join(directory, "history-error.log")
 	stdoutPath := filepath.Join(directory, "history-error.stdout.json")
 	listener, port := nativeLoopbackListener(t)
@@ -339,10 +345,18 @@ func TestNativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole(t *testin
 	if _, err := done(); err != nil {
 		t.Fatalf("history-error bootstrap: %v", err)
 	}
-	if _, err := os.Stat(filepath.Dir(database)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("history-open error created missing parent: stat err=%v", err)
+	blocker, err := os.ReadFile(blockedParent)
+	if err != nil || !bytes.Equal(blocker, blockedParentContents) {
+		t.Fatalf("history-open error changed file blocking parent creation: contents=%q err=%v", blocker, err)
 	}
-	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored missing-parent=preserved")
+	logBytes, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read history-error log: %v", err)
+	}
+	if !bytes.Contains(logBytes, []byte("history disabled after storage error")) || !bytes.Contains(logBytes, []byte(blockedParent)) {
+		t.Fatalf("history-error log does not preserve actual blocked-parent cause: %q", logBytes)
+	}
+	t.Log("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored blocked-parent=preserved cause=logged")
 }
 
 func TestNativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole(t *testing.T) {
@@ -439,6 +453,9 @@ func TestNativeCommandWindowsPrivateConsoleUppercaseQRestoresConsole(t *testing.
 	var baselineAttr uint16
 	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
 		t.Fatalf("parse bootstrap readiness %q: pid=%d err=%v", ready, childPID, err)
+	}
+	if !baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
+		t.Fatalf("table-report fixture baseline cursor_visible=%t output_mode=%#x; want visible cursor and VT disabled", baselineCursor, baselineOutput)
 	}
 	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds > 0 }); err != nil {
 		t.Fatalf("wait for active round before Q: %v", err)
@@ -600,17 +617,46 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 	if err := windows.GetConsoleMode(consoleOut, &outputModeBeforeBootstrap); err != nil {
 		t.Fatalf("read initial console output mode: %v", err)
 	}
-	var initialScreen windows.ConsoleScreenBufferInfo
-	if err := windows.GetConsoleScreenBufferInfo(consoleOut, &initialScreen); err != nil {
-		t.Fatalf("read initial console dimensions: %v", err)
+	// CREATE_NEW_CONSOLE inherits runner console capabilities on hosted Windows
+	// images. Normalize the private console fixture to VT-off, then record that
+	// exact baseline so product cleanup must restore the controlled state.
+	if outputModeBeforeBootstrap&nativeWindowsEnableVT != 0 {
+		if err := windows.SetConsoleMode(consoleOut, outputModeBeforeBootstrap&^nativeWindowsEnableVT); err != nil {
+			t.Fatalf("disable inherited VT mode in private console fixture: %v", err)
+		}
+	}
+	if err := windows.GetConsoleMode(consoleOut, &outputModeBeforeBootstrap); err != nil {
+		t.Fatalf("read normalized private console output mode: %v", err)
+	}
+	if outputModeBeforeBootstrap&nativeWindowsEnableVT != 0 {
+		t.Fatalf("private console fixture retained VT mode after normalization: %#x", outputModeBeforeBootstrap)
 	}
 	var baselineCursor nativeConsoleCursorInfo
-	result, _, cursorErr := nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&baselineCursor)))
-	if result == 0 {
+	cursorResult, _, cursorErr := nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&baselineCursor)))
+	if cursorResult == 0 {
 		if cursorErr == syscall.Errno(0) {
 			cursorErr = errors.New("GetConsoleCursorInfo failed")
 		}
-		t.Fatalf("read baseline console cursor before product start: %v", cursorErr)
+		t.Fatalf("read private console cursor baseline: %v", cursorErr)
+	}
+	if baselineCursor.Visible == 0 {
+		baselineCursor.Visible = 1
+		cursorResult, _, cursorErr = nativeSetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&baselineCursor)))
+		if cursorResult == 0 {
+			if cursorErr == syscall.Errno(0) {
+				cursorErr = errors.New("SetConsoleCursorInfo failed")
+			}
+			t.Fatalf("normalize private console cursor baseline: %v", cursorErr)
+		}
+	}
+	baselineCursor = nativeConsoleCursorInfo{}
+	cursorResult, _, cursorErr = nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&baselineCursor)))
+	if cursorResult == 0 || baselineCursor.Visible == 0 {
+		t.Fatalf("private console fixture does not have a visible cursor: cursor=%+v error=%v", baselineCursor, cursorErr)
+	}
+	var initialScreen windows.ConsoleScreenBufferInfo
+	if err := windows.GetConsoleScreenBufferInfo(consoleOut, &initialScreen); err != nil {
+		t.Fatalf("read initial console dimensions: %v", err)
 	}
 	callback := syscall.NewCallback(func(event uint32) uintptr {
 		if event == windowsCtrlCEvent {

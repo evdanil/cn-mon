@@ -116,7 +116,7 @@ try {
         "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=$elevatedSid",
         "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=follower-only writer=still-running restored=true sid=$elevatedSid",
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
-        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored missing-parent=preserved',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored blocked-parent=preserved cause=logged',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful exit=0 history=stopped input=restored output=restored cursor=restored',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful second=hard-blocked-finalization=pass input=restored output=restored cursor=restored'
     )
@@ -133,7 +133,7 @@ try {
     if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped') -ne 1) {
         throw 'private-console uppercase-Q test did not emit exactly one key and restoration marker'
     }
-    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored missing-parent=preserved') -ne 1) {
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored blocked-parent=preserved cause=logged') -ne 1) {
         throw 'private-console error-path test did not emit exactly one restoration/preservation marker'
     }
     if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful exit=0 history=stopped input=restored output=restored cursor=restored') -ne 1) {
