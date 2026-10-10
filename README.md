@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components passed their Linux and Windows gates. M3 adds persistent history APIs and cross-language interoperability; all seven required history cases passed on hosted Linux and Windows CI. The current [PR 10](https://github.com/evdanil/gotest/pull/10) is awaiting final review and merge. The CLI does not yet connect these components; target runs and JSON reports are M4 work, while table/CSV/Markdown reports and live display/readers remain M5 work. This is not yet an operational network monitor.
+`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components passed their Linux and Windows gates. M3's persistent history APIs and cross-language interoperability merged in [PR 10](https://github.com/evdanil/gotest/pull/10); all 12 CI checks passed, and external review reported no remaining findings. M4 target-run and JSON work is active but not implemented yet, so valid target and history commands remain unavailable. Table/CSV/Markdown reports and live display/readers remain M5 work. This is not yet an operational network monitor.
 
 ## Current CLI
 
@@ -112,7 +112,7 @@ CGO_ENABLED=0 go test -v -timeout=8m \
 The native interop gate records the Python and Go SQLite versions, source
 revision and checksums, WAL page details and bounded WAL growth during held
 snapshots, and sampled Go heap usage. The seven required cases passed on both
-hosted platforms at candidate commit `6b1dc93236fff50828957b92698993d4de07de7c`.
+hosted platforms in final M3 validation at commit `f0825828ad9e3b8176c80f55d7d449ccd2707cc2`.
 The runs verified these runtime versions and the same two pinned raw source
 hashes on each platform:
 
@@ -124,8 +124,8 @@ hashes on each platform:
 Both source files were checked against their pinned raw SHA-256 values:
 `ping_store.py` `326ab0570dc7bf3fc43209d21d00f46f8c2b8778ea0daf4cf905c52a8c337fd4`;
 `ping_history.py` `d491678b240f23d26a2673951ba293eabff3a992d2840bbc1219a63ec31a89bf`.
-See the [Linux native history job](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473559)
-and [Windows native history job](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473348)
+See the [Linux native history job](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741491)
+and [Windows native history job](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741369)
 for the runtime annotations and passing case markers. The checked-in fallback history path is
 `~/.cn-ping-history.db` with 30-day retention; the five INI settings and CLI
 override precedence are listed in [Configuration foundation](#configuration-foundation).
@@ -136,8 +136,9 @@ and close the database, then copy it. Do not copy only a live `.db` file while
 its WAL may contain committed pages. Hosted `govulncheck` v1.8.0 scans against
 the official Go vulnerability database passed for both `linux/amd64` and
 `windows/amd64`, covering `./cmd/...` and `./internal/...` at the same candidate
-commit; see the [Linux scan](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473308)
-and [Windows scan](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473356).
+commit; see the [final M3 CI run](https://github.com/evdanil/gotest/actions/runs/38045035366)
+for the Linux and Windows scan jobs. The [final review confirmation](https://github.com/evdanil/gotest/pull/10#issuecomment-6096607314)
+records the merge-gate result.
 The Python dependency is test-only and is not part of the application runtime.
 
 ## Configuration foundation

@@ -1,6 +1,6 @@
 # cn-mon application specification
 
-Status: [M0 specification](https://github.com/evdanil/gotest/pull/7), [M1 foundation](https://github.com/evdanil/gotest/pull/8) and [M2 native probes](https://github.com/evdanil/gotest/pull/9) are merged; M2 merged as `dc4cb25`. [M3 history, PR #10](https://github.com/evdanil/gotest/pull/10) has passed component review and native Linux/Windows Python/Go interoperability checks. Official hosted vulnerability scans have passed on both platforms at the recorded revision. Current-commit CI/external review after the latest validation fixes and the M3 merge gate remain pending. Operational target commands arrive in M4 and history-reader commands in M5.
+Status: [M0 specification](https://github.com/evdanil/gotest/pull/7), [M1 foundation](https://github.com/evdanil/gotest/pull/8), [M2 native probes](https://github.com/evdanil/gotest/pull/9) and [M3 history](https://github.com/evdanil/gotest/pull/10) are merged. M3 merged as `e5b49af` after all 12 checks passed at `f0825828`, internal Astra approval and [external review without remaining findings](https://github.com/evdanil/gotest/pull/10#issuecomment-6096607314). M4 orchestration/JSON is active at its architecture amendment; its implementation and native command gates have not passed. Human formats, live terminal and history-reader commands remain M5 work.
 
 Destination: `evdanil/gotest`. Product and executable: **cn-mon** (`cn-mon.exe` on Windows).
 
@@ -30,6 +30,8 @@ cn-mon -v|--version
 
 COMMON: [-c|--config PATH] [-t|--theme THEME] [-l|--log-file PATH] [--log-level LEVEL]
 ```
+
+Milestone boundary: the merged CLI currently provides parsing/help/version while operational modes remain unavailable. M4 will enable only target runs explicitly selecting `--format json`; recognized human formats and reader modes must continue to exit 3 before target/configuration/log/history/network I/O until M5. The final default remains `table`, and help/README must describe the temporary boundary accurately.
 
 Options work before or after targets; `--` ends option parsing. No arguments prints a usage diagnostic and exits 2; it never opens a menu. `-h/--help` and `-v/--version` exit 0 without reading configuration/targets or opening logs, history or network sockets. Reject unknown options, malformed option values, and combinations outside the four modes; repeated scalar options use their last value, including when short and long spellings are mixed, as in the reference CLI. `--list`, `--show`, and `--follow` are mutually exclusive and accept no targets, `-f/--file`, `--tcp`, `--every`, or `--for`; `--list` also rejects `--since`. `--history-days` applies to target runs only; common options apply to all four modes. A request ID is a case-insensitive hexadecimal prefix of 4–64 characters; it must identify exactly one stored full key.
 
@@ -227,16 +229,16 @@ The implemented M3 boundary is `internal/history`; it imports neither the monito
 
 Snapshots capture a global round-ID high-water mark and use opaque cursors retaining original SQLite REAL sort keys. Page limits default/cap at 500; round pages additionally bound the host-detail budget. `Spacing` calculates the selected lower median in SQLite rather than retaining every start in Go. Nullable times/intervals and SQL NULL versus `{}` TCP details stay distinct. Transactions use context-aware manual BEGIN/COMMIT, with an independent bounded rollback on failure; failed cleanup discards the connection and fails the Store. Product startup pruning, in-memory fallback/exit 3 and operational readers below remain M4/M5 integrations, not implemented commands in M3.
 
-M3 native evidence at commit `6b1dc93236fff50828957b92698993d4de07de7c` in [PR #10 run 38043224090](https://github.com/evdanil/gotest/actions/runs/38043224090):
+M3 native evidence at final PR head `f0825828ad9e3b8176c80f55d7d449ccd2707cc2` in [PR #10 run 38045035366](https://github.com/evdanil/gotest/actions/runs/38045035366):
 
 | Native platform | Go / CGO | Go driver / SQLite | Python / its SQLite | Required history gate |
 | --- | --- | --- | --- | --- |
-| Linux amd64 | 1.27.2 / disabled | 0.35.6 / 3.53.4 | 3.12.14 / 3.45.1 | [All seven passed](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473559) |
-| Windows amd64 | 1.27.2 / disabled | 0.35.6 / 3.53.4 | 3.12.10 / 3.49.1 | [All seven passed](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473348) |
+| Linux amd64 | 1.27.2 / disabled | 0.35.6 / 3.53.4 | 3.12.14 / 3.45.1 | [All seven passed](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741491) |
+| Windows amd64 | 1.27.2 / disabled | 0.35.6 / 3.53.4 | 3.12.10 / 3.49.1 | [All seven passed](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741369) |
 
 Both jobs verified cn-tool commit `2e2f3c40ef6718486f1ca4477f9145029ec495fa` and the exact `ping_store.py`/`ping_history.py` SHA-256 values recorded in [fixture provenance](../internal/history/testdata/python-source-v1/provenance.json); required PASS/result markers exclude silent skips. The tests establish both Python→Go→Python and Go→Python→Go reads/appends; concurrent default-VFS WAL access and pruning; stable held Go/Python snapshots across the opposite writer's commit/prune, followed by updated fresh reads; and killed-writer recovery in both languages. The killed Go helper left no partial round and preserved committed rows; the killed Python helper's uncommitted status update left the prior completed value intact. Fixture generation and the separate local Linux run used Python 3.12.14/SQLite 3.53.1; hosted Linux's linked SQLite differs as shown above. Fixture/semantic provenance stays unchanged, and platform-specific test interpreters are not product runtime dependencies.
 
-The source-generated fixture and manifests regenerated byte-identically. Configuration/Store composition passed for fallback, `.cn`, explicit `-c` and CLI-selected paths, append/readback and settings-driven 90/30-day retention. Schema-v2/corrupt-file preservation, ambiguous/mixed-case prefixes, start-order/tied-start pagination and full-prune/same-key ID non-reuse also passed component review. Complete summary metadata validation, pre-delete status/scalar guards and the requested-request running-only status guard passed local regression/race/vet checks and independent review. Pruning rejects invalid interpreted values with zero deletions and preserves all raw history tables, including unrelated eligible history; running-only reads reject malformed statuses even outside the cursor without inspecting unrelated requests. Positive fixtures retain SQLite affinity behavior, NULL/long intervals, the exact cutoff boundary and huge-retention scope. Current-commit hosted checks and external-review resolution remain required before merging M3. None of these component results activates operational commands.
+The source-generated fixture and manifests regenerated byte-identically. Configuration/Store composition passed for fallback, `.cn`, explicit `-c` and CLI-selected paths, append/readback and settings-driven 90/30-day retention. Schema-v2/corrupt-file preservation, ambiguous/mixed-case prefixes, start-order/tied-start pagination and full-prune/same-key ID non-reuse also passed component review. Complete summary metadata validation, pre-delete status/scalar guards and the requested-request running-only status guard passed local regression/race/vet checks and independent review. Pruning rejects invalid interpreted values with zero deletions and preserves all raw history tables, including unrelated eligible history; running-only reads reject malformed statuses even outside the cursor without inspecting unrelated requests. Positive fixtures retain SQLite affinity behavior, NULL/long intervals, the exact cutoff boundary and huge-retention scope. All 12 final-head checks and both reviews completed before M3 merged; the final [Linux history](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741491) and [Windows history](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741369) gates passed at `f0825828ad9e3b8176c80f55d7d449ccd2707cc2`. None of these component results activates operational commands.
 
 Logical schema (column names and meanings are compatibility requirements):
 
@@ -323,6 +325,99 @@ Use Go modules with the M3 dependency floor Go 1.26.0 and pinned development/CI 
 All new first-party code and documentation are **Apache-2.0**, allowing reuse without a requirement to disclose derivative source. M0 replaced the destination's original GPL-3.0 project declaration for this authorized utility; inventory retained material and do not copy third-party GPL/copyleft code. Changing a root LICENSE cannot relicense someone else's material. Preserve cn-tool Apache attribution for adapted logic; preserve pro-bing's root MIT license and Apache source headers rather than asserting one overrides the other; retain Digineo MIT attribution if code is copied. Include `NOTICE`/third-party notices as applicable and an auditable dependency-license inventory, including SQLite bindings/transitives and any UI library. No GPL, LGPL, AGPL, SSPL, or other source-disclosure/copyleft runtime or build dependency is allowed. Pin/checksum modules and run dependency vulnerability checks proportionately; do not disable verification or claim a license audit before performing it.
 
 Release versioned `cn-mon_<version>_linux_amd64.tar.gz` and `cn-mon_<version>_windows_amd64.zip`, each containing the binary, concise usage/permission documentation, LICENSE and third-party notices, plus published SHA-256 checksums. `--version` reports version and revision. Run the built binaries on both native OSes; publish the tested OS/toolchain versions and the actual ICMP permission requirements. No installer, automatic update, signing service, or packaging ecosystem is required for v1.
+
+### 10.1. M4 run-engine contract
+
+This amendment is the implementation contract for active M4, rechecked against merged M3 `e5b49af`; it does not claim M4 is implemented. Extend `internal/monitor` beside the pure tracker, add `internal/output` for JSON, and keep command startup/signals/logger/exit in `cmd/cn-mon`. One state owner mutates tracker/history state. The injected boundaries are a clock, the existing probe methods and the existing history methods; snapshots remain concrete M3 values, with real temporary SQLite in integration tests. No generic task/event/store framework is needed.
+
+The shared declarations are fixed as follows; existing `Row`, `Stats`, `HostSummary`, target/probe types and history DTOs retain their merged meanings:
+
+```go
+// internal/monitor/run_types.go
+type ClockReading struct {
+    Wall time.Time
+    Mono time.Duration // elapsed from this clock's own monotonic origin
+}
+type Clock interface {
+    Now() ClockReading
+    After(time.Duration) <-chan time.Time
+}
+type Prober interface {
+    Resolve(context.Context, []string) ([]probe.Resolved, error)
+    ProbeBatch(context.Context, []probe.Resolved, []int) ([]probe.Result, error)
+}
+type History interface {
+    Close() error
+    BeginRun(context.Context, history.Request, history.RunStart) (int64, error)
+    RecordRound(context.Context, string, history.RoundInput) (int64, error)
+    Heartbeat(context.Context, string, time.Time, *time.Duration) error
+    EndRun(context.Context, string, time.Time, string) error
+    Prune(context.Context, time.Time, *big.Int) (int64, error)
+    View(context.Context, func(*history.Snapshot) error) error
+}
+type RunPlan struct {
+    Request     target.Request
+    Interval    *time.Duration
+    Duration    *time.Duration
+    Since       *time.Time
+    OwnRunOnly  bool
+    Source      *string
+    HistoryFile string
+    HistoryDays *big.Int
+    RunID       string
+    Hostname    string
+    PID         int64
+}
+type RunDeps struct {
+    Clock       Clock
+    Prober      Prober
+    OpenHistory func(context.Context, string) (History, error)
+    Stop        <-chan struct{} // nil disables graceful external stop
+    Note        func(string)   // optional; caller sends diagnostics/status to stderr
+}
+type LatestRow struct {
+    Host string
+    Row  Row // existing monitor.Row: Address, Result, TCP
+}
+type RunOutcome struct {
+    Stats                       Stats
+    Seen                        []HostSummary
+    Latest                      []LatestRow
+    CurrentRounds, EarlierRounds int
+    SkippedSlots                int64
+    Interval                    *time.Duration
+    Unresolved                  []string // sorted, never-resolved names
+    ProbeFailed, TCPOpen, TCPRequired, Stopped bool
+    HistoryError                error // first store error only
+}
+func Run(ctx context.Context, plan RunPlan, deps RunDeps) (RunOutcome, error)
+func RunExitCode(outcome RunOutcome, invalid bool) int
+func NewClock() Clock
+
+// internal/output/run_json.go
+func WriteRunJSON(w io.Writer, request target.Request,
+    outcome monitor.RunOutcome, rejected []target.Rejection) error
+```
+
+`RunPlan` receives resolved settings and a valid canonical request, including caller-supplied UUID, hostname/PID, optional file basename, fixed since cutoff and effective schedule. The command supplies the implicit 60-second interval for `--for` alone. It creates IDs with the existing UUID dependency; no dependency is added just for orchestration. `RunOutcome` contains final aggregates/current latest rows, not every stored round. `Run` returns ordinary probe/history degradation in that outcome; its error return represents hard cancellation, invalid internal input or an unexpected engine/prober failure. `RunExitCode` uses section 9's current-versus-earlier precedence; available output survives ordinary failures.
+
+The engine's context is the hard-abort lifetime. A separate graceful `Stop` closes once and cancels work, including startup history reads/lock waits, resolving and incomplete probes. Completed-round writes and finalization use the hard context, so a first stop cannot erase completed work. The command's second Ctrl+C cancels that context and exits 130 independently of blocked workers, SQLite, logging or output. Direct callers cancel the context without a process exit. Workers return values through bounded channels and are joined; they never mutate the tracker or Store.
+
+The private run clock exposes `newRunClock(Clock) *runClock` and `Now() runReading`, where `runReading` has `Run time.Time` (corrected), `Wall time.Time` (uncorrected UTC) and `Mono time.Duration`. Construction consumes no reading; each Now uses exactly one underlying reading. Only the state owner and its synchronous history helpers call it. Use corrected run time for origin/slots/sample timestamps and raw wall time for heartbeat. Preserve the rollback/forward-jump rules in section 5.
+
+The history bridge owns `openHistory()` as the single OpenWriter → Prune → initial `readEarlier()` View → BeginRun sequence. The engine captures origin first and never repeats those stages. Fold earlier pages into unpublished aggregates, with both prospective-own-start and without-own-start cron-spacing trackers when necessary, and publish only after the full View/transaction succeeds. Skip earlier folding for OwnRunOnly. Record only successful run creation via `runRecorded`; the returned integer request ID has no M4 consumer. A failed initial view supplies no partial history. A genuine store failure detaches/closes once, reports once, continues completed rounds in memory and forces exit 3; do not reopen or retry an uncertain commit.
+
+The completed-round boundary is successful return of the final ProbeBatch with every host accounted for, or successful complete resolution when no hosts can be probed. If a stop races with result publication, join and inspect that result: successful final completion is retained; canceled or nonfinal work is discarded. Do not add a later stop check that erases it. Commit structured probe execution errors only with complete rounds, even when an echo/seen state masks them. `recordCompleted(round history.RoundInput)` performs storage only. After it returns, measure elapsed from the actual round beginning, then call `heartbeat(elapsed *time.Duration, completed bool)` using the hard context for completed rounds; persistence time is included, startup and the heartbeat call's own duration are excluded. Fold/count that complete round exactly once even if persistence fails. `endHistory(status)` finalizes/cleans up once; normal reachability/probe failures use source status finished, a graceful stop uses stopped, and an unexpected engine failure uses failed.
+
+A narrow first-use addition, `history.CancellationOnly(err, cause error) bool`, distinguishes expected work cancellation from history failure without driver types leaking into monitor. Private `canceledDBError` retains observed context and single driver cause; private `cleanupFailure` plus `markCleanup(error) error` identifies independent cleanup. Preserve original error identities through Unwrap. Tag causal BUSY/INTERRUPT only when the operation context is already done and the driver error is a single cause, never an arbitrary joined tree. The classifier accepts only the exact non-nil Canceled/DeadlineExceeded cause, matching causal tags and wrappers/joins containing only accepted causes. Any cleanup tag or other independent error rejects cancellation-only classification. The bridge also requires a canceled work context and an active hard context before treating it as graceful stop.
+
+Mark every independently observed rollback/discard/connection-close/store-close failure as cleanup. This includes reader `closeRows`/`failRows` and pruning `closePruneRows`, both standalone and joined failures, even when the close error equals the cancellation sentinel or is BUSY/INTERRUPT. The history-bridge owner alone edits those narrow sites in values/tx/store/read/prune and the new classifier/tests; retention predicates, status/scalar validation and successful-COMMIT semantics stay unchanged. Explicit Store.Close failure always remains a history failure. Tests must prove that intentional cancellation cannot hide cleanup failure.
+
+Command startup remains parse/validate → requested input → settings/logging → canonical request → run. Reject still-unimplemented modes/formats before data I/O. Input read failure/empty collection exits 2 before config/logging; all-rejected input prints empty JSON sections plus rejections and exits 2 without history/network. Mixed input continues. Before the run phase, subscribe only to non-ignored Ctrl+C, which exits 130 promptly even with held stdin. On Linux add non-ignored TERM/HUP only at the running transition, before opening history; preserve their original pre-run disposition and inherited ignores. In the running phase they request graceful stop. Keep control active through finalization/reporting; install no terminal modes/keyboard reader until M5.
+
+The JSON writer performs no configuration/history/network I/O and uses section 8's exact typed fields, arrays and UTC-second `+00:00` times. Emit canonical-order seen/latest rows, numerically ordered TCP fields, every sampled period, four arrays even when empty and exactly one final newline. Final target periods are closed; no new persistence/status/error fields are introduced. Input rejections precede sorted never-resolved names. Human-format default table remains unchanged while unavailable until M5. A structurally identified closed downstream pipe is quiet with the already-computed ordinary exit; other output errors return 3. Native tests must cover Go's stdout SIGPIPE behavior and Windows pipe error mapping rather than suppressing arbitrary EINVAL.
+
+The history-bridge owner moves only the generated ExpectedSpacing cross-package equivalence test from same-package history tests into `monitor/run_history_test.go`, seeded through public Store APIs. This removes the history-test → monitor → history cycle; keep history-local spacing/malformed/raw-REAL fixtures and do not duplicate the median algorithm. The development plan assigns exclusive files and required native/TDD gates.
 
 ## 11. Acceptance scenarios
 
