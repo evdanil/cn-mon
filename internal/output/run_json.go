@@ -20,68 +20,7 @@ import (
 // cn-tool 0.8.0's ping_monitor.py JSON path (commit 2e2f3c40ef6718486f1ca4477f9145029ec495fa);
 // the numeric interval and UTC-year formatting follow the reviewed native spec.
 func WriteRunJSON(w io.Writer, request target.Request, outcome monitor.RunOutcome, rejected []target.Rejection) error {
-	ports := sortedPorts(request.Ports)
-	report := runReport{
-		Seen:    make([]seenJSON, 0, len(outcome.Seen)),
-		Latest:  make([]latestJSON, 0, len(outcome.Latest)),
-		Summary: make([]summaryJSON, 0, 1),
-		NotFound: make([]notFoundJSON, 0,
-			len(rejected)+len(outcome.Unresolved)),
-	}
-
-	for _, i := range orderedIndices(request.Hosts, outcome.Seen, func(row monitor.HostSummary) string { return row.Host }) {
-		row := outcome.Seen[i]
-		online := make([]onlineJSON, 0, len(row.Periods))
-		for _, period := range row.Periods {
-			from, to := formatTimestamp(period.From), formatTimestamp(period.To)
-			online = append(online, onlineJSON{From: from, To: to})
-		}
-		report.Seen = append(report.Seen, seenJSON{
-			host: row.Host, address: row.Address, latest: row.Latest,
-			tcp: row.TCP, ports: ports,
-			firstSeen: formatTimestamp(row.FirstSeen), lastSeen: formatTimestamp(row.LastSeen),
-			seenRounds: row.SeenRounds, rounds: row.Rounds, online: online,
-		})
-	}
-
-	for _, i := range orderedIndices(request.Hosts, outcome.Latest, func(row monitor.LatestRow) string { return row.Host }) {
-		row := outcome.Latest[i]
-		report.Latest = append(report.Latest, latestJSON{
-			host: row.Host, address: row.Row.Address, result: row.Row.Result,
-			tcp: row.Row.TCP, ports: ports,
-		})
-	}
-
-	if outcome.Stats.Rounds > 0 {
-		var interval *float64
-		if outcome.Interval != nil {
-			seconds := outcome.Interval.Seconds()
-			interval = &seconds
-		}
-		report.Summary = append(report.Summary, summaryJSON{
-			ID: shortID(request.Key), Started: formatTimestamp(outcome.Stats.FirstRound),
-			Ended: formatTimestamp(outcome.Stats.LastRound), Rounds: outcome.CurrentRounds,
-			EarlierRounds: outcome.EarlierRounds, Interval: interval,
-			Hosts: len(request.Hosts), Seen: outcome.Stats.Seen, Answering: outcome.Stats.Answering,
-		})
-	}
-
-	for _, item := range rejected {
-		report.NotFound = append(report.NotFound, notFoundJSON{Object: item.Object, Reason: item.Reason})
-	}
-	unresolved := append([]string(nil), outcome.Unresolved...)
-	sort.Strings(unresolved)
-	for _, host := range unresolved {
-		report.NotFound = append(report.NotFound, notFoundJSON{Object: host, Reason: "no such host"})
-	}
-
-	encoder := json.NewEncoder(w)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(report); err != nil {
-		return fmt.Errorf("encode target run JSON: %w", err)
-	}
-	return nil
+	return writeRunJSON(w, request, outcome, rejected, false, false)
 }
 
 type runReport struct {
@@ -109,8 +48,29 @@ type notFoundJSON struct {
 }
 
 type onlineJSON struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	From string  `json:"from"`
+	To   *string `json:"to"`
+}
+
+type historyReport struct {
+	Seen    []seenJSON    `json:"seen"`
+	Latest  []latestJSON  `json:"latest"`
+	Summary []summaryJSON `json:"summary"`
+}
+
+type requestsReport struct {
+	Requests []requestJSON `json:"requests"`
+}
+
+type requestJSON struct {
+	ID        string `json:"id"`
+	Targets   string `json:"targets"`
+	TCP       string `json:"tcp"`
+	Runs      int64  `json:"runs"`
+	Rounds    int64  `json:"rounds"`
+	LastRound string `json:"last_round"`
+	State     string `json:"state"`
+	Detail    string `json:"detail"`
 }
 
 type seenJSON struct {

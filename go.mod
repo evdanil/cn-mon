@@ -13,8 +13,10 @@ require (
 require (
 	github.com/google/uuid v1.6.0
 	github.com/ncruces/go-sqlite3 v0.35.6
+	github.com/rivo/uniseg v0.4.7
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.44.0
 )
 
 replace github.com/prometheus-community/pro-bing => ./third_party/pro-bing

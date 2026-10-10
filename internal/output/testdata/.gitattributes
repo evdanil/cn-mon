@@ -1,1 +1,5 @@
 run-json-source-v1.json -text
+run-human-source-v1.csv -text
+run-human-source-v1.md -text
+theme-source-v1.json -text
+live-header-source-v1.json -text

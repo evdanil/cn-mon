@@ -25,7 +25,7 @@ fi
 
 set +e
 CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 CNMON_NATIVE_COMMAND_BINARY="$command_binary" \
-	go test -v -timeout=10m -run '^TestNativeCommand(LoopbackHistoryJSON|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)$' ./cmd/cn-mon >"$main_log" 2>&1
+	go test -tags native -v -timeout=10m -run '^TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)$' ./cmd/cn-mon >"$main_log" 2>&1
 result=$?
 set -e
 cat "$main_log"
@@ -40,6 +40,9 @@ fi
 
 required=(
 	'--- PASS: TestNativeCommandLoopbackHistoryJSON'
+	'--- PASS: TestNativeCommandLinuxPTYQuitRestoresTerminal'
+	'--- PASS: TestNativeCommandLinuxPTYKeysRemainActiveWithRedirectedStderr'
+	'--- PASS: TestNativeCommandLinuxRestoresScreenBeforeBlockedFinalReport'
 	'--- PASS: TestNativeCommandINIHistoryRetention'
 	'--- PASS: TestNativeCommandPreInputInterrupt'
 	'--- PASS: TestNativeCommandRunSignalsAndSecondInterrupt'
@@ -61,6 +64,9 @@ required=(
 	'CNMON_NATIVE_COMMAND_INHERITED_TERM pre-input=runtime-default'
 	'CNMON_NATIVE_COMMAND_INHERITED_TERM active-run=graceful history=stopped'
 	'CNMON_NATIVE_COMMAND_PAUSE_RESUME paused=no-round-growth resumed=next-round'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored report=complete termios=restored cursor=visible history=finished'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY redirected-stderr=keys-active q=graceful termios=restored'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY blocked-report prefilled='
 	'CNMON_NATIVE_COMMAND_CLOSED_STDOUT'
 )
 for marker in "${required[@]}"; do

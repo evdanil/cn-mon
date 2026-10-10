@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. M1–M3 are merged; M3 merged in [PR 10](https://github.com/evdanil/gotest/pull/10) after all 12 checks passed and external review reported no remaining findings. M4 is merged in [PR 11](https://github.com/evdanil/gotest/pull/11) at `e54f4266177eb1319d9216c79809ced7e05f078d`; [all 16 checks passed](https://github.com/evdanil/gotest/actions/runs/38089907904), and [external review found no remaining issues](https://github.com/evdanil/gotest/pull/11#issuecomment-6102685974). M4 enables target runs only when `--format json` is explicit. M5 planning is active; reader commands, human formats, and live display are not implemented yet. The final default format remains table.
+`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. M1–M3 are merged; M3 merged in [PR 10](https://github.com/evdanil/gotest/pull/10) after all 12 checks passed and external review reported no remaining findings. M4 is merged in [PR 11](https://github.com/evdanil/gotest/pull/11) at `e54f4266177eb1319d9216c79809ced7e05f078d`; [all 16 checks passed](https://github.com/evdanil/gotest/actions/runs/38089907904), and [external review found no remaining issues](https://github.com/evdanil/gotest/pull/11#issuecomment-6102685974). M4 initially enabled target runs only with explicit `--format json`. The M5 working branch now includes table/JSON/CSV/Markdown reports, list/show/follow readers, and best-effort live terminal controls. M5 native acceptance, review, and merge are still in progress.
 
 ## Current CLI
 
@@ -11,13 +11,17 @@ go run ./cmd/cn-mon --help
 go run ./cmd/cn-mon --version
 ```
 
-Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. The only implemented operational target run requires an explicit JSON format:
+Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. Target runs default to a table report and support JSON, CSV, and Markdown:
 
 ```sh
+go run ./cmd/cn-mon --tcp 443 example.com
 go run ./cmd/cn-mon --format json --tcp 443 example.com
+go run ./cmd/cn-mon --list
+go run ./cmd/cn-mon --show REQUEST_ID --format md
+go run ./cmd/cn-mon --follow REQUEST_ID
 ```
 
-That command collects input, resolves configuration and logging, opens history, probes targets, and writes the final JSON report. Exit 0 means the selected success condition was met, exit 1 means the completed run had no selected success, and exit 3 reports probe/history or other execution failure. `--list`, `--show`, `--follow`, and target runs using `table`, `md`, or `csv` are still unavailable and exit 3 before data I/O while M5 implementation is pending.
+Target runs collect input, resolve configuration and logging, probe targets, write completed rounds to history, and render the selected report. Exit 0 means the selected success condition was met, exit 1 means the completed run had no selected success, and exit 3 reports probe/history or other execution failure. List and show are read-only history operations. Follow requires an interactive stderr terminal; `q` stops following and `v` switches the live run display to a table view when the terminal supports it.
 
 For scheduled runs resuming after system suspension, M4 retains the selected slot through ordinary timer jitter, then reselects the first aligned slot at or after the corrected run time once the following slot has arrived. It skips expired slots rather than replaying them. This is an explicit native correction to the pinned Python implementation's overdue-wait behavior, not a claim of Python parity.
 
@@ -118,7 +122,7 @@ component tests alone do not replace those runtime gates.
 ## History foundation
 
 The schema-v1 history store reads and writes databases compatible with the
-pinned cn-tool `PingStore`. An explicit-JSON target run opens the configured
+pinned cn-tool `PingStore`. A target run in any supported report format opens the configured
 database, prunes it using the resolved retention setting, and appends completed
 rounds. The test-only Python helper uses
 the pinned cn-tool source to verify both directions of database interoperability
@@ -183,7 +187,7 @@ The native configuration resolver recognizes five existing cn-tool INI settings:
 | `[logging] logfile` | `--log-file` / `-l` |
 | `[logging] level` | `--log-level` |
 
-Configuration layers, from lower to higher precedence, are built-in defaults, `.cn` beside the resolved executable, the user's `~/.cn` (`%USERPROFILE%\\.cn` on Windows), an optional INI file added with `--config` / `-c`, and explicit setting overrides. The explicit JSON target command uses the resolved history path/retention and logger. Theme selection takes effect with the human renderers when they arrive in M5. See the [configuration contract](docs/APPLICATION_SPEC.md#21-existing-cn-tool-configuration) for parsing and fallback details.
+Configuration layers, from lower to higher precedence, are built-in defaults, `.cn` beside the resolved executable, the user's `~/.cn` (`%USERPROFILE%\\.cn` on Windows), an optional INI file added with `--config` / `-c`, and explicit setting overrides. Target runs and history readers use the resolved history path, retention, and logger. Theme selection applies to human reports and the live screen. See the [configuration contract](docs/APPLICATION_SPEC.md#21-existing-cn-tool-configuration) for parsing and fallback details.
 
 ## Compatibility and license
 

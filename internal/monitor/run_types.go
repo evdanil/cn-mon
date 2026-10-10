@@ -57,6 +57,7 @@ type RunDeps struct {
 	Prober      Prober
 	OpenHistory func(context.Context, string) (History, error)
 	Stop        <-chan struct{}
+	Live        *LiveHooks
 	Note        func(string)
 }
 

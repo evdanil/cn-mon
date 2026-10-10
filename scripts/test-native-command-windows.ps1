@@ -91,7 +91,7 @@ try {
 
     $adminArgs = @(
         '-test.v',
-        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole))$',
+        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization)$',
         '-test.count=1',
         '-test.timeout=8m'
     )
@@ -104,13 +104,43 @@ try {
         '--- PASS: TestNativeCommandWindowsPreInputCtrlCDoesNoStartupIO',
         '--- PASS: TestNativeCommandWindowsClosedStdoutPipeIsQuiet',
         '--- PASS: TestNativeCommandWindowsProbePermissionRole',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleQRestoresConsole',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleQLeavesWriterActive',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleUppercaseQRestoresConsole',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole',
+        '--- PASS: TestNativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization',
         'CNMON_NATIVE_COMMAND_CONFIG ini90=retained cli30=pruned-old-seed recent-round-retained history-path=ini log-path=ini',
         $elevatedRoleMarker,
-        "CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=elevated sid=$elevatedSid icmp=OK exit=0 tcp=open json=pass history=one-round"
+        "CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=elevated sid=$elevatedSid icmp=OK exit=0 tcp=open json=pass history=one-round",
+        "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=$elevatedSid",
+        "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=follower-only writer=still-running restored=true sid=$elevatedSid",
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored missing-parent=preserved',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful exit=0 history=stopped input=restored output=restored cursor=restored',
+        'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful second=hard-blocked-finalization=pass input=restored output=restored cursor=restored'
     )
     if ((Count-MatchingLines $elevated.Output $elevatedRoleMarker) -ne 1 -or
         (Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=elevated sid=$elevatedSid icmp=OK exit=0 tcp=open json=pass history=one-round") -ne 1) {
         throw 'elevated Windows role did not emit exactly one matching identity and result marker'
+    }
+    if ((Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=$elevatedSid") -ne 1) {
+        throw 'private-console test did not emit exactly one matching elevated-role restoration marker'
+    }
+    if ((Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=follower-only writer=still-running restored=true sid=$elevatedSid") -ne 1) {
+        throw 'private-console follower test did not prove q left its writer running'
+    }
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped') -ne 1) {
+        throw 'private-console uppercase-Q test did not emit exactly one key and restoration marker'
+    }
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE error=history-open exit=3 input=restored output=restored cursor=restored missing-parent=preserved') -ne 1) {
+        throw 'private-console error-path test did not emit exactly one restoration/preservation marker'
+    }
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful exit=0 history=stopped input=restored output=restored cursor=restored') -ne 1) {
+        throw 'private-console first-Ctrl+C test did not emit exactly one graceful restoration marker'
+    }
+    if ((Count-MatchingLines $elevated.Output 'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful second=hard-blocked-finalization=pass input=restored output=restored cursor=restored') -ne 1) {
+        throw 'private-console Ctrl+C test did not prove hard-interrupt restoration during blocked finalization'
     }
 
     $name = "cnmc-$([guid]::NewGuid().ToString('N').Substring(0,8))"

@@ -69,12 +69,14 @@ are imported by the application packages:
 | --- | --- | --- | --- |
 | `github.com/prometheus-community/pro-bing` | `v0.9.2-0.20261008151844-bcbba8f702ab` | MIT; retained source headers Apache-2.0 | The Prometheus Authors; Cameron Sparr and contributors |
 | `github.com/google/uuid` | `v1.6.0` | BSD-3-Clause | Google Inc. (2009, 2014) |
+| `github.com/rivo/uniseg` | `v0.4.7` | MIT; generated Unicode property tables use Unicode-DFS-2016 | Oliver Kuederle (2019); Unicode, Inc. (Unicode 15.0 data) |
 | `github.com/ncruces/go-sqlite3` | `v0.35.6` | MIT | Nuno Cruces (2023, 2026) |
 | `github.com/ncruces/go-sqlite3-wasm/v6` | `v6.3.35304` | MIT No Attribution for remaining wrapper code; generated Go retains upstream licenses, including SQLite public domain | Nuno Cruces (2026); SQLite authors |
 | `github.com/ncruces/julianday` | `v1.0.0` | MIT | Nuno Cruces (2022) |
 | `golang.org/x/net` | `v0.56.0` | BSD-3-Clause | The Go Authors (2009) |
 | `golang.org/x/sync` | `v0.23.0` | BSD-3-Clause | The Go Authors (2009) |
 | `golang.org/x/sys` | `v0.48.0` | BSD-3-Clause | The Go Authors (2009) |
+| `golang.org/x/term` | `v0.44.0` | BSD-3-Clause | The Go Authors (2009) |
 
 The full module graph also contains non-imported dependencies used by upstream
 build tooling, tests, and module metadata. These are inherited through the
@@ -107,7 +109,6 @@ requirements or individually listed in root `go.sum`:
 | `github.com/ncruces/wbt` | `v1.0.0` | MIT | Nuno Cruces |
 | `github.com/psanford/httpreadat` | `v0.1.0` | MIT | Upstream authors |
 | `golang.org/x/crypto` | `v0.57.0` | BSD-3-Clause | The Go Authors (2009) |
-| `golang.org/x/term` | `v0.44.0` | BSD-3-Clause | The Go Authors (2009) |
 | `golang.org/x/text` | `v0.42.0` | BSD-3-Clause | The Go Authors (2009) |
 | `golang.org/x/tools` | `v0.50.0` | BSD-3-Clause | The Go Authors (2009) |
 | `lukechampine.com/adiantum` | `v1.1.1` | MIT | Luke Champine (2019) |
@@ -287,4 +288,83 @@ All of the deliverable code in SQLite has been written from scratch. No code
 has been taken from other projects or from the open internet. Every line of
 code can be traced back to its original author, and all of those authors have
 public domain dedications on file.
+```
+
+The github.com/rivo/uniseg v0.4.7 package is distributed under the MIT License
+and includes generated grapheme, line-break, and sentence-break property tables
+derived from Unicode 15.0. Its upstream source files state that the Unicode
+data was retrieved on September 5, 2023. The upstream LICENSE.txt text follows.
+The generated data also carries the Unicode License Agreement:
+
+```text
+MIT License
+
+Copyright (c) 2019 Oliver Kuederle
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+```text
+UNICODE, INC. LICENSE AGREEMENT - DATA FILES AND SOFTWARE
+
+See Terms of Use <https://www.unicode.org/copyright.html>
+for definitions of Unicode Inc.’s Data Files and Software.
+
+NOTICE TO USER: Carefully read the following legal agreement.
+BY DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING UNICODE INC.'S
+DATA FILES ("DATA FILES"), AND/OR SOFTWARE ("SOFTWARE"),
+YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT.
+IF YOU DO NOT AGREE, DO NOT DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE
+THE DATA FILES OR SOFTWARE.
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2022 Unicode, Inc. All rights reserved.
+Distributed under the Terms of Use in https://www.unicode.org/copyright.html.
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Unicode data files and any associated documentation
+(the "Data Files") or Unicode software and any associated documentation
+(the "Software") to deal in the Data Files or Software
+without restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, and/or sell copies of
+the Data Files or Software, and to permit persons to whom the Data Files
+or Software are furnished to do so, provided that either
+(a) this copyright and permission notice appear with all copies
+of the Data Files or Software, or
+(b) this copyright and permission notice appear in associated
+Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT OF THIRD PARTY RIGHTS.
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS
+NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL
+DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THE DATA FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder
+shall not be used in advertising or otherwise to promote the sale,
+use or other dealings in these Data Files or Software without prior
+written authorization of the copyright holder.
 ```
