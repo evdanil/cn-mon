@@ -93,8 +93,11 @@ history databases compatible with the pinned cn-tool `PingStore`; application
 startup does not yet open history or prune it. The test-only Python helper uses
 the pinned cn-tool source to verify both directions of database interoperability
 and concurrent WAL access, including held reader snapshots, pruning, and killed
-writers in both languages. To run that native gate locally, provide Python
-3.12.14 and a checkout of cn-tool at commit
+writers in both languages. The fixture remains generated with Python 3.12.14.
+The interop helper requires Python 3.12.14 on Linux and 3.12.10 on Windows;
+the latter is the newest exact 3.12.x x64 release present in the official
+`actions/python-versions` manifest for Windows. To run the Linux gate locally,
+provide Python 3.12.14 and a checkout of cn-tool at commit
 `2e2f3c40ef6718486f1ca4477f9145029ec495fa`, then run:
 
 ```sh

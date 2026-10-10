@@ -27,6 +27,7 @@ PING_HISTORY_SHA256 = "d491678b240f23d26a2673951ba293eabff3a992d2840bbc1219a63ec
 KEY = "a" * 64
 TARGETS = ["interop.example"]
 HOSTS = ["interop.example", "silent.example"]
+INTEROP_PYTHON_VERSIONS = {"linux": (3, 12, 14), "win32": (3, 12, 10)}
 
 
 def sha256(path: Path) -> str:
@@ -34,6 +35,7 @@ def sha256(path: Path) -> str:
 
 
 def load_reference(source: Path):
+    require_interop_python_version(sys.platform, sys.version_info[:3])
     source = source.resolve(strict=True)
     commit = subprocess.run(
         ["git", "-C", str(source), "rev-parse", "HEAD"],
@@ -60,12 +62,21 @@ def load_reference(source: Path):
     }
 
 
+def require_interop_python_version(platform: str, version: tuple[int, ...]) -> None:
+    expected = INTEROP_PYTHON_VERSIONS.get(platform)
+    if expected is None:
+        raise RuntimeError(f"history interop has no pinned Python version for platform {platform!r}")
+    actual = tuple(version[:3])
+    if actual != expected:
+        expected_text = ".".join(str(part) for part in expected)
+        actual_text = ".".join(str(part) for part in actual)
+        raise RuntimeError(f"history interop on {platform} requires Python {expected_text}, got {actual_text}")
+
+
 def report(source: Path) -> int:
     _, facts = load_reference(source)
     payload = json.dumps(facts, ensure_ascii=True, sort_keys=True)
     print("CNMON_PYTHON_INTEROP_FACTS " + payload)
-    if sys.version_info[:3] != (3, 12, 14):
-        raise RuntimeError(f"interop requires Python 3.12.14, got {sys.version.split()[0]}")
     if "GITHUB_ACTIONS" in os.environ:
         annotation = " ".join(f"{key}={value}" for key, value in facts.items())
         annotation = annotation.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")

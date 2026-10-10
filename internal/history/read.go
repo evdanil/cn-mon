@@ -332,6 +332,9 @@ func readRequestSummary(ctx context.Context, scanner interface{ Scan(...any) err
 		if newestID.String == "" || newestRounds.Int64 < 0 || !utf8.ValidString(newestID.String) || !utf8.ValidString(newestHost.String) || !utf8.ValidString(newestStatus.String) || (newestSource.Valid && !utf8.ValidString(newestSource.String)) {
 			return row, errors.New("newest run has invalid text or round count")
 		}
+		if !validStoredRunStatus(newestStatus.String) {
+			return row, fmt.Errorf("unknown stored run status %q", newestStatus.String)
+		}
 		run := &RunInfo{RunStart: RunStart{ID: newestID.String, Source: nullableStringPointer(newestSource), Host: newestHost.String, PID: newestPID.Int64}, RequestID: id, Status: newestStatus.String, Rounds: newestRounds.Int64}
 		if run.Started, err = timeFromEpoch(newestStarted.Float64); err != nil {
 			return row, fmt.Errorf("invalid newest run start: %w", err)
@@ -384,6 +387,15 @@ func nullableStringPointer(value sql.NullString) *string {
 	}
 	copy := value.String
 	return &copy
+}
+
+func validStoredRunStatus(status string) bool {
+	switch status {
+	case "running", "finished", "stopped", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Snapshot) Runs(requestID int64, runningOnly bool, after *RunCursor, limit int) (RunPage, error) {
@@ -458,6 +470,9 @@ func readRunInfo(ctx context.Context, scanner interface{ Scan(...any) error }) (
 	}
 	if id == "" || requestID <= 0 || !started.Valid || !heartbeat.Valid || rounds < 0 || rowID <= 0 || !utf8.ValidString(id) || !utf8.ValidString(host) || !utf8.ValidString(status) || (source.Valid && !utf8.ValidString(source.String)) {
 		return row, errors.New("stored run has invalid required fields")
+	}
+	if !validStoredRunStatus(status) {
+		return row, fmt.Errorf("unknown stored run status %q", status)
 	}
 	info := RunInfo{RunStart: RunStart{ID: id, Source: nullableStringPointer(source), Host: host, PID: pid}, RequestID: requestID, Status: status, Rounds: rounds}
 	var err error

@@ -342,6 +342,97 @@ func TestRoundPagesOrderStartedThenIDNotCommitOrder(t *testing.T) {
 	}
 }
 
+func TestReadRejectsUnknownAndDerivedRunStatusesWithoutMutation(t *testing.T) {
+	const key = "24156eb156b5bb9d83f75c5e4391db9736dee2ae690bd2c99e8154414d124fff"
+	for _, status := range []string{"unexpected", "", "lost"} {
+		t.Run(fmt.Sprintf("status-%q", status), func(t *testing.T) {
+			writer, reader, _ := readTestOpenPair(t)
+			readTestExec(t, writer, `UPDATE run SET status=? WHERE id=?`, status, "fixture-running-zero-round")
+			checks := []struct {
+				name string
+				read func(*Snapshot) error
+			}{
+				{name: "runs", read: func(snapshot *Snapshot) error { _, err := snapshot.Runs(1, false, nil, 500); return err }},
+				{name: "request", read: func(snapshot *Snapshot) error { _, err := snapshot.Request(key); return err }},
+				{name: "list-summary", read: func(snapshot *Snapshot) error { _, err := snapshot.Requests(nil, 500); return err }},
+			}
+			for _, check := range checks {
+				t.Run(check.name, func(t *testing.T) {
+					err := reader.View(context.Background(), check.read)
+					if err == nil || !strings.Contains(err.Error(), "unknown stored run status") {
+						t.Fatalf("reader accepted status %q: %v", status, err)
+					}
+				})
+			}
+			if got := readTestRunStatus(t, writer, "fixture-running-zero-round"); got != status {
+				t.Fatalf("readers mutated stored status to %q, want %q", got, status)
+			}
+		})
+	}
+}
+
+func TestReadAcceptsAllPersistedRunStatusesInNewestSummaries(t *testing.T) {
+	const key = "24156eb156b5bb9d83f75c5e4391db9736dee2ae690bd2c99e8154414d124fff"
+	writer, reader, _ := readTestOpenPair(t)
+	for _, status := range []string{"running", "finished", "stopped", "failed"} {
+		readTestExec(t, writer, `UPDATE run SET status=? WHERE id=?`, status, "fixture-running-zero-round")
+		err := reader.View(context.Background(), func(snapshot *Snapshot) error {
+			request, err := snapshot.Request(key)
+			if err != nil {
+				return err
+			}
+			if request == nil || request.NewestRun == nil || request.NewestRun.Status != status {
+				t.Fatalf("Request newest status = %+v, want %q", request, status)
+			}
+			page, err := snapshot.Requests(nil, 500)
+			if err != nil {
+				return err
+			}
+			found := false
+			for _, item := range page.Items {
+				if item.ID == request.ID {
+					found = item.NewestRun != nil && item.NewestRun.Status == status
+				}
+			}
+			if !found {
+				t.Fatalf("list summary did not preserve status %q", status)
+			}
+			runs, err := snapshot.Runs(request.ID, false, nil, 500)
+			if err != nil {
+				return err
+			}
+			found = false
+			for _, run := range runs.Items {
+				if run.ID == "fixture-running-zero-round" {
+					found = run.Status == status
+				}
+			}
+			if !found {
+				t.Fatalf("run page did not preserve status %q", status)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("View status %q: %v", status, err)
+		}
+		if got := readTestRunStatus(t, writer, "fixture-running-zero-round"); got != status {
+			t.Fatalf("reader changed status %q to %q", status, got)
+		}
+	}
+}
+
+func readTestRunStatus(t *testing.T, store *Store, id string) string {
+	t.Helper()
+	var status string
+	err := store.withTx(context.Background(), false, func(conn *sql.Conn) error {
+		return conn.QueryRowContext(context.Background(), `SELECT status FROM run WHERE id=?`, id).Scan(&status)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return status
+}
+
 func TestReadRoundWindowCursorSpacingAndUnknownRequest(t *testing.T) {
 	reader, _ := readTestOpenSource(t)
 	if err := reader.View(context.Background(), func(snapshot *Snapshot) error {

@@ -22,8 +22,15 @@ func TestOpenSQLiteURIQuotesFilenameAsData(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantPath, wantHost := sqliteURIPath(filename)
-		if parsed.Scheme != "file" || parsed.Path != wantPath || parsed.Host != wantHost {
-			t.Errorf("URI changed filename data: %q -> scheme=%q path=%q", filename, parsed.Scheme, parsed.Path)
+		gotPath := parsed.Path
+		if parsed.Opaque != "" {
+			gotPath, err = url.PathUnescape(parsed.Opaque)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if parsed.Scheme != "file" || gotPath != wantPath || parsed.Host != wantHost {
+			t.Errorf("URI changed filename data: %q -> scheme=%q host=%q path=%q opaque=%q", filename, parsed.Scheme, parsed.Host, parsed.Path, parsed.Opaque)
 		}
 		query := parsed.Query()
 		wantMode := "rwc"
@@ -44,25 +51,60 @@ func TestOpenSQLiteURIQuotesFilenameAsData(t *testing.T) {
 func TestOpenSQLiteURIQuotesWindowsDriveAndUNC(t *testing.T) {
 	cases := []struct {
 		name, filename, wantHost, wantPath string
+		wantOpaque                         bool
 	}{
-		{"drive", `C:\Users\x\db ?#%.sqlite`, "", "/C:/Users/x/db ?#%.sqlite"},
-		{"unc", `\\server\share\dir\db ?#%.sqlite`, "server", "/share/dir/db ?#%.sqlite"},
+		{"drive", `C:\Users\x\db ?#% ü.sqlite`, "", "C:/Users/x/db ?#% ü.sqlite", true},
+		{"unc", `\\server\share\dir\db ?#%.sqlite`, "server", "/share/dir/db ?#%.sqlite", false},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			location, host := windowsSQLiteURIPath(test.filename)
-			got := (&url.URL{Scheme: "file", Host: host, Path: location, RawQuery: "mode=rwc"}).String()
+			got := sqliteURIForLocation(location, host, false)
 			parsed, err := url.Parse(got)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if parsed.Scheme != "file" || parsed.Host != test.wantHost || parsed.Path != test.wantPath {
-				t.Fatalf("URI %q parsed as host=%q path=%q, want host=%q path=%q", got, parsed.Host, parsed.Path, test.wantHost, test.wantPath)
+			gotPath := parsed.Path
+			if test.wantOpaque {
+				gotPath, err = url.PathUnescape(parsed.Opaque)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if parsed.Scheme != "file" || parsed.Host != test.wantHost || gotPath != test.wantPath {
+				t.Fatalf("URI %q parsed as host=%q path=%q opaque=%q, want host=%q path=%q", got, parsed.Host, parsed.Path, parsed.Opaque, test.wantHost, test.wantPath)
+			}
+			if test.wantOpaque && parsed.Opaque == "" {
+				t.Fatalf("drive URI %q has no opaque drive path", got)
 			}
 			if strings.Contains(parsed.RawQuery, "#") || strings.Contains(parsed.RawQuery, "?") {
 				t.Fatalf("filename characters leaked into query: %q", got)
 			}
 		})
+	}
+}
+
+func TestOpenSQLiteURIWindowsDriveStoreRoundTrip(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows drive URI behavior requires the Windows VFS")
+	}
+	filename := filepath.Join(t.TempDir(), "history space #percent% ü.db")
+	store, err := OpenWriter(context.Background(), filename)
+	if err != nil {
+		t.Fatalf("open Windows history path: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := OpenReader(context.Background(), filename)
+	if err != nil {
+		t.Fatalf("reopen Windows history path: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filename); err != nil {
+		t.Fatalf("store did not create exact Windows path: %v", err)
 	}
 }
 
