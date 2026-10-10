@@ -367,7 +367,7 @@ func parseISODateTime(value string) (time.Time, error) {
 		return date.UTC(), nil
 	}
 	separator, size := utf8.DecodeRuneInString(clock)
-	if separator == utf8.RuneError || size == 0 || len(clock) == size {
+	if separator == utf8.RuneError && size == 1 || size == 0 || len(clock) == size {
 		return time.Time{}, fmt.Errorf("invalid ISO date-time")
 	}
 	clock = clock[size:]

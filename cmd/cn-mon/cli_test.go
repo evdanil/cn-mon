@@ -297,6 +297,7 @@ func TestSinceAcceptsPythonFromISOFormatForms(t *testing.T) {
 		{"2026-10-10T12:30+01:30.5", time.Date(2026, 10, 10, 10, 59, 59, 500000000, time.UTC)},
 		{"2026-10-10T12:30+0130.5", time.Date(2026, 10, 10, 10, 59, 59, 500000000, time.UTC)},
 		{"2026-10-10␟12:30", time.Date(2026, 10, 10, 12, 30, 0, 0, time.UTC)},
+		{"2026-10-10\uFFFD12:30", time.Date(2026, 10, 10, 12, 30, 0, 0, time.UTC)},
 		{"2026-10-10T12:30:45.123456789+020000.123456789", time.Date(2026, 10, 10, 10, 30, 45, 0, time.UTC)},
 	} {
 		got, ownRunOnly, err := parseSince(tc.input, start)
@@ -312,6 +313,9 @@ func TestSinceAcceptsPythonFromISOFormatForms(t *testing.T) {
 		if _, _, err := parseSince(value, time.Now().UTC()); err == nil {
 			t.Errorf("parseSince(%q) accepted a form datetime.fromisoformat rejects", value)
 		}
+	}
+	if _, _, err := parseSince("2026-10-10\xff12:30", time.Now().UTC()); err == nil {
+		t.Error("parseSince accepted malformed UTF-8 in a Go datetime input")
 	}
 }
 
