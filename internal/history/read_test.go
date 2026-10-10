@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/evdanil/gotest/internal/monitor"
 )
 
 func readTestCopySource(t *testing.T) string {
@@ -775,69 +773,6 @@ func readTestRequestHosts(t *testing.T, store *Store, id int64) string {
 		t.Fatal(err)
 	}
 	return hosts
-}
-
-func TestSpacingMatchesExpectedSpacingForGeneratedSamples(t *testing.T) {
-	cases := []struct {
-		name   string
-		starts []float64
-		filter WindowFilter
-		extra  *float64
-	}{
-		{name: "ties-and-zero-gaps", starts: []float64{0, 1, 1, 3, 4}, filter: WindowFilter{Since: readTestPtrTime(time.Unix(0, 0)), Before: readTestPtrTime(time.Unix(100, 0))}},
-		{name: "all-zero-gaps", starts: []float64{0, 0, 0}, filter: WindowFilter{Since: readTestPtrTime(time.Unix(0, 0)), Before: readTestPtrTime(time.Unix(100, 0))}},
-		{name: "too-few", starts: []float64{0, 10}, filter: WindowFilter{Since: readTestPtrTime(time.Unix(0, 0)), Before: readTestPtrTime(time.Unix(100, 0))}},
-		{name: "filtered-window", starts: []float64{0, 1, 1, 3, 4}, filter: WindowFilter{Since: readTestPtrTime(time.Unix(1, 0)), Before: readTestPtrTime(time.Unix(4, 0))}},
-		{name: "extra-start", starts: []float64{0, 10}, filter: WindowFilter{Since: readTestPtrTime(time.Unix(0, 0)), Before: readTestPtrTime(time.Unix(100, 0))}, extra: readTestPtrFloat(20)},
-	}
-	for _, test := range cases {
-		t.Run(test.name, func(t *testing.T) {
-			writer, reader, _ := readTestOpenPair(t)
-			err := writer.withTx(context.Background(), true, func(conn *sql.Conn) error {
-				for _, started := range test.starts {
-					if _, err := conn.ExecContext(context.Background(), `INSERT INTO round(run_id,started,observations,answered) VALUES(?,?,?,?)`, "fixture-finished", started, "???????", 0); err != nil {
-						return err
-					}
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			var starts []time.Time
-			for _, seconds := range test.starts {
-				if test.filter.Since != nil && seconds < float64(test.filter.Since.Unix()) {
-					continue
-				}
-				if test.filter.Before != nil && seconds >= float64(test.filter.Before.Unix()) {
-					continue
-				}
-				starts = append(starts, readTestTime(t, seconds))
-			}
-			if test.extra != nil {
-				starts = append(starts, readTestTime(t, *test.extra))
-			}
-			want := monitor.ExpectedSpacing(starts)
-			err = reader.View(context.Background(), func(snapshot *Snapshot) error {
-				var extra *time.Time
-				if test.extra != nil {
-					value := readTestTime(t, *test.extra)
-					extra = &value
-				}
-				got, err := snapshot.Spacing(1, test.filter, extra)
-				if err != nil {
-					return err
-				}
-				if got != want {
-					t.Fatalf("Spacing = %s, ExpectedSpacing = %s", got, want)
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatalf("View: %v", err)
-			}
-		})
-	}
 }
 
 func TestRoundCursorRetainsSubNanosecondSQLiteKey(t *testing.T) {

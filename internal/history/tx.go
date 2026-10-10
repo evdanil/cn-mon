@@ -44,7 +44,7 @@ func (s *Store) withTxOperation(ctx context.Context, op string, write bool, fn f
 	if _, err := conn.ExecContext(ctx, begin); err != nil {
 		primary := normalizeDBError(ctx, err)
 		if closeErr := conn.Close(); closeErr != nil {
-			primary = errors.Join(primary, closeErr)
+			primary = errors.Join(primary, markCleanup(closeErr))
 		}
 		return s.wrap(op, primary)
 	}
@@ -69,7 +69,7 @@ func (s *Store) withTxOperation(ctx context.Context, op string, write bool, fn f
 		return s.finishFailedTransaction(ctx, op, conn, primary)
 	}
 	if err := conn.Close(); err != nil {
-		return s.wrap(op, err)
+		return s.wrap(op, markCleanup(err))
 	}
 	return nil
 }
@@ -89,7 +89,7 @@ func (s *Store) finishFailedTransaction(ctx context.Context, op string, conn *sq
 	rollbackErr := rollbackTransaction(conn)
 	if rollbackErr != nil {
 		if discardErr := discardConnection(conn); discardErr != nil {
-			rollbackErr = errors.Join(rollbackErr, discardErr)
+			rollbackErr = errors.Join(rollbackErr, markCleanup(discardErr))
 		}
 	}
 	closeErr := conn.Close()
@@ -100,10 +100,10 @@ func (s *Store) finishFailedTransaction(ctx context.Context, op string, conn *sq
 		}
 	}
 	if closeErr != nil {
-		primary = errors.Join(primary, closeErr)
+		primary = errors.Join(primary, markCleanup(closeErr))
 	}
 	if rollbackErr != nil {
-		primary = errors.Join(primary, fmt.Errorf("rollback failed: %w", rollbackErr))
+		primary = errors.Join(primary, markCleanup(fmt.Errorf("rollback failed: %w", rollbackErr)))
 	}
 	return s.wrap(op, primary)
 }

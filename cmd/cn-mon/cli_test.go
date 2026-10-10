@@ -72,7 +72,7 @@ func TestCLIProcessHelper(t *testing.T) {
 	if err := json.Unmarshal([]byte(encoded), &args); err != nil {
 		os.Exit(99)
 	}
-	os.Exit(runCLI(args, os.Stdout, os.Stderr))
+	os.Exit(runCLI(args, os.Stdin, os.Stdout, os.Stderr))
 }
 
 func TestCLIProcessExitCodesAndNoStartupSideEffects(t *testing.T) {
@@ -95,7 +95,9 @@ func TestCLIProcessExitCodesAndNoStartupSideEffects(t *testing.T) {
 		{name: "invalid", args: []string{"--history-file", "", "127.0.0.1"}, code: 2, wantOut: "", wantErr: "--history-file must not be empty"},
 		{name: "empty theme", args: []string{"--theme", "", "127.0.0.1"}, code: 2, wantOut: "", wantErr: "invalid theme"},
 		{name: "empty log level", args: []string{"--log-level", "", "127.0.0.1"}, code: 2, wantOut: "", wantErr: "invalid log level"},
-		{name: "target pending", args: []string{"127.0.0.1"}, code: 3, wantOut: "", wantErr: "not implemented"},
+		{name: "default table remains unavailable before startup", args: []string{"127.0.0.1"}, code: 3, wantOut: "", wantErr: "not implemented"},
+		{name: "JSON input error precedes startup", args: []string{"--format", "json", "--file", "missing-targets.txt"}, code: 2, wantOut: "", wantErr: "read target file"},
+		{name: "human format remains unavailable before input", args: []string{"--format", "csv", "--file", "missing-targets.txt"}, code: 3, wantOut: "", wantErr: "not implemented"},
 		{name: "reader pending", args: []string{"--list"}, code: 3, wantOut: "", wantErr: "not implemented"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,6 +142,91 @@ func TestCLIProcessExitCodesAndNoStartupSideEffects(t *testing.T) {
 				t.Errorf("created files on startup path: %v", names)
 			}
 		})
+	}
+}
+
+func TestAllRejectedTargetEmitsEmptyJSONWithoutOpeningHistory(t *testing.T) {
+	dir := t.TempDir()
+	args, err := json.Marshal([]string{"--format", "json", "--history-file", "must-not-open.db", "999.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIProcessHelper$")
+	cmd.Dir = dir
+	cmd.Env = envWithout(os.Environ(), "HOME", "USERPROFILE", "CNMON_TEST_ARGS")
+	cmd.Env = append(cmd.Env, "HOME="+dir, "USERPROFILE="+dir, "CNMON_TEST_ARGS="+string(args))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	code := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("process start: %v", err)
+		}
+		code = exitErr.ExitCode()
+	}
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2; stderr=%q", code, stderr.String())
+	}
+	var report struct {
+		Seen     []json.RawMessage `json:"seen"`
+		Latest   []json.RawMessage `json:"latest"`
+		Summary  []json.RawMessage `json:"summary"`
+		NotFound []struct {
+			Object string `json:"object"`
+		} `json:"not_found"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("stdout is not JSON: %v; output=%q", err, stdout.String())
+	}
+	if report.Seen == nil || report.Latest == nil || report.Summary == nil || report.NotFound == nil {
+		t.Fatalf("empty report sections must be arrays: %+v", report)
+	}
+	if len(report.Seen) != 0 || len(report.Latest) != 0 || len(report.Summary) != 0 || len(report.NotFound) != 1 || report.NotFound[0].Object != "999.1" {
+		t.Fatalf("all-rejected report = %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "must-not-open.db")); !os.IsNotExist(err) {
+		t.Fatalf("all-rejected input opened history: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cn.log")); err != nil {
+		t.Fatalf("logger should be initialized before canonical target rejection: %v", err)
+	}
+}
+
+func TestLoggingInitializationFailurePrecedesHistory(t *testing.T) {
+	root := t.TempDir()
+	homeFile := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(homeFile, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args, err := json.Marshal([]string{"--format", "json", "--history-file", "must-not-open.db", "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIProcessHelper$")
+	cmd.Dir = root
+	cmd.Env = envWithout(os.Environ(), "HOME", "USERPROFILE", "CNMON_TEST_ARGS")
+	cmd.Env = append(cmd.Env, "HOME="+homeFile, "USERPROFILE="+homeFile, "CNMON_TEST_ARGS="+string(args))
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err = cmd.Run()
+	code := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("process start: %v", err)
+		}
+		code = exitErr.ExitCode()
+	}
+	if code != 3 || !strings.Contains(stderr.String(), "cannot initialize logging") {
+		t.Fatalf("exit=%d stderr=%q, want logging initialization failure/3", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("logger failure wrote report: %q", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "must-not-open.db")); !os.IsNotExist(err) {
+		t.Fatalf("logger initialization failure opened history: %v", err)
 	}
 }
 

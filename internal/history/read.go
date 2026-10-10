@@ -77,13 +77,13 @@ func (s *Snapshot) normalize(err error) error {
 }
 
 func (s *Snapshot) closeRows(rows *sql.Rows) error {
-	return s.normalize(rows.Close())
+	return markCleanup(s.normalize(rows.Close()))
 }
 
 func (s *Snapshot) failRows(rows *sql.Rows, err error) error {
 	primary := err
 	if closeErr := rows.Close(); closeErr != nil {
-		primary = errors.Join(primary, s.normalize(closeErr))
+		primary = errors.Join(primary, markCleanup(s.normalize(closeErr)))
 	}
 	return primary
 }

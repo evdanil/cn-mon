@@ -2,8 +2,8 @@
 
 ## Required roles and models
 
-- Use a coding agent running `gpt-6-luna` at high reasoning effort for implementation.
-- Use an independent reviewer running `gpt-6-astra` at xhigh reasoning effort for architecture and code review.
+- Use a coding agent running `gpt-6-luna` at medium reasoning effort for implementation.
+- Use an independent reviewer running `gpt-6.1-sol` at medium reasoning effort for code review.
 - Use an architect running `gpt-6-astra` at xhigh reasoning effort for specifications and milestone planning.
 - The user has authorized delegation and these model overrides.
 
@@ -13,9 +13,10 @@
 - Use red-green-refactor TDD for behavior changes.
 - Work in the existing isolated checkout. Do not create Git worktrees unless the user asks.
 - Keep the application specification, development plan, README, and user documentation current after each major milestone. Revise them to describe the current design and behavior; do not append stale progress logs.
-- Submit each major milestone in its own pull request to `main`. Complete internal Astra review first, then request external Codex review with the PR comment `@codex review`. Monitor the review, resolve actionable findings, and rerun affected checks. Treat a pending or unavailable external review as incomplete. Merge only after required checks pass, both reviews are resolved, and no actionable external findings remain.
+- Submit each major milestone in its own pull request to `main`. Complete the independent `gpt-6.1-sol` medium code review first, then request external Codex review with the PR comment `@codex review`. Monitor the review, resolve actionable findings, and rerun affected checks. Treat a pending or unavailable external review as incomplete. Merge only after required checks pass, both reviews are resolved, and no actionable external findings remain.
 - Do not begin implementation during a specification-only milestone. The existing `main.go` placeholder remains untouched until an implementation milestone is authorized.
 - Preserve all `cn-tool` built-in monitor behavior except its interactive menu, XLSX export, Python `process_data` hooks, and custom Python plugin framework. Python runtime support is out of scope. Supported platforms are Linux x86-64 and Windows x86-64 only. macOS is out of scope.
+- Preserve the settled signal behavior in `docs/APPLICATION_SPEC.md` §5: standard Go resets inherited ignored `SIGTERM` before `main`, so pre-run `SIGTERM` follows the default action; active-run `SIGTERM` is graceful, while inherited ignored `SIGHUP` and `SIGINT` remain honored.
 - Implement ICMP probes using native Go support; do not invoke a shell `ping` command.
 - Validate runtime behavior on both Linux and Windows for later code milestones. Cross-compilation alone does not count as runtime validation.
 - Keep production systems and APIs unchanged unless the user authorizes those side effects.

@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components passed their Linux and Windows gates. M3 adds persistent history APIs and cross-language interoperability; all seven required history cases passed on hosted Linux and Windows CI. The current [PR 10](https://github.com/evdanil/gotest/pull/10) is awaiting final review and merge. The CLI does not yet connect these components; target runs and JSON reports are M4 work, while table/CSV/Markdown reports and live display/readers remain M5 work. This is not yet an operational network monitor.
+`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 configuration, logging, target-input and model foundation, M2 native probes, and M3 persistent history/interoperability are merged. M3 merged in [PR 10](https://github.com/evdanil/gotest/pull/10); all 12 CI checks passed, and external review reported no remaining findings. M4 connects target runs to persistent history and emits final JSON when `--format json` is explicit. Internal production approval and all affected Sol medium reviews are complete, including suspension scheduling, Windows roles, documentation, and the deterministic heartbeat fixture. Current component unit/vet checks and the actual Linux pause/resume command case passed; the heartbeat fixture also passed 500 independent stress iterations. Current-head native CI, external review and merge remain pending. The hosted Linux built-command gate passed at `6cb848d`; Windows elevated command tests passed, while the corrected ordinary-role assertion needs a new CI run. Table/CSV/Markdown reports and live display/readers remain M5 work; the final default format is still table.
 
 ## Current CLI
 
@@ -11,7 +11,15 @@ go run ./cmd/cn-mon --help
 go run ./cmd/cn-mon --version
 ```
 
-Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. Valid target, `--list`, `--show`, and `--follow` requests report that the operation is unavailable and exit 3; these command paths currently perform no target, configuration, log, history, or network I/O.
+Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. A target run must explicitly request JSON during M4:
+
+```sh
+go run ./cmd/cn-mon --format json --tcp 443 example.com
+```
+
+That command collects input, resolves configuration and logging, opens history, probes targets, and writes the final JSON report. Exit 0 means the selected success condition was met, exit 1 means the completed run had no selected success, and exit 3 reports probe/history or other execution failure. `--list`, `--show`, `--follow`, and target runs using `table`, `md`, or `csv` remain unavailable until M5 and exit 3 before data I/O.
+
+For scheduled runs resuming after system suspension, M4 retains the selected slot through ordinary timer jitter, then reselects the first aligned slot at or after the corrected run time once the following slot has arrived. It skips expired slots rather than replaying them. This is an explicit native correction to the pinned Python implementation's overdue-wait behavior, not a claim of Python parity.
 
 ## Build and test
 
@@ -86,11 +94,45 @@ for source provenance and license details.
 CI also runs `govulncheck` v1.8.0 against the Linux and Windows production
 package imports using the official Go vulnerability database.
 
+The M4 built-command checks exercise the compiled CLI and are separate from the
+probe-package gates above. They verify config-driven history retention, loopback
+TCP/history/JSON readback, startup and active-run signals, second-interrupt
+finalization, pause/resume, and closed stdout. The full hosted Linux built-command
+gate passed at `6cb848d` in [PR run 38088392325, job 114319603783](https://github.com/evdanil/gotest/actions/runs/38088392325/job/114319603783), including both elevated/granted and capability-denied ICMP roles.
+The Windows elevated command suite passed, including the blocked-stdin pre-input
+interrupt case. The ordinary-role harness now checks the expected SID, elevation,
+and enabled Administrators membership for both the test process and its actual
+child command. It accepts ordinary ICMP success or a structurally verified
+permission denial; both outcomes must preserve TCP, JSON, and finished history.
+The earlier Windows run exposed that ordinary probing can succeed, so this
+corrected assertion needs a new native CI run before the Windows command gate is
+complete.
+On Linux, the standard Go runtime resets an inherited ignored `SIGTERM` before
+`main`; the command therefore keeps default pre-run `SIGTERM` behavior while
+handling `SIGTERM` gracefully during a run. Inherited ignored `SIGHUP` and
+`SIGINT` remain honored.
+Run them only on disposable target-OS machines with the required privileges:
+
+```sh
+# Linux: sudo, setpriv, and getcap must be available.
+scripts/test-native-command-linux.sh
+```
+
+```powershell
+# Windows: elevated PowerShell on a disposable machine.
+./scripts/test-native-command-windows.ps1
+```
+
+The Windows ordinary-role correction still needs current-head native CI; current-head
+native CI, external review and merge remain pending. Cross-compilation and component
+tests do not replace those gates.
+
 ## History foundation
 
-M3 adds a source-compatible schema-v1 history store API. It reads and writes
-history databases compatible with the pinned cn-tool `PingStore`; application
-startup does not yet open history or prune it. The test-only Python helper uses
+The schema-v1 history store reads and writes databases compatible with the
+pinned cn-tool `PingStore`. An explicit-JSON target run opens the configured
+database, prunes it using the resolved retention setting, and appends completed
+rounds. The test-only Python helper uses
 the pinned cn-tool source to verify both directions of database interoperability
 and concurrent WAL access, including held reader snapshots, pruning, and killed
 writers in both languages. The fixture remains generated with Python 3.12.14.
@@ -112,7 +154,7 @@ CGO_ENABLED=0 go test -v -timeout=8m \
 The native interop gate records the Python and Go SQLite versions, source
 revision and checksums, WAL page details and bounded WAL growth during held
 snapshots, and sampled Go heap usage. The seven required cases passed on both
-hosted platforms at candidate commit `6b1dc93236fff50828957b92698993d4de07de7c`.
+hosted platforms in final M3 validation at commit `f0825828ad9e3b8176c80f55d7d449ccd2707cc2`.
 The runs verified these runtime versions and the same two pinned raw source
 hashes on each platform:
 
@@ -124,8 +166,8 @@ hashes on each platform:
 Both source files were checked against their pinned raw SHA-256 values:
 `ping_store.py` `326ab0570dc7bf3fc43209d21d00f46f8c2b8778ea0daf4cf905c52a8c337fd4`;
 `ping_history.py` `d491678b240f23d26a2673951ba293eabff3a992d2840bbc1219a63ec31a89bf`.
-See the [Linux native history job](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473559)
-and [Windows native history job](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473348)
+See the [Linux native history job](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741491)
+and [Windows native history job](https://github.com/evdanil/gotest/actions/runs/38045035366/job/114192741369)
 for the runtime annotations and passing case markers. The checked-in fallback history path is
 `~/.cn-ping-history.db` with 30-day retention; the five INI settings and CLI
 override precedence are listed in [Configuration foundation](#configuration-foundation).
@@ -136,8 +178,9 @@ and close the database, then copy it. Do not copy only a live `.db` file while
 its WAL may contain committed pages. Hosted `govulncheck` v1.8.0 scans against
 the official Go vulnerability database passed for both `linux/amd64` and
 `windows/amd64`, covering `./cmd/...` and `./internal/...` at the same candidate
-commit; see the [Linux scan](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473308)
-and [Windows scan](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473356).
+commit; see the [final M3 CI run](https://github.com/evdanil/gotest/actions/runs/38045035366)
+for the Linux and Windows scan jobs. The [final review confirmation](https://github.com/evdanil/gotest/pull/10#issuecomment-6096607314)
+records the merge-gate result.
 The Python dependency is test-only and is not part of the application runtime.
 
 ## Configuration foundation
@@ -152,7 +195,7 @@ The native configuration resolver recognizes five existing cn-tool INI settings:
 | `[logging] logfile` | `--log-file` / `-l` |
 | `[logging] level` | `--log-level` |
 
-Configuration layers, from lower to higher precedence, are built-in defaults, `.cn` beside the resolved executable, the user's `~/.cn` (`%USERPROFILE%\\.cn` on Windows), an optional INI file added with `--config` / `-c`, and explicit setting overrides. The resolver and logger are implemented as components; command startup does not yet connect them. See the [configuration contract](docs/APPLICATION_SPEC.md#21-existing-cn-tool-configuration) for parsing and fallback details.
+Configuration layers, from lower to higher precedence, are built-in defaults, `.cn` beside the resolved executable, the user's `~/.cn` (`%USERPROFILE%\\.cn` on Windows), an optional INI file added with `--config` / `-c`, and explicit setting overrides. The explicit JSON target command uses the resolved history path/retention and logger. Theme selection takes effect with the human renderers when they arrive in M5. See the [configuration contract](docs/APPLICATION_SPEC.md#21-existing-cn-tool-configuration) for parsing and fallback details.
 
 ## Compatibility and license
 

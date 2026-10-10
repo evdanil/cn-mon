@@ -288,10 +288,24 @@ func normalizeDBError(ctx context.Context, err error) error {
 	if ctx == nil || ctx.Err() == nil {
 		return err
 	}
-	if errors.Is(err, sqlite3.BUSY) || errors.Is(err, sqlite3.INTERRUPT) {
-		return errors.Join(ctx.Err(), err)
+	if singleCauseIs(err, sqlite3.BUSY) || singleCauseIs(err, sqlite3.INTERRUPT) {
+		return &canceledDBError{cause: ctx.Err(), operation: err}
 	}
 	return err
+}
+
+func singleCauseIs(err, target error) bool {
+	for err != nil {
+		if _, joined := err.(interface{ Unwrap() []error }); joined {
+			return false
+		}
+		if unwrapped, ok := err.(interface{ Unwrap() error }); ok {
+			err = unwrapped.Unwrap()
+			continue
+		}
+		return errors.Is(err, target)
+	}
+	return false
 }
 
 func validRequestKey(key string) bool {

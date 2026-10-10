@@ -77,6 +77,9 @@ func TestOpenTxBusyCancellationNormalizesCauseAndStoreRemainsUsable(t *testing.T
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("busy cancellation lost context cause: %v", err)
 	}
+	if !CancellationOnly(err, context.DeadlineExceeded) {
+		t.Errorf("busy cancellation retained an unrelated error or lost cancellation provenance: %v", err)
+	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("busy cancellation exceeded prompt bound: %s", elapsed)
 	}
@@ -121,6 +124,9 @@ func TestOpenTxCanceledReadInterruptsRowsAndRollsBack(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("read interruption lost context cause: %v", err)
 	}
+	if !CancellationOnly(err, context.DeadlineExceeded) {
+		t.Fatalf("read interruption was not classified as cancellation only: %v", err)
+	}
 	if err := store.withTx(context.Background(), false, func(conn *sql.Conn) error {
 		var result int
 		return conn.QueryRowContext(context.Background(), `SELECT 1`).Scan(&result)
@@ -148,6 +154,9 @@ func TestOpenTxCanceledInsertInterruptsAndRollsBack(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("interrupted insert lost context cause: %v", err)
 	}
+	if !CancellationOnly(err, context.DeadlineExceeded) {
+		t.Fatalf("interrupted insert was not classified as cancellation only: %v", err)
+	}
 	var count int
 	if err := db.QueryRow(`SELECT count(*) FROM sample`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("interrupted insert leaked partial rows: count=%d err=%v", count, err)
@@ -165,6 +174,9 @@ func TestOpenTxDoesNotRelabelObservedErrorAfterLateCancellation(t *testing.T) {
 	})
 	if errors.Is(err, context.Canceled) || !errors.Is(err, busy) {
 		t.Fatalf("late context cancellation changed callback cause: %v", err)
+	}
+	if CancellationOnly(err, context.Canceled) {
+		t.Fatalf("unrelated callback error was classified as cancellation only: %v", err)
 	}
 }
 

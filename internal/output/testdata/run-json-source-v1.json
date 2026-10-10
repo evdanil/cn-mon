@@ -1,0 +1,89 @@
+{
+  "seen": [
+    {
+      "host": "alpha.example",
+      "address": "A <&> \"雪\"",
+      "latest": "OK (1/2 replies)",
+      "tcp_80": "",
+      "tcp_443": "open",
+      "first_seen": "2026-01-01T04:05:06+00:00",
+      "last_seen": "2026-01-02T03:04:05+00:00",
+      "seen_rounds": 2,
+      "rounds": 3,
+      "online": [
+        {
+          "from": "2026-01-01T04:05:06+00:00",
+          "to": "2026-01-01T04:05:06+00:00"
+        },
+        {
+          "from": "2026-01-02T03:04:05+00:00",
+          "to": "2026-01-02T03:04:05+00:00"
+        }
+      ]
+    },
+    {
+      "host": "zeta.example",
+      "address": "2001:db8::2",
+      "latest": "NO RESPONSE",
+      "tcp_80": "closed",
+      "tcp_443": "error",
+      "first_seen": "2026-01-02T03:05:00+00:00",
+      "last_seen": "2026-01-02T03:06:00+00:00",
+      "seen_rounds": 1,
+      "rounds": 3,
+      "online": [
+        {
+          "from": "2026-01-02T03:05:00+00:00",
+          "to": "2026-01-02T03:06:00+00:00"
+        }
+      ]
+    }
+  ],
+  "latest": [
+    {
+      "host": "alpha.example",
+      "address": "A <&> \"雪\"",
+      "result": "OK (1/2 replies)",
+      "tcp_80": "",
+      "tcp_443": "open"
+    },
+    {
+      "host": "zeta.example",
+      "address": "2001:db8::2",
+      "result": "NO RESPONSE",
+      "tcp_80": "closed",
+      "tcp_443": "error"
+    }
+  ],
+  "summary": [
+    {
+      "id": "deadbeef",
+      "started": "2026-01-02T03:00:00+00:00",
+      "ended": "2026-01-02T03:06:00+00:00",
+      "rounds": 1,
+      "earlier_rounds": 2,
+      "interval": 1.5,
+      "hosts": 2,
+      "seen": 2,
+      "answering": 1
+    }
+  ],
+  "not_found": [
+    {
+      "object": "late <&> \"x\"",
+      "reason": "invalid <target>"
+    },
+    {
+      "object": "first",
+      "reason": "bad input"
+    },
+    {
+      "object": "alpha.invalid",
+      "reason": "no such host"
+    },
+    {
+      "object": "zulu.invalid",
+      "reason": "no such host"
+    }
+  ]
+}
