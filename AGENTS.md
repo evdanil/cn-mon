@@ -15,7 +15,7 @@
 - Keep the application specification, development plan, README, and user documentation current after each major milestone. Revise them to describe the current design and behavior; do not append stale progress logs.
 - Submit each major milestone in its own pull request to `main`. Complete internal Astra review first, then request external Codex review with the PR comment `@codex review`. Monitor the review, resolve actionable findings, and rerun affected checks. Treat a pending or unavailable external review as incomplete. Merge only after required checks pass, both reviews are resolved, and no actionable external findings remain.
 - Do not begin implementation during a specification-only milestone. The existing `main.go` placeholder remains untouched until an implementation milestone is authorized.
-- Preserve all `cn-tool` monitor behavior except its interactive menu and XLSX export. Supported platforms are Linux x86-64 and Windows x86-64 only. macOS is out of scope.
+- Preserve all `cn-tool` built-in monitor behavior except its interactive menu, XLSX export, Python `process_data` hooks, and custom Python plugin framework. Python runtime support is out of scope. Supported platforms are Linux x86-64 and Windows x86-64 only. macOS is out of scope.
 - Implement ICMP probes using native Go support; do not invoke a shell `ping` command.
 - Validate runtime behavior on both Linux and Windows for later code milestones. Cross-compilation alone does not count as runtime validation.
 - Keep production systems and APIs unchanged unless the user authorizes those side effects.
