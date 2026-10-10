@@ -162,7 +162,7 @@ func validatePruneOperands(ctx context.Context, conn *sql.Conn, cutoff float64) 
 
 func closePruneRows(ctx context.Context, rows *sql.Rows, primary error) error {
 	if closeErr := rows.Close(); closeErr != nil {
-		closeErr = normalizeDBError(ctx, closeErr)
+		closeErr = markCleanup(normalizeDBError(ctx, closeErr))
 		if primary != nil {
 			return errors.Join(primary, closeErr)
 		}

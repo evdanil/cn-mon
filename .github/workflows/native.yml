@@ -224,6 +224,53 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  native-command-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Install file-capability inspection tool
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libcap2-bin
+      - name: Run native built-command and private-process gate
+        env:
+          CNMON_NATIVE_COMMAND_ARTIFACT_DIR: ${{ runner.temp }}/cn-mon-native-command-linux
+        run: scripts/test-native-command-linux.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-native-command-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cn-mon-native-command-linux
+          if-no-files-found: error
+          retention-days: 14
+
+  native-command-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Run native Windows command and private-console gate
+        shell: pwsh
+        env:
+          CNMON_NATIVE_COMMAND_ARTIFACT_DIR: ${{ runner.temp }}\cn-mon-native-command-windows
+        run: ./scripts/test-native-command-windows.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-native-command-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-native-command-windows
+          if-no-files-found: error
+          retention-days: 14
+
   history-python-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 25

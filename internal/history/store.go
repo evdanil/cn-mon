@@ -76,7 +76,7 @@ func OpenWriter(ctx context.Context, path string) (*Store, error) {
 	}
 	closeErr := conn.Close()
 	if err == nil && closeErr != nil {
-		err = closeErr
+		err = markCleanup(closeErr)
 	}
 	if err == nil && journalMode != "wal" {
 		err = fmt.Errorf("SQLite selected journal mode %q, want wal", journalMode)
@@ -133,7 +133,7 @@ func (s *Store) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		if s.db != nil {
-			s.closeErr = s.db.Close()
+			s.closeErr = markCleanup(s.db.Close())
 		}
 	})
 	return s.closeErr
@@ -201,7 +201,7 @@ func configurePool(db *sql.DB) {
 
 func closeAfterOpenFailure(store *Store, err error) error {
 	if closeErr := store.Close(); closeErr != nil {
-		err = errors.Join(err, closeErr)
+		err = errors.Join(err, markCleanup(closeErr))
 	}
 	return err
 }

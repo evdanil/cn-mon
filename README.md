@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components passed their Linux and Windows gates. M3's persistent history APIs and cross-language interoperability merged in [PR 10](https://github.com/evdanil/gotest/pull/10); all 12 CI checks passed, and external review reported no remaining findings. M4 target-run and JSON work is active but not implemented yet, so valid target and history commands remain unavailable. Table/CSV/Markdown reports and live display/readers remain M5 work. This is not yet an operational network monitor.
+`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 configuration, logging, target-input and model foundation, M2 native probes, and M3 persistent history/interoperability are merged. M3 merged in [PR 10](https://github.com/evdanil/gotest/pull/10); all 12 CI checks passed, and external review reported no remaining findings. M4 now connects target runs to persistent history and emits final JSON when `--format json` is explicit. Independent Sol medium code review has approved M4; external review and the built-command native Linux/Windows gates are pending. Table/CSV/Markdown reports and live display/readers remain M5 work; the final default format is still table.
 
 ## Current CLI
 
@@ -11,7 +11,13 @@ go run ./cmd/cn-mon --help
 go run ./cmd/cn-mon --version
 ```
 
-Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. Valid target, `--list`, `--show`, and `--follow` requests report that the operation is unavailable and exit 3; these command paths currently perform no target, configuration, log, history, or network I/O.
+Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. A target run must explicitly request JSON during M4:
+
+```sh
+go run ./cmd/cn-mon --format json --tcp 443 example.com
+```
+
+That command collects input, resolves configuration and logging, opens history, probes targets, and writes the final JSON report. Exit 0 means the selected success condition was met, exit 1 means the completed run had no selected success, and exit 3 reports probe/history or other execution failure. `--list`, `--show`, `--follow`, and target runs using `table`, `md`, or `csv` remain unavailable until M5 and exit 3 before data I/O.
 
 ## Build and test
 
@@ -86,11 +92,37 @@ for source provenance and license details.
 CI also runs `govulncheck` v1.8.0 against the Linux and Windows production
 package imports using the official Go vulnerability database.
 
+The M4 built-command checks exercise the compiled CLI and are separate from the
+probe-package gates above. They verify config-driven history retention, loopback
+TCP/history/JSON readback, startup and active-run signals, second-interrupt
+finalization, pause/resume, and closed stdout. Linux additionally runs the same
+built command with and without `CAP_NET_RAW`; Windows checks ICMP under the
+elevated runner and a temporary ordinary account using a private console.
+On Linux, the standard Go runtime resets an inherited ignored `SIGTERM` before
+`main`; the command therefore keeps default pre-run `SIGTERM` behavior while
+handling `SIGTERM` gracefully during a run. Inherited ignored `SIGHUP` and
+`SIGINT` remain honored.
+Run them only on disposable target-OS machines with the required privileges:
+
+```sh
+# Linux: sudo, setpriv, and getcap must be available.
+scripts/test-native-command-linux.sh
+```
+
+```powershell
+# Windows: elevated PowerShell on a disposable machine.
+./scripts/test-native-command-windows.ps1
+```
+
+The M4 native command checks have not yet passed hosted CI; do not treat
+cross-compilation or the component tests as native command validation.
+
 ## History foundation
 
-M3 adds a source-compatible schema-v1 history store API. It reads and writes
-history databases compatible with the pinned cn-tool `PingStore`; application
-startup does not yet open history or prune it. The test-only Python helper uses
+The schema-v1 history store reads and writes databases compatible with the
+pinned cn-tool `PingStore`. An explicit-JSON target run opens the configured
+database, prunes it using the resolved retention setting, and appends completed
+rounds. The test-only Python helper uses
 the pinned cn-tool source to verify both directions of database interoperability
 and concurrent WAL access, including held reader snapshots, pruning, and killed
 writers in both languages. The fixture remains generated with Python 3.12.14.
@@ -153,7 +185,7 @@ The native configuration resolver recognizes five existing cn-tool INI settings:
 | `[logging] logfile` | `--log-file` / `-l` |
 | `[logging] level` | `--log-level` |
 
-Configuration layers, from lower to higher precedence, are built-in defaults, `.cn` beside the resolved executable, the user's `~/.cn` (`%USERPROFILE%\\.cn` on Windows), an optional INI file added with `--config` / `-c`, and explicit setting overrides. The resolver and logger are implemented as components; command startup does not yet connect them. See the [configuration contract](docs/APPLICATION_SPEC.md#21-existing-cn-tool-configuration) for parsing and fallback details.
+Configuration layers, from lower to higher precedence, are built-in defaults, `.cn` beside the resolved executable, the user's `~/.cn` (`%USERPROFILE%\\.cn` on Windows), an optional INI file added with `--config` / `-c`, and explicit setting overrides. The explicit JSON target command uses the resolved history path/retention and logger. Theme selection takes effect with the human renderers when they arrive in M5. See the [configuration contract](docs/APPLICATION_SPEC.md#21-existing-cn-tool-configuration) for parsing and fallback details.
 
 ## Compatibility and license
 
