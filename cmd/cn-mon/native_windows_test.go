@@ -15,10 +15,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,7 +31,9 @@ import (
 	"unsafe"
 
 	"github.com/evdanil/gotest/internal/history"
+	"github.com/evdanil/gotest/internal/probe"
 	"github.com/evdanil/gotest/internal/target"
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -273,13 +275,25 @@ func TestNativeCommandWindowsClosedStdoutPipeIsQuiet(t *testing.T) {
 }
 
 func TestNativeCommandWindowsProbePermissionRole(t *testing.T) {
-	expectation := os.Getenv("CNMON_NATIVE_COMMAND_EXPECT_PROBE")
-	if expectation != "granted" && expectation != "denied" {
-		t.Fatalf("native Windows harness must set CNMON_NATIVE_COMMAND_EXPECT_PROBE to granted or denied")
+	role := os.Getenv("CNMON_NATIVE_COMMAND_EXPECT_PROBE")
+	expectedSID := os.Getenv("CNMON_NATIVE_COMMAND_EXPECT_SID")
+	if role != "elevated" && role != "ordinary" {
+		t.Fatalf("native Windows harness must set CNMON_NATIVE_COMMAND_EXPECT_PROBE to elevated or ordinary")
 	}
-	identity, err := user.Current()
+	if expectedSID == "" {
+		t.Fatal("native Windows harness must set CNMON_NATIVE_COMMAND_EXPECT_SID")
+	}
+	parsedSID, err := windows.StringToSid(expectedSID)
+	if err != nil || parsedSID == nil || parsedSID.String() == "" {
+		t.Fatalf("parse expected Windows user SID %q: %v", expectedSID, err)
+	}
+	expectedSID = parsedSID.String()
+	parentToken, err := currentWindowsTokenFacts()
 	if err != nil {
-		t.Fatalf("resolve Windows permission-role identity: %v", err)
+		t.Fatalf("query parent process token: %v", err)
+	}
+	if err := verifyWindowsRoleToken(parentToken, role, expectedSID); err != nil {
+		t.Fatalf("parent token does not match expected %s role: %v", role, err)
 	}
 	binary := buildNativeCommand(t)
 	directory := t.TempDir()
@@ -291,14 +305,40 @@ func TestNativeCommandWindowsProbePermissionRole(t *testing.T) {
 	if err != nil || len(rejected) != 0 {
 		t.Fatalf("build loopback request: request=%+v rejected=%+v err=%v", request, rejected, err)
 	}
-	command := startWindowsCommand(t, binary, directory, database, logFile, []string{
+	stdinRead, stdinWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create held stdin pipe for child token check: %v", err)
+	}
+	defer stdinRead.Close()
+	defer stdinWrite.Close()
+	command := startWindowsCommandWithStdin(t, binary, directory, database, logFile, []string{
 		"--format", "json", "--history-file", database, "--log-file", logFile,
-		"--tcp", strconv.Itoa(port), "127.0.0.1",
-	})
+		"--tcp", strconv.Itoa(port), "--file", "-",
+	}, stdinRead, stdinWrite)
 	defer command.killIfRunning()
+	// The child remains inside target.ReadObjects while stdin is held open. Query
+	// its real token before releasing EOF, so even a fast permission failure
+	// cannot turn the token check into a PID-reuse race.
+	childToken, err := windowsProcessTokenFacts(uint32(command.cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("query child command token before stdin release: %v", err)
+	}
+	if err := verifyWindowsRoleToken(childToken, role, expectedSID); err != nil {
+		t.Fatalf("child token does not match expected %s role: %v", role, err)
+	}
+	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_ROLE expected_role=%s expected_sid=%s parent_sid=%s parent_elevated=%t parent_admin_enabled=%t child_sid=%s child_elevated=%t child_admin_enabled=%t", role, expectedSID, parentToken.sid, parentToken.elevated, parentToken.adminEnabled, childToken.sid, childToken.elevated, childToken.adminEnabled)
+	if _, err := io.WriteString(stdinWrite, "127.0.0.1\n"); err != nil {
+		t.Fatalf("write loopback target to child stdin: %v", err)
+	}
+	if err := stdinWrite.Close(); err != nil {
+		t.Fatalf("release child stdin EOF: %v", err)
+	}
 	result, err := command.waitFor(45 * time.Second)
 	var report struct {
-		Latest []map[string]json.RawMessage `json:"latest"`
+		Latest  []map[string]json.RawMessage `json:"latest"`
+		Summary []struct {
+			Rounds int `json:"rounds"`
+		} `json:"summary"`
 	}
 	if unmarshalErr := json.Unmarshal(result.stdout, &report); unmarshalErr != nil {
 		t.Fatalf("decode native permission report: %v (process error %v)\n%s", unmarshalErr, err, result.stdout)
@@ -306,35 +346,54 @@ func TestNativeCommandWindowsProbePermissionRole(t *testing.T) {
 	if len(report.Latest) != 1 {
 		t.Fatalf("latest rows = %d, want one loopback host; process error %v\n%s", len(report.Latest), err, result.stdout)
 	}
-	var icmpState, tcpState string
+	var host, address, icmpState, tcpState string
+	if err := json.Unmarshal(report.Latest[0]["host"], &host); err != nil {
+		t.Fatalf("decode loopback host: %v", err)
+	}
+	if err := json.Unmarshal(report.Latest[0]["address"], &address); err != nil {
+		t.Fatalf("decode loopback address: %v", err)
+	}
 	if err := json.Unmarshal(report.Latest[0]["result"], &icmpState); err != nil {
 		t.Fatalf("decode ICMP state: %v", err)
 	}
 	if err := json.Unmarshal(report.Latest[0][fmt.Sprintf("tcp_%d", port)], &tcpState); err != nil {
 		t.Fatalf("decode TCP state for port %d: %v", port, err)
 	}
-	if tcpState != "open" {
-		t.Fatalf("loopback TCP state = %q, want open", tcpState)
+	if host != "127.0.0.1" || address != "127.0.0.1" || tcpState != "open" {
+		t.Fatalf("loopback JSON host/address/TCP = %q/%q/%q, want 127.0.0.1/127.0.0.1/open", host, address, tcpState)
 	}
-	wantState, wantCode := "OK", 0
-	if expectation == "denied" {
-		wantState, wantCode = "ERROR", 3
+	if len(report.Summary) != 1 || report.Summary[0].Rounds != 1 {
+		t.Fatalf("JSON summary = %+v, want one completed round", report.Summary)
 	}
-	stateMatches := icmpState == wantState || (expectation == "granted" && strings.HasPrefix(icmpState, "OK ("))
-	if !stateMatches || exitCode(err) != wantCode {
-		t.Fatalf("native ICMP permission result = %q/exit %d, want %q/exit %d; stderr: %s", icmpState, exitCode(err), wantState, wantCode, result.stderr)
-	}
-	if expectation == "denied" {
-		if diagnosticErr := assertWindowsProbeFailureDiagnostic(string(result.stderr), "127.0.0.1"); diagnosticErr != nil {
-			t.Fatalf("denied permission role lacks a bounded host/ICMP cause and Administrator remedy: %v; stderr: %s", diagnosticErr, result.stderr)
+	wantCode := 0
+	switch {
+	case icmpState == "OK" && exitCode(err) == 0:
+		// An ordinary Windows token may have working raw ICMP, depending on OS.
+	case role == "ordinary" && icmpState == "ERROR" && exitCode(err) == 3:
+		witnessCause, witnessErr := windowsOrdinaryPermissionWitness()
+		if witnessErr != nil {
+			t.Fatalf("same-token Prober did not establish typed raw-ICMP denial: %v", witnessErr)
 		}
+		if diagnosticErr := assertWindowsProbeFailureDiagnostic(string(result.stderr), "127.0.0.1", witnessCause); diagnosticErr != nil {
+			t.Fatalf("ordinary permission denial lacks a bounded actual-cause/Admin-remedy diagnostic: %v; stderr: %s", diagnosticErr, result.stderr)
+		}
+		t.Log("CNMON_NATIVE_COMMAND_WINDOWS_PERMISSION role=ordinary witness=access-denied cause=observed admin-remedy=present")
+		wantCode = 3
+	default:
+		t.Fatalf("native ICMP role=%s result=%q/exit %d; want full OK/exit 0 or ordinary typed permission ERROR/exit 3; stderr: %s", role, icmpState, exitCode(err), result.stderr)
+	}
+	if role == "elevated" && icmpState != "OK" {
+		t.Fatalf("elevated role result=%q, want OK", icmpState)
 	}
 	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool {
 		return run.Status == "finished" && run.Rounds == 1
 	}); err != nil {
 		t.Fatalf("read actual built-command history result: %v", err)
 	}
-	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS ICMP-permission=%s identity=%s result=%s exit=%d tcp=open history=one-round", expectation, identity.Username, icmpState, wantCode)
+	if err := assertWindowsPermissionHistory(database, request.Key, host, address, port, icmpState); err != nil {
+		t.Fatalf("persisted completed round disagrees with JSON: %v", err)
+	}
+	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=%s sid=%s icmp=%s exit=%d tcp=open json=pass history=one-round", role, expectedSID, icmpState, wantCode)
 }
 
 // TestNativePrivateConsoleCtrlCSender is invoked only as a separate helper
@@ -584,6 +643,158 @@ func windowsPipeBufferSizes(pipe *os.File) (uint32, uint32, error) {
 	return inBufferSize, outBufferSize, nil
 }
 
+type windowsTokenFacts struct {
+	sid          string
+	elevated     bool
+	adminEnabled bool
+}
+
+func currentWindowsTokenFacts() (windowsTokenFacts, error) {
+	return queryWindowsTokenFacts(windows.GetCurrentProcessToken())
+}
+
+func windowsProcessTokenFacts(pid uint32) (windowsTokenFacts, error) {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return windowsTokenFacts{}, fmt.Errorf("open process %d for token query: %w", pid, err)
+	}
+	defer windows.CloseHandle(process)
+	var token windows.Token
+	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
+		return windowsTokenFacts{}, fmt.Errorf("open process %d token: %w", pid, err)
+	}
+	defer token.Close()
+	return queryWindowsTokenFacts(token)
+}
+
+func queryWindowsTokenFacts(token windows.Token) (windowsTokenFacts, error) {
+	userInfo, err := token.GetTokenUser()
+	if err != nil {
+		return windowsTokenFacts{}, fmt.Errorf("query token user SID: %w", err)
+	}
+	if userInfo == nil || userInfo.User.Sid == nil || userInfo.User.Sid.String() == "" {
+		return windowsTokenFacts{}, errors.New("token user SID is unavailable")
+	}
+	groups, err := token.GetTokenGroups()
+	if err != nil {
+		return windowsTokenFacts{}, fmt.Errorf("query token groups: %w", err)
+	}
+	if groups == nil {
+		return windowsTokenFacts{}, errors.New("token groups are unavailable")
+	}
+	adminEnabled := false
+	for _, group := range groups.AllGroups() {
+		if group.Sid == nil || group.Sid.String() == "" {
+			return windowsTokenFacts{}, errors.New("token contains a group with no readable SID")
+		}
+		if group.Sid.String() == "S-1-5-32-544" && group.Attributes&windows.SE_GROUP_ENABLED != 0 {
+			adminEnabled = true
+		}
+	}
+	var elevation uint32
+	var returned uint32
+	if err := windows.GetTokenInformation(token, windows.TokenElevation, (*byte)(unsafe.Pointer(&elevation)), uint32(unsafe.Sizeof(elevation)), &returned); err != nil {
+		return windowsTokenFacts{}, fmt.Errorf("query token elevation: %w", err)
+	}
+	if returned != uint32(unsafe.Sizeof(elevation)) {
+		return windowsTokenFacts{}, fmt.Errorf("token elevation size = %d, want %d", returned, unsafe.Sizeof(elevation))
+	}
+	return windowsTokenFacts{
+		sid:          userInfo.User.Sid.String(),
+		elevated:     elevation != 0,
+		adminEnabled: adminEnabled,
+	}, nil
+}
+
+func verifyWindowsRoleToken(facts windowsTokenFacts, role, expectedSID string) error {
+	if !strings.EqualFold(facts.sid, expectedSID) {
+		return fmt.Errorf("token SID %q does not match expected SID %q", facts.sid, expectedSID)
+	}
+	switch role {
+	case "elevated":
+		if !facts.elevated || !facts.adminEnabled {
+			return fmt.Errorf("elevated role has elevated=%t admin-enabled=%t, want both true", facts.elevated, facts.adminEnabled)
+		}
+	case "ordinary":
+		if facts.elevated || facts.adminEnabled {
+			return fmt.Errorf("ordinary role has elevated=%t admin-enabled=%t, want both false", facts.elevated, facts.adminEnabled)
+		}
+	default:
+		return fmt.Errorf("unknown Windows token role %q", role)
+	}
+	return nil
+}
+
+func windowsOrdinaryPermissionWitness() (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	results, err := probe.New().ProbeBatch(ctx, []probe.Resolved{{
+		Index: 0, Host: "127.0.0.1", Address: netip.MustParseAddr("127.0.0.1"),
+	}}, nil)
+	if err != nil {
+		return "", fmt.Errorf("same-token Prober failed: %w", err)
+	}
+	if len(results) != 1 {
+		return "", fmt.Errorf("same-token Prober returned %d results, want one", len(results))
+	}
+	result := results[0].ICMP
+	if result.State != "ERROR" || !isWindowsPermissionError(result.Err) {
+		return "", fmt.Errorf("same-token Prober result=%q error=%v, want typed WSAEACCES/ERROR_ACCESS_DENIED", result.State, result.Err)
+	}
+	var code syscall.Errno
+	if !errors.As(result.Err, &code) || !isWindowsPermissionError(code) {
+		return "", fmt.Errorf("same-token permission result has no typed Winsock cause: %T %v", result.Err, result.Err)
+	}
+	cause := code.Error()
+	if strings.TrimSpace(cause) == "" {
+		return "", errors.New("same-token permission result has an empty OS cause")
+	}
+	return cause, nil
+}
+
+func isWindowsPermissionError(err error) bool {
+	return errors.Is(err, windows.WSAEACCES) || errors.Is(err, windows.ERROR_ACCESS_DENIED)
+}
+
+func assertWindowsPermissionHistory(filename, key, host, address string, port int, icmpState string) error {
+	store, err := history.OpenReader(context.Background(), filename)
+	if err != nil {
+		return fmt.Errorf("open read-only history: %w", err)
+	}
+	if store == nil {
+		return errors.New("read-only history is missing")
+	}
+	viewErr := store.View(context.Background(), func(snapshot *history.Snapshot) error {
+		info, err := snapshot.Request(key)
+		if err != nil {
+			return err
+		}
+		if info == nil || info.Rounds != 1 || info.NewestRun == nil || info.NewestRun.Status != "finished" {
+			return fmt.Errorf("persisted request/run = %+v, want one finished round", info)
+		}
+		page, err := snapshot.Rounds(info.ID, history.RoundFilter{Limit: 10})
+		if err != nil {
+			return err
+		}
+		if len(page.Items) != 1 || len(page.Items[0].Rows) != 1 {
+			return fmt.Errorf("persisted rounds = %+v, want one row in one round", page.Items)
+		}
+		row := page.Items[0].Rows[0]
+		if row.Host != host || row.Address != address || row.Result != icmpState || row.TCP[port] != "open" {
+			return fmt.Errorf("persisted row = %+v, want host=%q address=%q ICMP=%q TCP=open", row, host, address, icmpState)
+		}
+		return nil
+	})
+	closeErr := store.Close()
+	if viewErr != nil {
+		return viewErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close read-only history: %w", closeErr)
+	}
+	return nil
+}
+
 func detachWindowsConsole() error {
 	result, _, callErr := windowsFreeConsole.Call()
 	if result != 0 {
@@ -686,7 +897,7 @@ func exitCode(err error) int {
 	return -1
 }
 
-func assertWindowsProbeFailureDiagnostic(stderr, host string) error {
+func assertWindowsProbeFailureDiagnostic(stderr, host, wantCause string) error {
 	var candidates []string
 	for _, line := range strings.Split(stderr, "\n") {
 		lower := strings.ToLower(line)
@@ -720,5 +931,33 @@ func assertWindowsProbeFailureDiagnostic(stderr, host string) error {
 	if cause == "" || strings.Contains(cause, "error detail unavailable") || cause == "error" {
 		return errors.New("diagnostic does not include the actual ICMP error cause")
 	}
+	marker := " ICMP: "
+	protocolAt := strings.Index(line, marker)
+	if protocolAt < 0 {
+		return errors.New("diagnostic has no quoted ICMP cause")
+	}
+	observedCause, err := unquoteDiagnosticValue(line[protocolAt+len(marker):])
+	if err != nil {
+		return fmt.Errorf("decode quoted ICMP cause: %w", err)
+	}
+	if !strings.Contains(strings.ToLower(observedCause), strings.ToLower(wantCause)) {
+		return fmt.Errorf("diagnostic cause %q does not contain observed OS cause %q", observedCause, wantCause)
+	}
 	return nil
+}
+
+func unquoteDiagnosticValue(text string) (string, error) {
+	if len(text) == 0 || text[0] != '"' {
+		return "", errors.New("value does not begin with a quote")
+	}
+	for i := 1; i < len(text); i++ {
+		if text[i] == '\\' {
+			i++
+			continue
+		}
+		if text[i] == '"' {
+			return strconv.Unquote(text[:i+1])
+		}
+	}
+	return "", errors.New("value has no closing quote")
 }

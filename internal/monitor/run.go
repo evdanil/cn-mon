@@ -121,7 +121,7 @@ func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, r
 
 	if !r.outcome.Stopped {
 		now := r.clock.Now().Run
-		index, _, done, scheduleErr := schedule.first(now)
+		index, slot, done, scheduleErr := schedule.first(now)
 		if scheduleErr != nil {
 			return r.finishUnexpected(scheduleErr)
 		}
@@ -143,6 +143,31 @@ func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, r
 				}
 				startReading := r.clock.Now()
 				now = startReading.Run
+				if index > 0 && ((schedule.until != nil && !now.Before(*schedule.until)) || now.Sub(slot) >= *plan.Interval) {
+					nextIndex, nextSlot, skipped, finished, nextErr := schedule.next(index-1, now)
+					if nextErr != nil {
+						return r.finishUnexpected(nextErr)
+					}
+					r.noteSkippedSlots(skipped)
+					if finished {
+						break
+					}
+					index, slot = nextIndex, nextSlot
+					if slot.After(now) {
+						stopped, waitErr := r.waitUntil(cancelWork, slot, &lastBusyHeartbeat)
+						if waitErr != nil {
+							if r.hardCtx.Err() != nil {
+								return r.finishOutcome(), r.hardCtx.Err()
+							}
+							return r.finishUnexpected(waitErr)
+						}
+						if stopped {
+							r.outcome.Stopped = true
+							break
+						}
+					}
+					continue
+				}
 				if schedule.until != nil && !now.Before(*schedule.until) {
 					break
 				}
@@ -175,20 +200,15 @@ func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, r
 					break
 				}
 				now = r.clock.Now().Run
-				nextIndex, slot, skipped, finished, nextErr := schedule.next(index, now)
+				nextIndex, nextSlot, skipped, finished, nextErr := schedule.next(index, now)
 				if nextErr != nil {
 					return r.finishUnexpected(nextErr)
 				}
-				if skipped > 0 {
-					r.outcome.SkippedSlots += skipped
-					if deps.Note != nil {
-						deps.Note(fmt.Sprintf("skipped %d scheduled round slot(s)", skipped))
-					}
-				}
+				r.noteSkippedSlots(skipped)
 				if finished {
 					break
 				}
-				stopped, waitErr := r.waitUntil(cancelWork, slot, &lastBusyHeartbeat)
+				stopped, waitErr := r.waitUntil(cancelWork, nextSlot, &lastBusyHeartbeat)
 				if waitErr != nil {
 					if r.hardCtx.Err() != nil {
 						return r.finishOutcome(), r.hardCtx.Err()
@@ -199,7 +219,7 @@ func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, r
 					r.outcome.Stopped = true
 					break
 				}
-				index = nextIndex
+				index, slot = nextIndex, nextSlot
 			}
 		}
 	}
@@ -371,6 +391,16 @@ func heartbeatDelay(now time.Duration, last *time.Duration) time.Duration {
 func (r *runner) runRound(cancelWork context.CancelFunc, roundStart, actualStart time.Time) (bool, error) {
 	lastBusyHeartbeat := r.clock.Now().Mono
 	return r.runRoundWithHeartbeat(cancelWork, roundStart, actualStart, &lastBusyHeartbeat)
+}
+
+func (r *runner) noteSkippedSlots(skipped int64) {
+	if skipped == 0 {
+		return
+	}
+	r.outcome.SkippedSlots += skipped
+	if r.deps.Note != nil {
+		r.deps.Note(fmt.Sprintf("skipped %d scheduled round slot(s)", skipped))
+	}
 }
 
 func (r *runner) runRoundWithHeartbeat(cancelWork context.CancelFunc, roundStart, actualStart time.Time, lastBusyHeartbeat *time.Duration) (bool, error) {

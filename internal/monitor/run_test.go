@@ -1052,16 +1052,22 @@ func TestRunHeartbeatDeadlineSpansResolveAndFinalProbe(t *testing.T) {
 	if err != nil || len(rejected) != 0 {
 		t.Fatalf("build request = %+v, rejected=%+v, err=%v", request, rejected, err)
 	}
-	clock := &engineTestClock{now: start}
+	clock := &engineTestClock{now: start, added: make(chan time.Duration, 8)}
 	address := netip.MustParseAddr("192.0.2.1")
 	targetRow := probe.Resolved{Index: 0, Host: "192.0.2.1", Address: address}
 	probeReady, releaseProbe := make(chan struct{}), make(chan struct{})
 	prober := &engineTestProber{
 		resolveFn: func(_ context.Context, _ []string) ([]probe.Resolved, error) {
+			if delay := <-clock.added; delay != 10*time.Second {
+				t.Errorf("Resolve heartbeat timer = %s, want initial shared 10s deadline", delay)
+			}
 			clock.Advance(6 * time.Second)
 			return []probe.Resolved{targetRow}, nil
 		},
 		probeFn: func(_ context.Context, targets []probe.Resolved, _ []int) ([]probe.Result, error) {
+			if delay := <-clock.added; delay != 4*time.Second {
+				t.Errorf("ProbeBatch heartbeat timer = %s, want remaining 4s shared deadline", delay)
+			}
 			clock.Advance(6 * time.Second)
 			close(probeReady)
 			<-releaseProbe
@@ -1319,6 +1325,155 @@ func TestRunRepeatingSlotsAlignAfterExactAndOverrunningRounds(t *testing.T) {
 				t.Fatalf("advanced %d wait slices, want %d slices of at most 500ms", waitSteps, tc.wantWaitSteps)
 			}
 		})
+	}
+}
+
+func TestRunRechecksAlignedSlotAfterForwardJumpDuringWait(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		duration      time.Duration
+		initialWork   time.Duration
+		noteAdvance   time.Duration
+		jumpAt        time.Duration
+		jumpBy        time.Duration
+		advanceUntil  time.Duration
+		wantOffsets   []time.Duration
+		wantSkipped   int64
+		wantWaitSteps int
+		wantNotes     []string
+	}{
+		{name: "resumed at +25 selects +30 and skips both covered slots", duration: 35 * time.Second, jumpAt: 10 * time.Second, jumpBy: 15 * time.Second, advanceUntil: 30 * time.Second, wantOffsets: []time.Duration{0, 30 * time.Second}, wantSkipped: 2, wantWaitSteps: 30, wantNotes: []string{"skipped 2 scheduled round slot(s)"}},
+		{name: "ordinary timer jitter retains selected slot", duration: 11 * time.Second, jumpAt: 10 * time.Second, jumpBy: 100 * time.Millisecond, advanceUntil: 10100 * time.Millisecond, wantOffsets: []time.Duration{0, 10100 * time.Millisecond}, wantWaitSteps: 20},
+		{name: "wake at exact following slot", duration: 25 * time.Second, jumpAt: 10 * time.Second, jumpBy: 10 * time.Second, advanceUntil: 20 * time.Second, wantOffsets: []time.Duration{0, 20 * time.Second}, wantSkipped: 1, wantWaitSteps: 20, wantNotes: []string{"skipped 1 scheduled round slot(s)"}},
+		{name: "skip note crosses exclusive cutoff before launch", duration: 25 * time.Second, noteAdvance: 20 * time.Second, jumpAt: 10 * time.Second, jumpBy: 10 * time.Second, advanceUntil: 20 * time.Second, wantOffsets: []time.Duration{0}, wantSkipped: 2, wantWaitSteps: 20, wantNotes: []string{"skipped 1 scheduled round slot(s)", "skipped 1 scheduled round slot(s)"}},
+		{name: "cutoff counts only earlier missed slot", duration: 15 * time.Second, jumpAt: 10 * time.Second, jumpBy: 6 * time.Second, advanceUntil: 16 * time.Second, wantOffsets: []time.Duration{0}, wantSkipped: 1, wantWaitSteps: 20, wantNotes: []string{"skipped 1 scheduled round slot(s)"}},
+		{name: "reselection does not recount previous overrun", duration: 45 * time.Second, initialWork: 25 * time.Second, jumpAt: 30 * time.Second, jumpBy: 10 * time.Second, advanceUntil: 40 * time.Second, wantOffsets: []time.Duration{0, 40 * time.Second}, wantSkipped: 3, wantWaitSteps: 10, wantNotes: []string{"skipped 2 scheduled round slot(s)", "skipped 1 scheduled round slot(s)"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runForwardWaitScenario(t, tc.duration, tc.initialWork, tc.noteAdvance, tc.jumpAt, tc.jumpBy, tc.advanceUntil, tc.wantOffsets, tc.wantSkipped, tc.wantWaitSteps, tc.wantNotes)
+		})
+	}
+}
+
+func runForwardWaitScenario(t *testing.T, duration, initialWork, noteAdvance, jumpAt, jumpBy, advanceUntil time.Duration, wantOffsets []time.Duration, wantSkipped int64, wantWaitSteps int, wantNotes []string) {
+	t.Helper()
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	clock := &engineTestClock{now: start, added: make(chan time.Duration, 512)}
+	request, rejected, err := target.Build([]string{"192.0.2.1"}, nil)
+	if err != nil || len(rejected) != 0 {
+		t.Fatalf("target.Build rejected=%v err=%v", rejected, err)
+	}
+	row := probe.Resolved{Index: 0, Host: request.Hosts[0], Address: netip.MustParseAddr("192.0.2.1")}
+	var batches int
+	prober := &engineTestProber{
+		resolved: []probe.Resolved{row},
+		probeFn: func(_ context.Context, targets []probe.Resolved, _ []int) ([]probe.Result, error) {
+			batches++
+			if batches == 1 && initialWork > 0 {
+				clock.Advance(initialWork)
+			}
+			return []probe.Result{{Target: targets[0], ICMP: probe.ICMPResult{State: "OK", Sent: 1, Received: 1}}}, nil
+		},
+	}
+	store := &engineTestHistory{recorded: make(chan time.Time, 8)}
+	interval := 10 * time.Second
+	plan := RunPlan{Request: request, Interval: &interval, Duration: &duration, OwnRunOnly: true, HistoryFile: "history.db", HistoryDays: big.NewInt(30), RunID: "run-wait-forward-jump"}
+	var notes []string
+	noteAdvanced := false
+	type result struct {
+		outcome RunOutcome
+		err     error
+	}
+	finished := make(chan result, 1)
+	go func() {
+		outcome, runErr := Run(context.Background(), plan, RunDeps{
+			Clock: clock, Prober: prober,
+			OpenHistory: func(context.Context, string) (History, error) { return store, nil },
+			Note: func(message string) {
+				notes = append(notes, message)
+				if noteAdvance > 0 && !noteAdvanced {
+					clock.Advance(noteAdvance)
+					noteAdvanced = true
+				}
+			},
+		})
+		finished <- result{outcome: outcome, err: runErr}
+	}()
+	var starts []time.Time
+	waitSteps := 0
+	jumped := false
+	deadline := time.After(3 * time.Second)
+	var got result
+	for {
+		select {
+		case at := <-store.recorded:
+			starts = append(starts, at)
+		case delay := <-clock.added:
+			if delay != 500*time.Millisecond {
+				continue
+			}
+			clock.mu.Lock()
+			mono := clock.mono
+			clock.mu.Unlock()
+			if !jumped && mono < jumpAt {
+				clock.Advance(delay)
+				waitSteps++
+				clock.mu.Lock()
+				mono = clock.mono
+				clock.mu.Unlock()
+				if mono == jumpAt {
+					clock.Advance(jumpBy)
+					jumped = true
+				}
+			} else if mono < advanceUntil {
+				clock.Advance(delay)
+				waitSteps++
+			}
+		case got = <-finished:
+			for {
+				select {
+				case at := <-store.recorded:
+					starts = append(starts, at)
+				default:
+					goto complete
+				}
+			}
+		case <-deadline:
+			t.Fatalf("Run did not finish; starts=%v wait steps=%d", starts, waitSteps)
+		}
+	}
+complete:
+	if got.err != nil {
+		t.Fatalf("Run: %v", got.err)
+	}
+	wantStarts := make([]time.Time, len(wantOffsets))
+	for index, offset := range wantOffsets {
+		wantStarts[index] = start.Add(offset)
+	}
+	if len(starts) != len(wantStarts) {
+		t.Fatalf("round starts=%v, want %v", starts, wantStarts)
+	}
+	for i := range wantStarts {
+		if !starts[i].Equal(wantStarts[i]) {
+			t.Errorf("round %d started %s, want %s", i+1, starts[i], wantStarts[i])
+		}
+		if !starts[i].Before(start.Add(duration)) {
+			t.Errorf("round %d started at/past exclusive end: %s >= %s", i+1, starts[i], start.Add(duration))
+		}
+	}
+	if got.outcome.CurrentRounds != len(wantOffsets) || got.outcome.SkippedSlots != wantSkipped || batches != len(wantOffsets) {
+		t.Fatalf("outcome rounds=%d skipped=%d batches=%d, want %d/%d/%d", got.outcome.CurrentRounds, got.outcome.SkippedSlots, batches, len(wantOffsets), wantSkipped, len(wantOffsets))
+	}
+	if len(notes) != len(wantNotes) {
+		t.Fatalf("skip notes=%q, want %q", notes, wantNotes)
+	}
+	for i := range wantNotes {
+		if notes[i] != wantNotes[i] {
+			t.Errorf("skip note %d=%q, want %q", i+1, notes[i], wantNotes[i])
+		}
+	}
+	if jumped != (jumpBy > 0) || waitSteps != wantWaitSteps {
+		t.Fatalf("jumped=%v wait steps=%d, want jumped=%v steps=%d", jumped, waitSteps, jumpBy > 0, wantWaitSteps)
 	}
 }
 
