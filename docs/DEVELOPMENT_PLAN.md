@@ -1,6 +1,6 @@
 # cn-mon development and review plan
 
-M0's specification/license foundation and M1's executable/target/model foundation are merged in [PR #7](https://github.com/evdanil/gotest/pull/7) and [PR #8](https://github.com/evdanil/gotest/pull/8). M2 native-probe implementation is authorized and in progress. This plan defines the component and integration gates for **cn-mon** in `evdanil/gotest`; no later milestone is complete merely because its contracts are documented.
+M0's specification/license foundation and M1's executable/target/model foundation are merged in [PR #7](https://github.com/evdanil/gotest/pull/7) and [PR #8](https://github.com/evdanil/gotest/pull/8). M2 probe components are implemented and validated natively on Linux and Windows in [PR #9](https://github.com/evdanil/gotest/pull/9); external review and merge remain pending. M3 history is next after that gate. This plan defines the component and integration gates for **cn-mon** in `evdanil/gotest`; no later milestone is complete merely because its contracts are documented.
 
 ## Working rules for every milestone
 
@@ -27,7 +27,7 @@ M0 specification/license boundary
                      └─ M6 release qualification and delivery
 ```
 
-M1's component gate is complete; M2 and later gates remain pending. An acceptance ID referenced before its full integration milestone covers only the explicitly named component portion; it is not a claim that the entire scenario is complete. Operational target commands arrive in M4, reader commands and terminal integration in M5, and the full release-binary matrix in M6. Do not implement later commands merely to satisfy an earlier component gate. If a milestone becomes too large for useful review, split it into dependent PRs while keeping its combined acceptance gate and documentation current.
+M1 is merged. M2's component implementation and native validation are complete; its external review/merge and M3–M6 gates remain pending. An acceptance ID referenced before its full integration milestone covers only the explicitly named component portion; it is not a claim that the entire scenario is complete. Operational target commands arrive in M4, reader commands and terminal integration in M5, and the full release-binary matrix in M6. Do not implement later commands merely to satisfy an earlier component gate. If a milestone becomes too large for useful review, split it into dependent PRs while keeping its combined acceptance gate and documentation current.
 
 ### M0 — specification and permissive-license foundation (merged)
 
@@ -56,7 +56,7 @@ Implementation boundaries for the independent Luna agents:
 
 Keep M1's module graph free of unused external dependencies; ICMP, SQLite and terminal dependencies enter at M2, M3 and M5 respectively. Do not create placeholder packages for them. Each agent records an actual failing behavior test and its subsequent passing result, with source-fixture provenance; compiler failures alone do not establish a behavioral regression test. The shared API contracts must be agreed before production edits, and the root integrates/test-runs them together before independent review. Linux and Windows native CI results are required for the M1 gate; a cross-build or an unavailable runner is not a pass.
 
-### M2 — native ICMP, TCP and runtime feasibility (in progress)
+### M2 — native ICMP, TCP and runtime feasibility (components validated; review/merge pending)
 
 This milestone retires the principal platform risk before persistence/UI work grows around an unproved backend. Add the pinned scoped pro-bing adaptation and keep an explicit upstream patch/provenance record. Use fixtures to prove the unmodified behavior fails required error-attribution tests, then add the smallest extension: structured error callback, quoted-packet correlation, sufficient receive buffers, admission through Linux filtering, active identifier management, and reply-over-error aggregation. Retain upstream core assertions while replacing public-DNS dependencies with injected/literal fixtures and moving genuine raw-socket cases into the controlled opt-in native suite; run nested-module tests explicitly.
 
@@ -130,7 +130,11 @@ Deterministic suites need no external service or ICMP privilege. Native jobs exp
 
 ## Current evidence and unresolved verification
 
-Source behavior was inspected at the pinned cn-tool revision. The pro-bing and Digineo source revisions above were inspected; deterministic pro-bing packet tests showed that non-echo messages are currently ignored. This supports the need for an extension, **not** that the proposed extension works. M1's component implementation, native Linux/Windows checks and internal/external reviews passed its merge gate in [PR #8](https://github.com/evdanil/gotest/pull/8), merge commit `e958cff`. M2 is active, with its native probe/error-delivery and permission experiments still unverified; full schema interoperability, the SQLite version/transitive audit and release validation remain later gates.
+Source behavior was inspected at the pinned cn-tool revision. Characterization of unmodified pro-bing showed that it ignored non-echo messages; the scoped M2 adaptation now handles correlated errors and has passed the controlled native gate. M1's component implementation, native Linux/Windows checks and internal/external reviews passed its merge gate in [PR #8](https://github.com/evdanil/gotest/pull/8), merge commit `e958cff`.
+
+M2 evidence is recorded in [PR #9](https://github.com/evdanil/gotest/pull/9), commit `80541a7`: [native Linux job](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322) and [native Windows job](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856) both passed. [Run logs and artifacts](https://github.com/evdanil/gotest/actions/runs/38037349729) contain the actual platform, privilege and packet-event evidence. Linux's isolated namespaces exercised target-sourced rejection and intermediate-sourced errors for both families, including rejection-only aggregation. Windows exercised both families through actual sockets with a raw test emitter, correlating target/intermediate error callbacks after the first echo and before the second while preserving echo precedence. This is evidence of native delivery/correlation, not an echo-suppressed Windows rejection-only aggregate. The harnesses also exercised granted and ordinary-user/denied privilege contexts; their logged outcomes govern rather than an assumed uniform Windows permission result.
+
+M2's external Codex review and merge remain pending. The implemented APIs do not make operational CLI modes available: target-run integration is M4 and reader commands are M5. Full schema interoperability, the integrated SQLite version/transitive audit and release validation remain later gates. M3 implementation starts only after M2 merges and its architecture is recorded through the normal review process; this M2 PR does not change the specified SQLite driver or Go version floor.
 
 All product scope decisions are settled: name, destination, platforms, native Go ICMP requirement, library strategy, built-in monitor/INI/history compatibility, license and model/review workflow. The approved exceptions exclude the interactive menu, XLSX, and Python `process_data` hooks/custom-plugin framework; no Python adapter or runtime is included. No shipped plugin targets the monitor, but custom callbacks can alter/drop rows before history and exit-status calculation, so that custom behavior is explicitly outside compatibility rather than treated as equivalent. Each implementation milestone remains subject to the normal internal/external review and green-check merge gate. Exact dependency versions beyond the reviewed ICMP source are pinned at first use after their platform/license checks; compatibility discoveries require a documented reviewable amendment, not an implicit feature loss.
 
@@ -138,7 +142,8 @@ Progress checklist:
 
 - [x] M0 specification/license PR reviewed and merged ([PR #7](https://github.com/evdanil/gotest/pull/7))
 - [x] M1 foundation/model PR reviewed and merged ([PR #8](https://github.com/evdanil/gotest/pull/8))
-- [ ] M2 native-probe PR and runtime gate reviewed and merged
+- [x] M2 probe components and both native runtime jobs validated ([PR #9](https://github.com/evdanil/gotest/pull/9), `80541a7`)
+- [ ] M2 native-probe PR externally reviewed and merged
 - [ ] M3 history/interoperability PR reviewed and merged
 - [ ] M4 orchestration/JSON PR reviewed and merged
 - [ ] M5 readers/UI/formats PR reviewed and merged

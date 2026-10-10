@@ -38,10 +38,14 @@ ICMP errors. Tests include offline upstream assertions, quoted-packet cases,
 Linux BPF checks, and blocked-I/O lifecycle cases.
 
 The native Linux and Windows runtime gates, including raw ICMP permission
-outcomes, are still pending CI evidence. These test files do not establish
-native platform support by themselves. The Digineo `go-ping` project was
-consulted as a parsing reference only; it is not a runtime dependency and no
-code from it is copied.
+outcomes, passed in [CI run
+38037349729](https://github.com/evdanil/gotest/actions/runs/38037349729):
+[Linux native job](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322)
+and [Windows native job](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856).
+The run's ordinary Linux and Windows validation jobs passed as well; the job
+artifacts contain the native phase logs and platform details. The Digineo
+`go-ping` project was consulted as a parsing reference only; it is not a
+runtime dependency and no code from it is copied.
 
 ## cn-tool behavior provenance
 

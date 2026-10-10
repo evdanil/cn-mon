@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components are in progress; target execution through the CLI, history storage, live display, and reports remain pending. This is not yet an operational network monitor.
+`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components and their Linux/Windows runtime gates are complete; target execution through the CLI, history storage, live display, and reports remain pending. This is not yet an operational network monitor.
 
 ## Current CLI
 
@@ -70,11 +70,19 @@ session on a disposable test machine:
 The Windows harness requires administrator rights to add and remove scoped
 loopback aliases and firewall rules, and to create and remove a temporary
 unprivileged test account. Both scripts log phase evidence and clean up their
-temporary network state. The native Linux and Windows gates are required for
-platform validation. Their outcomes are pending; package tests do not
-establish native network support or raw ICMP permission behavior. See
-[third-party notices](THIRD_PARTY_NOTICES.md) for source provenance and license
-details.
+temporary network state. The native Linux gate passed its echo, target-error,
+intermediate-error, and raw-socket permission phases. The Windows native gate
+also passed its required probe and permission phases. Both results, along with
+the ordinary Linux and Windows validation jobs, are recorded in [CI run
+38037349729](https://github.com/evdanil/gotest/actions/runs/38037349729):
+[Linux native](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322),
+[Windows native](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856),
+[Linux checks](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451464),
+and [Windows checks](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451412).
+The job artifacts contain the native phase logs and platform details. Package
+tests and cross-compilation alone do not establish native network support or
+raw ICMP permission behavior. See [third-party notices](THIRD_PARTY_NOTICES.md)
+for source provenance and license details.
 
 ## Configuration foundation
 

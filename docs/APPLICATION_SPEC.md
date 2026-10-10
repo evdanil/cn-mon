@@ -1,6 +1,6 @@
 # cn-mon application specification
 
-Status: [M0 specification](https://github.com/evdanil/gotest/pull/7) and [M1 foundation](https://github.com/evdanil/gotest/pull/8) are merged; M2 native probes are in progress. Operational target commands arrive in M4 and history-reader commands in M5.
+Status: [M0 specification](https://github.com/evdanil/gotest/pull/7) and [M1 foundation](https://github.com/evdanil/gotest/pull/8) are merged. M2 probe components are implemented and validated natively on Linux and Windows in [PR #9](https://github.com/evdanil/gotest/pull/9); external review and merge remain pending. M3 history is next after that gate. Operational target commands arrive in M4 and history-reader commands in M5.
 
 Destination: `evdanil/gotest`. Product and executable: **cn-mon** (`cn-mon.exe` on Windows).
 
@@ -176,6 +176,8 @@ Observation precedence per host is: echo reply `!`; target rejection `R`; any TC
 Do not elevate, install capabilities, change sysctls, firewall rules, or network configuration automatically. Linux raw ICMP normally needs `CAP_NET_RAW` on the installed binary or an authorized elevated process; enabling `ping_group_range` alone does not grant raw sockets. A datagram-only fallback is excluded because it has not established equivalent error attribution. Windows attempts the supported raw ICMP path; upstream reports non-elevated success on some Windows versions, which is not evidence for every target system. Publish tested ordinary/elevated-user outcomes and a concrete remedy for access denial.
 
 Permission denial is reported clearly and yields exit 3 as a probe execution failure; it must not be labeled `NO RESPONSE`. TCP may still run and its results are printed, but cannot hide that failure. IPv6 unavailable is `NO ROUTE`, not a raw-socket permission diagnostic. Readers need no ICMP privilege. A real native Linux and Windows runtime gate, including denial behavior, is required before claiming support; cross-compilation alone is insufficient.
+
+M2 component evidence: [Linux](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322) and [Windows](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856) native jobs passed for commit `80541a7` in PR #9. The controlled harnesses exercised IPv4/IPv6 echo, target/intermediate error delivery and correlation, and platform privilege contexts through actual sockets. Windows error injection verifies correlated callbacks after the first echo and before the second, preserving echo precedence; it does not claim an echo-suppressed Windows rejection-only aggregate. [Run logs and artifacts](https://github.com/evdanil/gotest/actions/runs/38037349729) retain the observed privilege outcomes. Command output/exit-code integration remains M4 work, and release-binary qualification remains M6 work.
 
 ## 5. Rounds, scheduling and shutdown
 
