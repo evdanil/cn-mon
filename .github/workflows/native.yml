@@ -295,6 +295,23 @@ jobs:
           ref: 2e2f3c40ef6718486f1ca4477f9145029ec495fa
           path: .reference/cn-tool
           persist-credentials: false
+      - name: Restore pinned Python source files as LF bytes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          git -C .reference/cn-tool -c core.autocrlf=false -c core.eol=lf checkout-index --force -- cn_tool/utils/ping_store.py cn_tool/utils/ping_history.py
+          if ($LASTEXITCODE -ne 0) { throw 'failed to restore pinned source files from their LF Git blobs' }
+          $expected = @{
+            'cn_tool/utils/ping_store.py' = '326ab0570dc7bf3fc43209d21d00f46f8c2b8778ea0daf4cf905c52a8c337fd4'
+            'cn_tool/utils/ping_history.py' = 'd491678b240f23d26a2673951ba293eabff3a992d2840bbc1219a63ec31a89bf'
+          }
+          foreach ($relativePath in $expected.Keys) {
+            $file = Join-Path '.reference/cn-tool' $relativePath
+            $actual = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected[$relativePath]) { throw "pinned source file hash mismatch after LF checkout: $relativePath ($actual)" }
+          }
+          Write-Host '::notice title=cn-mon Python source checkout::pinned files restored as LF and raw SHA-256 verified'
       - name: Run native Python and Go history interop
         shell: pwsh
         env:
