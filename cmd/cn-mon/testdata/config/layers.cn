@@ -1,0 +1,9 @@
+[DEFAULT]
+history_days = 11
+[ping]
+history_file: '~/layer history.db'
+[theme]
+theme = pastel
+[logging]
+logfile = layer.log
+level = WARN

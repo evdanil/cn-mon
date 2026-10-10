@@ -1,0 +1,5 @@
+Characterized against evdanil/cn-tool commit 2e2f3c40ef6718486f1ca4477f9145029ec495fa.
+Sources: cn_tool/main.py (configuration discovery and logging bootstrap),
+cn_tool/utils/config.py (ConfigParser and value coercion), and
+cn_tool/utils/logging.py (file preparation, append, encoding, and fallback).
+Native executable-adjacent .cn maps to the resolved executable directory.

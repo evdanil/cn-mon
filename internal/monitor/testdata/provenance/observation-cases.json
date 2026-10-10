@@ -1,0 +1,13 @@
+[
+  {"name":"echo reply wins despite failed TCP","result":"OK","tcp":{"22":"error"},"want":"!","execution_failure":true,"partial":false},
+  {"name":"partial echo reply","result":"OK (1/2 replies)","tcp":{"22":"closed"},"want":"!","execution_failure":false,"partial":true},
+  {"name":"target rejection wins over TCP","result":"REJECTED","tcp":{"22":"error"},"want":"R","execution_failure":true,"partial":false},
+  {"name":"TCP open","result":"NO RESPONSE","tcp":{"22":"open"},"want":"T","execution_failure":false,"partial":false},
+  {"name":"TCP closed is seen","result":"NO RESPONSE","tcp":{"22":"closed"},"want":"T","execution_failure":false,"partial":false},
+  {"name":"ICMP error","result":"ERROR: permission denied","tcp":{},"want":"E","execution_failure":true,"partial":false},
+  {"name":"unresolved name","result":"no such host","tcp":{},"want":"?","execution_failure":false,"partial":false},
+  {"name":"unreachable","result":"UNREACHABLE","tcp":{},"want":"U","execution_failure":false,"partial":false},
+  {"name":"IPv6 route unavailable","result":"NO ROUTE","tcp":{},"want":"U","execution_failure":false,"partial":false},
+  {"name":"silent observation","result":"NO RESPONSE","tcp":{},"want":".","execution_failure":false,"partial":false},
+  {"name":"TCP-only error stays silent","result":"NO RESPONSE","tcp":{"22":"error"},"want":".","execution_failure":true,"partial":false}
+]

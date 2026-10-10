@@ -1,0 +1,10 @@
+   [ping] # indented section
+   history_days =
+
+     90
+   history_file = ./indented.db
+ [theme] ; section comment
+   theme = dark
+ [logging] # section tail comment
+   logfile = formatting.log
+   level = ERROR

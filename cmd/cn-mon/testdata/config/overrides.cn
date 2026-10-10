@@ -1,0 +1,4 @@
+[ping]
+HISTORY_DAYS = +2_5
+[logging]
+level: FATAL

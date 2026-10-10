@@ -1,0 +1,9 @@
+history_days = 77
+[ping]
+history_file = preamble.db
+history_days = 91
+[theme]
+theme = pastel
+[logging]
+logfile = preamble.log
+level = ERROR
