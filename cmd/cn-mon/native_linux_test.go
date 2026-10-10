@@ -646,6 +646,25 @@ func (out *nativePTYOutput) waitGrowth(after int, timeout time.Duration) bool {
 	return out.length() > after
 }
 
+func (out *nativePTYOutput) waitQuiet(quiet, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	lastLength := out.length()
+	quietSince := time.Now()
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		length := out.length()
+		if length != lastLength {
+			lastLength = length
+			quietSince = time.Now()
+			continue
+		}
+		if time.Since(quietSince) >= quiet {
+			return true
+		}
+	}
+	return time.Since(quietSince) >= quiet
+}
+
 func (out *nativePTYOutput) waitContains(want []byte, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

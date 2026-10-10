@@ -25,7 +25,7 @@ fi
 
 set +e
 CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 CNMON_NATIVE_COMMAND_BINARY="$command_binary" \
-	go test -tags native -v -timeout=10m -run '^TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)$' ./cmd/cn-mon >"$main_log" 2>&1
+	go test -tags native -v -timeout=10m -run '^TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)$' ./cmd/cn-mon >"$main_log" 2>&1
 result=$?
 set -e
 cat "$main_log"
@@ -43,6 +43,17 @@ required=(
 	'--- PASS: TestNativeCommandLinuxPTYQuitRestoresTerminal'
 	'--- PASS: TestNativeCommandLinuxPTYKeysRemainActiveWithRedirectedStderr'
 	'--- PASS: TestNativeCommandLinuxRestoresScreenBeforeBlockedFinalReport'
+	'--- PASS: TestNativeCommandLinuxPTYForegroundSuspendLifecycle'
+	'--- PASS: TestNativeCommandLinuxPTYLossWithInheritedHangupIgnored'
+	'--- PASS: TestNativeCommandLinuxPTYHardInterruptRestoresWhileUIWritesBlocked'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/normal/tostop=false'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/normal/tostop=true'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/graceful/tostop=false'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/graceful/tostop=true'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/report-error/tostop=false'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/report-error/tostop=true'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/hard/tostop=false'
+	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/hard/tostop=true'
 	'--- PASS: TestNativeCommandINIHistoryRetention'
 	'--- PASS: TestNativeCommandPreInputInterrupt'
 	'--- PASS: TestNativeCommandRunSignalsAndSecondInterrupt'
@@ -67,6 +78,17 @@ required=(
 	'CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored no-color=attrs-only report=complete termios=restored cursor=visible history=finished'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY redirected-stderr=keys-active q=graceful termios=restored'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY blocked-report prefilled='
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-start=unchanged foreground-activation=pass background-owner-mode=unchanged suspend=restored resume=rearmed q=graceful cursor=restored'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY terminal-loss=inherited-hup-ignore useful-round=complete report=complete history=finished post-loss-cpu-ticks-per-2s='
+	'CNMON_NATIVE_COMMAND_LINUX_PTY blocked-ui=second-interrupt exit=130 termios=restored'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=normal tostop=false owner-mode=unchanged frame=none cursor-show=1'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=normal tostop=true owner-mode=unchanged frame=none cursor-show=0'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=graceful tostop=false owner-mode=unchanged frame=none cursor-show=1'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=graceful tostop=true owner-mode=unchanged frame=none cursor-show=0'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=report-error tostop=false owner-mode=unchanged frame=none cursor-show=1'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=report-error tostop=true owner-mode=unchanged frame=none cursor-show=0'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=hard tostop=false owner-mode=unchanged frame=none cursor-show=1'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=hard tostop=true owner-mode=unchanged frame=none cursor-show=0'
 	'CNMON_NATIVE_COMMAND_CLOSED_STDOUT'
 )
 for marker in "${required[@]}"; do
