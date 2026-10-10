@@ -1,0 +1,26 @@
+{
+  "source_repository": "https://github.com/evdanil/cn-tool",
+  "source_commit": "2e2f3c40ef6718486f1ca4477f9145029ec495fa",
+  "source_license": "Apache-2.0",
+  "source_files": {
+    "cn_tool/utils/ping_store.py": "326ab0570dc7bf3fc43209d21d00f46f8c2b8778ea0daf4cf905c52a8c337fd4",
+    "cn_tool/utils/ping_history.py": "d491678b240f23d26a2673951ba293eabff3a992d2840bbc1219a63ec31a89bf"
+  },
+  "python": "3.12.14",
+  "sqlite": "3.53.1",
+  "generator": "scripts/generate-history-fixture.py",
+  "generator_sha256": "45ace81baff191bf41ead4af0f88279d97177e0cddb4ca58a69ed8c1df8d7491",
+  "fixture": "cn-tool-schema1.db",
+  "fixture_sha256": "5aae3fcf016d24e8699e3cfe9010d3861b912f2e726473dce577ab497a89ebe4",
+  "semantic_manifest": "semantic-manifest.json",
+  "schema_version": 1,
+  "schema_create_statements": 7,
+  "tcp_ports_empty_array": true,
+  "result_tcp_null_and_empty_values": true,
+  "wal_checkpoint": [
+    0,
+    0,
+    0
+  ],
+  "wal_sidecars_committed": false
+}

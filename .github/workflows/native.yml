@@ -10,6 +10,7 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -26,6 +27,31 @@ jobs:
         env:
           CGO_ENABLED: '1'
         run: go test -race ./...
+      - name: Audit reachable vulnerabilities (Linux production packages)
+        run: |
+          set -euo pipefail
+          tool_dir="$RUNNER_TEMP/govulncheck-bin"
+          mkdir -p "$tool_dir"
+          : > "$RUNNER_TEMP/govulncheck-linux.log"
+          GOBIN="$tool_dir" go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          "$tool_dir/govulncheck" -version
+          set +e
+          "$tool_dir/govulncheck" -scan=symbol ./cmd/... ./internal/... > "$RUNNER_TEMP/govulncheck-linux.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/govulncheck-linux.log"
+          if [ "$result" -ne 0 ]; then
+            python3 -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(errors="replace"); s=s[-6000:]; s=s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"); print("::error title=Linux govulncheck failed::" + s)' "$RUNNER_TEMP/govulncheck-linux.log"
+            exit "$result"
+          fi
+          echo '::notice title=govulncheck::scanner=v1.8.0 target=linux/amd64 scope=./cmd/...+./internal/... scan=symbol result=pass database=https://vuln.go.dev'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-govulncheck-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/govulncheck-linux.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Test pinned nested pro-bing module
         run: |
           go -C third_party/pro-bing vet ./...
@@ -52,6 +78,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -96,6 +123,38 @@ jobs:
           $nestedTestExit = Invoke-GoCheck '-C third_party/pro-bing test' @('-C', 'third_party/pro-bing', 'test', './...')
           if ($failed -eq 0 -and $nestedTestExit -ne 0) { $failed = $nestedTestExit }
           if ($failed -ne 0) { exit $failed }
+      - name: Audit reachable vulnerabilities (Windows production packages)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $toolDir = Join-Path $env:RUNNER_TEMP 'govulncheck-bin'
+          New-Item -ItemType Directory -Force $toolDir | Out-Null
+          $log = Join-Path $env:RUNNER_TEMP 'govulncheck-windows.log'
+          Set-Content -Path $log -Value '' -NoNewline
+          $env:GOBIN = $toolDir
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tool = Join-Path $toolDir 'govulncheck.exe'
+          & $tool -version
+          & $tool -scan=symbol ./cmd/... ./internal/... *> $log
+          $result = $LASTEXITCODE
+          Get-Content $log
+          if ($result -ne 0) {
+            $details = Get-Content -Raw $log
+            if ($details.Length -gt 6000) { $details = $details.Substring($details.Length - 6000) }
+            $details = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=Windows govulncheck failed::$details"
+            exit $result
+          }
+          Write-Host '::notice title=govulncheck::scanner=v1.8.0 target=windows/amd64 scope=./cmd/...+./internal/... scan=symbol result=pass database=https://vuln.go.dev'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-govulncheck-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\govulncheck-windows.log
+          if-no-files-found: error
+          retention-days: 14
       - name: Build and smoke test
         shell: pwsh
         env:
@@ -118,6 +177,7 @@ jobs:
 
   native-linux-probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -143,6 +203,7 @@ jobs:
 
   native-windows-probe:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -160,5 +221,126 @@ jobs:
         with:
           name: cn-mon-native-windows-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}\cn-mon-native-windows
+          if-no-files-found: error
+          retention-days: 14
+
+  history-python-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.14'
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: evdanil/cn-tool
+          ref: 2e2f3c40ef6718486f1ca4477f9145029ec495fa
+          path: .reference/cn-tool
+          persist-credentials: false
+      - name: Run native Python and Go history interop
+        env:
+          CGO_ENABLED: '0'
+          CNMON_HISTORY_INTEROP: '1'
+          CNMON_CN_TOOL_SOURCE: ${{ github.workspace }}/.reference/cn-tool
+          CNMON_PYTHON: python
+        run: |
+          set +e
+          go test -v -timeout=8m -run '^Test(PythonSourceFixtureSemantics|NativeHistoryPythonGoInterop|NativeHistoryConcurrentPythonGoWALAndPrune|NativeHistoryKilledPythonWriterRecovers|NativeHistoryKilledGoWriterRecovers|NativeHistoryHeldGoSnapshotAcrossPythonPrune|NativeHistoryHeldPythonSnapshotAcrossGoPrune)$' ./internal/history > "$RUNNER_TEMP/history-python-interop.log" 2>&1
+          result=$?
+          set -e
+          cat "$RUNNER_TEMP/history-python-interop.log"
+          if [ "$result" -ne 0 ]; then
+            python3 -c 'from pathlib import Path; import sys; p=Path(sys.argv[1]); s=p.read_text(errors="replace"); s=s[-6000:]; s=s.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"); print("::error title=history Python/Go interop failed::" + s)' "$RUNNER_TEMP/history-python-interop.log"
+            exit "$result"
+          fi
+          grep -q -- '--- PASS: TestPythonSourceFixtureSemantics' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- '--- PASS: TestNativeHistoryPythonGoInterop' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- '--- PASS: TestNativeHistoryKilledGoWriterRecovers' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- '--- PASS: TestNativeHistoryHeldGoSnapshotAcrossPythonPrune' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- '--- PASS: TestNativeHistoryHeldPythonSnapshotAcrossGoPrune' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- 'CNMON_HISTORY_INTEROP_RESULT python-go-python=pass go-python-go=pass' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- 'CNMON_HISTORY_INTEROP_CONCURRENT python-reader=pass go-reader=pass source-writer=pass go-writer=pass prune=pass' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- 'CNMON_HISTORY_INTEROP_KILLED_WRITER recovery=pass source-status=finished' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- 'CNMON_HISTORY_INTEROP_KILLED_GO_WRITER recovery=pass committed-round=preserved partial-round=absent' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- 'CNMON_HISTORY_INTEROP_GO_SNAPSHOT held-view=stable python-commit=visible python-prune=visible next-view=updated' "$RUNNER_TEMP/history-python-interop.log"
+          grep -q -- 'CNMON_HISTORY_INTEROP_PYTHON_SNAPSHOT held-view=stable go-commit=visible go-prune=visible next-view=updated' "$RUNNER_TEMP/history-python-interop.log"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-history-python-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/history-python-interop.log
+          if-no-files-found: error
+          retention-days: 14
+
+  history-python-windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.10'
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: evdanil/cn-tool
+          ref: 2e2f3c40ef6718486f1ca4477f9145029ec495fa
+          path: .reference/cn-tool
+          persist-credentials: false
+      - name: Restore pinned Python source files as LF bytes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          git -C .reference/cn-tool -c core.autocrlf=false -c core.eol=lf checkout-index --force -- cn_tool/utils/ping_store.py cn_tool/utils/ping_history.py
+          if ($LASTEXITCODE -ne 0) { throw 'failed to restore pinned source files from their LF Git blobs' }
+          $expected = @{
+            'cn_tool/utils/ping_store.py' = '326ab0570dc7bf3fc43209d21d00f46f8c2b8778ea0daf4cf905c52a8c337fd4'
+            'cn_tool/utils/ping_history.py' = 'd491678b240f23d26a2673951ba293eabff3a992d2840bbc1219a63ec31a89bf'
+          }
+          foreach ($relativePath in $expected.Keys) {
+            $file = Join-Path '.reference/cn-tool' $relativePath
+            $actual = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $expected[$relativePath]) { throw "pinned source file hash mismatch after LF checkout: $relativePath ($actual)" }
+          }
+          Write-Host '::notice title=cn-mon Python source checkout::pinned files restored as LF and raw SHA-256 verified'
+      - name: Run native Python and Go history interop
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          CNMON_HISTORY_INTEROP: '1'
+          CNMON_CN_TOOL_SOURCE: ${{ github.workspace }}/.reference/cn-tool
+          CNMON_PYTHON: python
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $log = Join-Path $env:RUNNER_TEMP 'history-python-interop.log'
+          go test -v -timeout=8m -run '^Test(PythonSourceFixtureSemantics|NativeHistoryPythonGoInterop|NativeHistoryConcurrentPythonGoWALAndPrune|NativeHistoryKilledPythonWriterRecovers|NativeHistoryKilledGoWriterRecovers|NativeHistoryHeldGoSnapshotAcrossPythonPrune|NativeHistoryHeldPythonSnapshotAcrossGoPrune)$' ./internal/history *> $log
+          $result = $LASTEXITCODE
+          Get-Content $log
+          if ($result -ne 0) {
+            $details = (Get-Content -Raw $log)
+            if ($details.Length -gt 6000) { $details = $details.Substring($details.Length - 6000) }
+            $details = $details.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Host "::error title=history Python/Go interop failed::$details"
+            exit $result
+          }
+          $text = Get-Content -Raw $log
+          foreach ($marker in @('--- PASS: TestPythonSourceFixtureSemantics', '--- PASS: TestNativeHistoryPythonGoInterop', '--- PASS: TestNativeHistoryKilledGoWriterRecovers', '--- PASS: TestNativeHistoryHeldGoSnapshotAcrossPythonPrune', '--- PASS: TestNativeHistoryHeldPythonSnapshotAcrossGoPrune', 'CNMON_HISTORY_INTEROP_RESULT python-go-python=pass go-python-go=pass', 'CNMON_HISTORY_INTEROP_CONCURRENT python-reader=pass go-reader=pass source-writer=pass go-writer=pass prune=pass', 'CNMON_HISTORY_INTEROP_KILLED_WRITER recovery=pass source-status=finished', 'CNMON_HISTORY_INTEROP_KILLED_GO_WRITER recovery=pass committed-round=preserved partial-round=absent', 'CNMON_HISTORY_INTEROP_GO_SNAPSHOT held-view=stable python-commit=visible python-prune=visible next-view=updated', 'CNMON_HISTORY_INTEROP_PYTHON_SNAPSHOT held-view=stable go-commit=visible go-prune=visible next-view=updated')) {
+            if (-not $text.Contains($marker)) { throw "missing required history interop marker: $marker" }
+          }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-history-python-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\history-python-interop.log
           if-no-files-found: error
           retention-days: 14

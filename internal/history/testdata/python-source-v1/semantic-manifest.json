@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "request": {
+    "id": 1,
+    "key": "24156eb156b5bb9d83f75c5e4391db9736dee2ae690bd2c99e8154414d124fff",
+    "targets": [
+      "api.example.com",
+      "db.example.com"
+    ],
+    "tcp_ports": [],
+    "hosts": [
+      "api.example.com",
+      "db.example.com",
+      "legacy.example.com",
+      "timeout.example.com",
+      "unreachable.example.com",
+      "unresolved.example.com",
+      "future.example.com"
+    ]
+  },
+  "runs": [
+    {
+      "id": "fixture-running-zero-round",
+      "request_id": 1,
+      "started": 1700000300.125,
+      "interval": 172800.0,
+      "until": null,
+      "host": "fixture-linux-or-windows",
+      "pid": 1237,
+      "heartbeat": 1700000300.375,
+      "round_seconds": null,
+      "ended": null,
+      "status": "running",
+      "rounds": 0,
+      "source": null
+    },
+    {
+      "id": "fixture-failed-zero-round",
+      "request_id": 1,
+      "started": 1700000200.5,
+      "interval": 10.0,
+      "until": null,
+      "host": "fixture-linux-or-windows",
+      "pid": 1236,
+      "heartbeat": 1700000200.75,
+      "round_seconds": null,
+      "ended": 1700000201.0,
+      "status": "failed",
+      "rounds": 0,
+      "source": "quote\"target"
+    },
+    {
+      "id": "fixture-stopped",
+      "request_id": 1,
+      "started": 1700000100.25,
+      "interval": 5.0,
+      "until": 1700001000.0,
+      "host": "fixture-linux-or-windows",
+      "pid": 1235,
+      "heartbeat": 1700000111.0,
+      "round_seconds": 0.875,
+      "ended": 1700000112.25,
+      "status": "stopped",
+      "rounds": 1,
+      "source": null
+    },
+    {
+      "id": "fixture-finished",
+      "request_id": 1,
+      "started": 1700000000.125,
+      "interval": null,
+      "until": null,
+      "host": "fixture-linux-or-windows",
+      "pid": 1234,
+      "heartbeat": 1700000000.25,
+      "round_seconds": null,
+      "ended": 1700000002.125,
+      "status": "finished",
+      "rounds": 2,
+      "source": "198.51.100.8"
+    }
+  ],
+  "rounds": [
+    {
+      "id": 1,
+      "run_id": "fixture-finished",
+      "started": 1700000000.375,
+      "interval": null,
+      "observations": "!RTU.E?",
+      "answered": 3,
+      "rows": [
+        {
+          "host": "api.example.com",
+          "address": "192.0.2.10",
+          "time": 1700000000.5,
+          "result": "OK (1/2 replies)",
+          "tcp": null
+        },
+        {
+          "host": "db.example.com",
+          "address": "2001:db8::2%eth0",
+          "time": 1700000000.625,
+          "result": "REJECTED - custom firewall text",
+          "tcp": null
+        },
+        {
+          "host": "legacy.example.com",
+          "address": "legacy \"quoted\" address – β",
+          "time": 1700000000.75,
+          "result": "historic custom hook text – β",
+          "tcp": {}
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "run_id": "fixture-finished",
+      "started": 1700000001.625,
+      "interval": null,
+      "observations": "U??E...",
+      "answered": 0,
+      "rows": []
+    },
+    {
+      "id": 3,
+      "run_id": "fixture-stopped",
+      "started": 1700000110.5,
+      "interval": 5.0,
+      "observations": "!......",
+      "answered": 1,
+      "rows": [
+        {
+          "host": "api.example.com",
+          "address": "192.0.2.10",
+          "time": 1700000110.75,
+          "result": "OK (2/2 replies)",
+          "tcp": {
+            "443": "open"
+          }
+        }
+      ]
+    }
+  ]
+}
