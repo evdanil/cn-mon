@@ -26,6 +26,11 @@ jobs:
         env:
           CGO_ENABLED: '1'
         run: go test -race ./...
+      - name: Test pinned nested pro-bing module
+        run: |
+          go -C third_party/pro-bing vet ./...
+          go -C third_party/pro-bing test ./...
+          CGO_ENABLED=1 go -C third_party/pro-bing test -race ./...
       - name: Build and smoke test
         env:
           CGO_ENABLED: '0'
@@ -86,6 +91,10 @@ jobs:
           if ($vetExit -ne 0) { $failed = $vetExit }
           $testExit = Invoke-GoCheck 'test' @('test', './...')
           if ($failed -eq 0 -and $testExit -ne 0) { $failed = $testExit }
+          $nestedVetExit = Invoke-GoCheck '-C third_party/pro-bing vet' @('-C', 'third_party/pro-bing', 'vet', './...')
+          if ($failed -eq 0 -and $nestedVetExit -ne 0) { $failed = $nestedVetExit }
+          $nestedTestExit = Invoke-GoCheck '-C third_party/pro-bing test' @('-C', 'third_party/pro-bing', 'test', './...')
+          if ($failed -eq 0 -and $nestedTestExit -ne 0) { $failed = $nestedTestExit }
           if ($failed -ne 0) { exit $failed }
       - name: Build and smoke test
         shell: pwsh
@@ -106,3 +115,50 @@ jobs:
           & .\dist\cn-mon.exe 127.0.0.1 *> $null
           if ($LASTEXITCODE -ne 3) { throw 'pending target mode did not exit 3' }
           exit 0
+
+  native-linux-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Install disposable namespace test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes iproute2 iptables util-linux
+      - name: Run isolated native ICMP gate
+        env:
+          CNMON_NATIVE_ARTIFACT_DIR: ${{ runner.temp }}/cn-mon-native-linux
+        run: scripts/test-native-linux.sh
+      - name: Upload native Linux evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-native-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cn-mon-native-linux
+          if-no-files-found: error
+          retention-days: 14
+
+  native-windows-probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Run native Windows ICMP gate
+        shell: pwsh
+        env:
+          CNMON_NATIVE_ARTIFACT_DIR: ${{ runner.temp }}\cn-mon-native-windows
+        run: ./scripts/test-native-windows.ps1
+      - name: Upload native Windows evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-native-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-native-windows
+          if-no-files-found: error
+          retention-days: 14

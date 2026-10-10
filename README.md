@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. Target execution, probes, history storage, live display, and reports are pending. This is not yet an operational network monitor.
+`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components and their Linux/Windows runtime gates are complete; target execution through the CLI, history storage, live display, and reports remain pending. This is not yet an operational network monitor.
 
 ## Current CLI
 
@@ -11,18 +11,22 @@ go run ./cmd/cn-mon --help
 go run ./cmd/cn-mon --version
 ```
 
-Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. Valid target, `--list`, `--show`, and `--follow` requests report that the operation is unavailable and exit 3; they perform no target, configuration, log, history, or network I/O in M1.
+Help and version exit successfully without reading configuration or opening log, history, or network resources. Invalid CLI input exits 2. Valid target, `--list`, `--show`, and `--follow` requests report that the operation is unavailable and exit 3; these command paths currently perform no target, configuration, log, history, or network I/O.
 
 ## Build and test
 
-Use Go 1.27.2 for the current workflow; the module requires Go 1.25 or newer. It currently has no external dependencies. With Go installed and available on `PATH`, run these commands from the repository root.
+Use Go 1.27.2 for the current workflow; the module requires Go 1.25 or newer. M2 has a local copy of the reviewed pro-bing core and pins its full Go dependency graph and checksums. With Go installed and available on `PATH`, run these commands from the repository root.
 
 On Linux:
 
 ```sh
 GO111MODULE=on GOTOOLCHAIN=local CGO_ENABLED=0 go build -o cn-mon ./cmd/cn-mon
+GO111MODULE=on GOTOOLCHAIN=local go vet ./...
 GO111MODULE=on GOTOOLCHAIN=local go test ./...
 GO111MODULE=on GOTOOLCHAIN=local CGO_ENABLED=1 go test -race ./...
+(cd third_party/pro-bing && GO111MODULE=on GOTOOLCHAIN=local go vet ./...)
+(cd third_party/pro-bing && GO111MODULE=on GOTOOLCHAIN=local go test ./...)
+(cd third_party/pro-bing && GO111MODULE=on GOTOOLCHAIN=local CGO_ENABLED=1 go test -race ./...)
 ```
 
 On Windows PowerShell:
@@ -32,12 +36,53 @@ $env:GO111MODULE = "on"
 $env:GOTOOLCHAIN = "local"
 $env:CGO_ENABLED = "0"
 go build -o cn-mon.exe ./cmd/cn-mon
+go vet ./...
 go test ./...
 $env:CGO_ENABLED = "1"
 go test -race ./...
+Push-Location third_party/pro-bing
+$env:CGO_ENABLED = "0"
+go vet ./...
+go test ./...
+Pop-Location
 ```
 
-Build and run on each target OS for native validation. A cross-compiled executable does not establish runtime support. The current build and tests exercise the M1 foundation only; they do not validate network monitoring.
+Race tests require a CGO-capable C compiler; the CI race checks run on Linux.
+The adapted core has its own module files, so vet and test it separately as
+shown above. Run its race test on Linux with CGO enabled. The native ICMP gate
+must also be run on the target operating system; cross-compilation alone does
+not establish runtime support:
+
+```bash
+# Linux: run from the repository root on a disposable host with sudo access.
+scripts/test-native-linux.sh
+```
+
+The Linux harness requires `sudo`, `ip`, `iptables`, `ip6tables`, and
+`setpriv`; it creates disposable network namespaces and exercises both
+privileged and denied raw-socket phases. On Windows, use an elevated PowerShell
+session on a disposable test machine:
+
+```powershell
+./scripts/test-native-windows.ps1
+```
+
+The Windows harness requires administrator rights to add and remove scoped
+loopback aliases and firewall rules, and to create and remove a temporary
+unprivileged test account. Both scripts log phase evidence and clean up their
+temporary network state. The native Linux gate passed its echo, target-error,
+intermediate-error, and raw-socket permission phases. The Windows native gate
+also passed its required probe and permission phases. Both results, along with
+the ordinary Linux and Windows validation jobs, are recorded in [CI run
+38037349729](https://github.com/evdanil/gotest/actions/runs/38037349729):
+[Linux native](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322),
+[Windows native](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856),
+[Linux checks](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451464),
+and [Windows checks](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451412).
+The job artifacts contain the native phase logs and platform details. Package
+tests and cross-compilation alone do not establish native network support or
+raw ICMP permission behavior. See [third-party notices](THIRD_PARTY_NOTICES.md)
+for source provenance and license details.
 
 ## Configuration foundation
 
