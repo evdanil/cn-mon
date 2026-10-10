@@ -1,0 +1,268 @@
+# cn-mon application specification
+
+Status: proposed specification; this milestone implements no utility code.
+
+Destination: `evdanil/gotest`. Product and executable: **cn-mon** (`cn-mon.exe` on Windows).
+
+## 1. Purpose and compatibility boundary
+
+Build a standalone Go CLI retaining the Ping Monitor behavior of `evdanil/cn-tool` 0.8.0, commit `2e2f3c40ef6718486f1ca4477f9145029ec495fa`. The reference is its `README.md`, `cn_tool/modules/ping_monitor.py`, `bulk_ping.py`, and `utils/ping_history.py`, `ping_store.py`, `ping_grid.py`, `ping_live.py`, `cli_input.py`, and `render.py`. When reference prose and code differ, the explicit contract below governs; characterization fixtures must record the source revision and Python version used.
+
+Supported release targets are **Linux x86-64** and **Windows x86-64**. ICMP is implemented in Go using maintained, permissively licensed Go code and OS socket APIs. Neither platform may execute `ping`, PowerShell, a shell, or another helper to perform network probes. The delivered binary needs no Python, C compiler, separately installed SQLite library, or network service.
+
+Retain IPv4/IPv6 targets, optional TCP probes, repeated and single-round runs, persistent history, request identity, sampled online periods, live terminal grid/table, `q`/`v`, signals, `--list`, `--show`, `--follow`, and table/JSON/Markdown/CSV output. Deliberate changes are the standalone command name, CLI flags replacing cn-tool's INI settings, a separate default history filename, native ICMP error handling, and the two supported platforms. Native error attribution may improve upon Windows' old text-parser limitations, but must never invent a sender.
+
+Exclude the interactive menu and prompts, XLSX and `--report`/`-r`, other cn-tool modules and their credentials, plugin hooks, macOS and other architectures, a daemon/service installer, web UI, notifications, alerts, authentication, packet capture, traceroute, arbitrary packet construction, RTT analytics, and a general-purpose configuration framework. There is no background service; cron or Windows Task Scheduler invokes the CLI.
+
+## 2. Command contract
+
+```text
+cn-mon [TARGET ...|-] [--file PATH|-] [--tcp PORTS]
+       [--every INTERVAL] [--for DURATION] [--since WHEN]
+       [--history-file PATH] [--history-days DAYS] [--format table|json|md|csv]
+cn-mon --list [--history-file PATH] [--format FORMAT]
+cn-mon --show ID [--since WHEN] [--history-file PATH] [--format FORMAT]
+cn-mon --follow ID [--since WHEN] [--history-file PATH] [--format FORMAT]
+cn-mon --help
+cn-mon --version
+```
+
+Options work before or after targets; `--` ends option parsing. No arguments prints a usage diagnostic and exits 2; it never opens a menu. `--help` and `--version` exit 0 without opening history or network sockets. Reject unknown options, malformed option values, and combinations outside the four modes; repeated scalar options use their last value, as in the reference CLI. `--list`, `--show`, and `--follow` are mutually exclusive and accept no targets, `--file`, `--tcp`, `--every`, or `--for`; `--list` also rejects `--since`. `--history-days` applies to target runs only. A request ID is a case-insensitive hexadecimal prefix of 4–64 characters; it must identify exactly one stored full key.
+
+| Setting | Default and rules |
+| --- | --- |
+| `--format` | `table`; accepted values: `table`, `json`, `md`, `csv` |
+| Run length | Neither scheduling flag: exactly one round; only `--every`: until stopped; only `--for`: interval 60 seconds |
+| Durations | Case-insensitive 1–4 ASCII digits followed by `s`, `m`, `h`, `d`, or `w`, with outer whitespace ignored; no fractional, signed, bare, or composite durations |
+| `--every` | At least 10 seconds |
+| `--for` | At least 10 seconds; when `--every` is explicitly supplied, duration must be at least that interval. `--for 30s` alone is valid and has one possible round on the default 60-second interval |
+| `--since` | All retained earlier rounds if omitted; age in minutes/hours/days/weeks or ISO date/date-time; naive date-times mean UTC, explicit offsets and `Z` are honored. Resolve relative ages once at command start; no sliding follow window |
+| `--since 0m` | A target run includes only its own completed rounds; show/follow filter by the resulting command-start cutoff |
+| `--history-file` | `~/.cn-mon-history.db`, with `~` meaning the current user's home on either OS; supplied relative paths resolve against the working directory; empty value is invalid |
+| `--history-days` | 30; positive integer days; prune only when a target run starts |
+| TCP | None; 1–5 distinct comma-separated ASCII ports, each 1–65535; strip whitespace around each port, deduplicate and sort ascending |
+
+No additional configuration file or environment-variable precedence is introduced. `NO_COLOR` is honored. History storage is a local file on one machine; SQLite WAL over NFS/SMB or simultaneous use of a database from different machines is unsupported and documented.
+
+Examples:
+
+```sh
+cn-mon 10.1.2.0/24 --for 2h --every 1m
+cn-mon 10.1.2.0/28 --every 30s
+cn-mon --file sites.txt --tcp 22,443 --since 0m --format json
+cn-mon --list
+cn-mon --show 1f48 --since 24h --format md
+cn-mon --follow 1f48
+cn-mon --show 1f48 --history-file ~/.cn-ping-history.db
+```
+
+## 3. Targets and stable request identity
+
+Read positional objects in order, then `--file`; a positional `-` is replaced at that position by stdin objects, and `--file -` appends them. Read stdin at most once and only when explicitly requested. Files/stdin are UTF-8 with optional leading BOM, split on whitespace after removing `#` comments and blank lines. Positional arguments are individual tokens; a quoted comma/space list retains usable IP literals and ignores non-address components if at least one usable IP remains, matching the reference parser's address-list behavior. Deduplicate input tokens while preserving first occurrence for diagnostics. Unreadable/non-UTF-8 input is usage error 2.
+
+Accept IPv4/IPv6 literals, CIDRs with host bits normalized, IPv4 dotted netmasks/hostmasks, and ASCII DNS names (single-label names included). For example, `10.1.2.5/255.255.255.0` and `10.1.2.5/0.0.0.255` both normalize to `10.1.2.0/24`, with the same expansion and request identity as that CIDR; malformed/noncontiguous masks are rejected. Names follow the reference length/label validation: total typed length 2–252, optional trailing dot, labels 1–63 ASCII letters/digits/hyphens with alphanumeric ends. An invalid all-digits-and-dots token is not a hostname. Reject IPv4-mapped IPv6 with a diagnostic giving the IPv4 form. Link-local IPv6 requires a nonempty interface zone on a single address, e.g. `fe80::1%eth0` or a Windows interface index; link-local subnets and zoned CIDRs are rejected. Preserve zone spelling in canonical identity and pass it to both probes.
+
+Each IPv4 network may contain at most 65,536 addresses (`/16` or narrower); each IPv6 network at most 65,536 (`/112` or narrower). These are **per-network** limits; there is no new aggregate ICMP host limit. With TCP, the aggregate expanded unique host list is at most 1,024. A token that would exceed the TCP limit is rejected whole, while later smaller tokens may fit. Invalid tokens are recorded in `not_found`; any remaining valid targets are still run, with exit precedence in section 9.
+
+Expansion matches the reference Python `ipaddress` host semantics: ordinary IPv4 excludes network/broadcast, `/31` includes both, `/32` the one address; ordinary IPv6 excludes subnet-router anycast, `/127` includes both, `/128` the one address. Subnet expansion additionally excludes loopback, multicast and reserved addresses; a single literal or host-sized prefix is used as supplied, including loopback. Private/documentation addresses are not excluded merely for being nonpublic. The compatibility fixtures freeze the reference exclusions rather than substituting Go's `IsGlobalUnicast`. Characterization baseline is Python 3.12.14: IPv4 reserved `240.0.0.0/4`; IPv6 reserved `::/8`, `100::/8`, `200::/7`, `400::/6`, `800::/5`, `1000::/4`, `4000::/3`, `6000::/3`, `8000::/3`, `a000::/3`, `c000::/3`, `e000::/4`, `f000::/5`, `f800::/6`, `fe00::/9`.
+
+Build identity in this order:
+
+1. Normalize valid CIDRs to network/prefix, addresses to compressed canonical spelling with zone unchanged, and names to lowercase while preserving a trailing dot.
+2. Deduplicate and lexicographically sort canonical tokens, including valid tokens whose hosts overlap another token. Sort unique TCP ports numerically.
+3. Re-expand these sorted tokens; keep the first occurrence of each host. A subnet's hosts are in numeric address order. DNS answers are **not** part of this host list or key.
+4. SHA-256 the UTF-8 encoding of Python-compatible compact JSON `[tokens, ports, hosts]`, with no spaces or newline. Match Python `json.dumps(..., separators=(",", ":"))` escaping, including ASCII escaping of any non-ASCII zone text; do not use Go's default HTML escaping. The full lowercase 64-hex key is stored; display its first 8 characters.
+
+Golden example: targets `10.1.2.5/30 Web01.EXAMPLE.NET`, ports `443,22`, produce bytes
+
+```json
+[["10.1.2.4/30","web01.example.net"],[22,443],["10.1.2.5","10.1.2.6","web01.example.net"]]
+```
+
+and key `1f48106300cacd9a109b91a8ddc79c64920f0feb58e7840459ff80b639b7cb46` (display `1f481063`). Reordering/duplicating equivalent inputs does not change it. Different canonical targets, ports, or expansion does; file path and content order alone do not. A stored request always retains its stored host list and key when read, even if a future expansion policy changes.
+
+Resolve each name again in every round, using the first OS-resolver IPv4 answer, or first IPv6 answer only when no IPv4 answer is available. Resolve a name once per round and use that address for both ICMP and TCP. An unresolved name produces `no such host`, observation `?`, and blank TCP fields. A run's final `not_found` includes names never resolved during that run; one successful resolution removes a name from that list even if it later fails. DNS completion order must not reorder hosts. Cancellation must stop waiting for a resolver without keeping the process alive.
+
+## 4. Native probes and result semantics
+
+### Selected implementation
+
+Use the maintained `github.com/prometheus-community/pro-bing` ICMP core, pinned initially to reviewed commit `bcbba8f702ab2b7a4a62697f10b27491d50b520b`, in raw ICMP mode on both supported platforms. Keep a narrowly scoped, checked-in adaptation under `third_party/pro-bing` with a local module replacement, upstream revision, retained licenses/notices, and a documented patch list. Keep upstream core tests and run that module's tests explicitly. Do not import its unrelated HTTP/example programs or add a generic backend/plugin framework.
+
+Unmodified pro-bing is insufficient: it drops non-echo messages, its Linux BPF filter accepts only echo replies, and Linux's receive buffer is sized for echo data. `OnRecvError` describes socket failures, not ICMP error packets. The bounded extension must:
+
+- Accept a structured correlated ICMP-error callback carrying family, type, code, sender, quoted destination, echo ID/sequence, and receive time.
+- Parse only received bytes, provide sufficient bounded receive space for error quotations (65,535-byte buffer per active pinger is acceptable), and reject malformed/truncated quotations safely. A buffer handed to another goroutine cannot be reused until ownership returns; use bounded ownership/copying rather than racing reads against parsing.
+- Preserve echo-ID filtering while admitting the relevant error types through Linux BPF; perform full error correlation in Go. No filter failure may silently suppress required errors.
+- Recognize IPv4 destination-unreachable, time-exceeded and parameter-problem, and IPv6 destination-unreachable, packet-too-big, time-exceeded and parameter-problem. Redirects and unrelated control messages are ignored.
+- Validate the quoted IP family, destination, protocol, ICMP echo request type, active ID and sequence. Walk supported IPv6 extension headers with strict bounds; incomplete or unplaceable packets stay unclassified. Use the payload tracking token whenever enough quoted bytes are available, but support the standard minimum quotation containing only the original IP and echo headers.
+- Allocate unique active echo identifiers within the process, correlate by destination/zone and sequence, and ignore stale/duplicate/unrelated packets. Preserve pro-bing's stronger token matching for echo replies. ICMP observations are evidence of network responses, not authenticated identity.
+- Retain error observations until the probe ends; an error must not finish the probe before a possible echo reply, which takes precedence.
+
+`github.com/digineo/go-ping` commit `d7f7779720587941d094ecae870cab3943bae156` is a useful MIT-licensed reference for quoted echo parsing, not the selected runtime dependency: its current error path handles only destination-unreachable and discards the sender. Do not substitute either library unmodified or write a new ICMP stack. If the bounded pro-bing adaptation cannot pass the native platform gate, revise this architecture in a reviewed PR before proceeding; an unproved fallback is not part of this specification.
+
+### Execution and classification
+
+Process hosts in deterministic batches of at most 100. Each resolvable host sends two echo requests, nominally at 0 and 1 seconds, within a 3-second host deadline. Count distinct replies, not duplicates. Timeout values are fixed in v1. Run TCP attempts concurrently with ICMP, with at most 100 concurrent TCP connects and a 3-second deadline per attempt. Close connections immediately after connect; transmit no application data. All probes and queued work accept cancellation; no unbounded goroutine, socket, worker, or result queue is permitted.
+
+| ICMP result | Meaning |
+| --- | --- |
+| `OK` | Two distinct echo requests received replies |
+| `OK (1/2 replies)` | One replied before the deadline |
+| `REJECTED` | No echo reply; at least one validated ICMP error came from the probed address |
+| `UNREACHABLE` | No reply or target-sourced error; a validated ICMP error came from another address |
+| `NO ROUTE` | Local IPv6 route/family unavailable; a reachability outcome, not a failed probe |
+| `NO RESPONSE` | No attributable network response by deadline, including an error lacking enough information to attribute |
+| `ERROR` | The probe could not execute correctly, including permission/resource/socket failures; diagnostic on stderr |
+| `not run` | Retained for reading compatible legacy history; native execution does not silently skip ICMP |
+
+Normalize sender/target addresses before comparing; scope identifiers disambiguate link-local addresses. Target-sourced error wins over intermediate errors; any echo reply wins over either. A local IPv4 host/network-unreachable send outcome is `UNREACHABLE`; IPv6 uses `NO ROUTE`. An ICMP packet is classified from its data and sender, never error-message language. Native Windows can report attributed IPv6 errors when received; if its API/socket provides no attributable packet, do not fabricate `R` or `U`.
+
+TCP states are lowercase: `open` (connected), `closed` (connection refused/reset), `timeout`, `unreachable` (host/network/family unavailable), `error` (other execution failure). `--tcp` success requires **open** in some included round; closed still proves a responding host.
+
+Observation precedence per host is: echo reply `!`; target rejection `R`; any TCP open/closed `T`; ICMP execution error `E`; unresolved name `?`; ICMP unreachable/no-route `U`; otherwise `.`. The separate execution-failure flag still records ICMP `ERROR` or any TCP `error`, even when another response makes the host seen. TCP-only errors do not turn a silent ICMP observation into `E` if the reference would record `.`.
+
+### Runtime permissions
+
+Do not elevate, install capabilities, change sysctls, firewall rules, or network configuration automatically. Linux raw ICMP normally needs `CAP_NET_RAW` on the installed binary or an authorized elevated process; enabling `ping_group_range` alone does not grant raw sockets. A datagram-only fallback is excluded because it has not established equivalent error attribution. Windows attempts the supported raw ICMP path; upstream reports non-elevated success on some Windows versions, which is not evidence for every target system. Publish tested ordinary/elevated-user outcomes and a concrete remedy for access denial.
+
+Permission denial is reported clearly and yields exit 3 as a probe execution failure; it must not be labeled `NO RESPONSE`. TCP may still run and its results are printed, but cannot hide that failure. IPv6 unavailable is `NO ROUTE`, not a raw-socket permission diagnostic. Readers need no ICMP privilege. A real native Linux and Windows runtime gate, including denial behavior, is required before claiming support; cross-compilation alone is insufficient.
+
+## 5. Rounds, scheduling and shutdown
+
+One completed round contains one observation for every canonical host, the full latest rows in memory, details for seen hosts, the round start, and per-seen-host batch timestamps. Missing DNS is a completed observation. A cancelled partial round contributes no observations, summary counts, online periods, execution-failure flag, or persisted round. Live pending cells are provisional only. Once all hosts have completed, a subsequent stop during committing keeps that completed round.
+
+Take the run origin before reading earlier history. Repeating slots are `origin + n*interval`. Begin the first eligible round immediately after setup if the end has not passed; subsequent round starts remain on those slots. After overrun, skip covered slots, never run overlapping/catch-up rounds, and report skipped slots in live/status output. A round ending exactly on a slot may use that slot; otherwise use the next slot. No new round begins at or beyond `origin + duration`; a round already in progress may finish past the end. A warning estimates a slow sweep before the first round using batches and the probe deadlines, and actual skipped slots remain observable.
+
+Inject wall and monotonic clocks. Run timestamps never move backwards: absorb a wall-clock rollback using monotonic elapsed time. Preserve forward wall-clock jumps/suspend gaps and end a duration-limited run that resumes past its end. Heartbeats use real UTC wall time, because other processes read them. Scheduled waiting and key polling remain responsive (at most 500 ms between control checks); no wall-clock change causes an indefinite wait. DNS/probe work writes heartbeats at least every 10 seconds while busy; idle scheduled runs remain live under the interval-based stale threshold.
+
+First Ctrl+C or `q` cancels ongoing work, discards an incomplete round, restores the terminal, finalizes the run as stopped, and prints the summary of completed rounds. The first Ctrl+C is a graceful stop, not automatically exit 130. A second Ctrl+C exits 130 promptly without waiting for network operations or SQLite lock timeouts; best-effort cleanup must not delay it. `q` does not increment the Ctrl+C count. Linux SIGTERM/SIGHUP perform graceful stop; preserve signals ignored on entry, including `nohup` behavior. A killed process/closed Windows console may leave a running row, later displayed as lost.
+
+At target-run start, read one consistent snapshot of retained same-request rounds with starts before the run origin and on/after the since cutoff. Those are `earlier_rounds`; do not continuously import other processes' new rounds into an active writer's summary. Then fold this run's completed rounds. If a one-round run finishes, include its start when inferring cron spacing; if it stops before completing, exclude that hypothetical sample. Reading failure does not use a half-folded earlier snapshot: continue with this run in memory and exit 3.
+
+## 6. Seen state and sampled online periods
+
+Only `!`, `R`, and `T` mean seen. Display the current seen character; otherwise a host seen earlier in the selected window is `x`. A never-seen host becomes sticky `U` after unreachable/no-route and stays `U` through later silence/error/name failure until it is seen. Other never-seen hosts display `E`, `?`, `.` or blank before probing. Partially replying `!` is highlighted in the warning color; a changed seen/not-seen state is highlighted separately.
+
+`seen` contains every host seen at least once, in canonical host order, with first/last seen sample time, seen-round count, total included round count, latest result, last known responding address, and every sampled online period. If no longer seen, latest is the current observation's result and its TCP summary fields are blank, rather than stale port states. `answering` counts hosts seen in the latest completed round, and includes `R`/`T`.
+
+A period starts with a seen sample and ends at the last seen sample before a not-seen round or a coverage gap. These are **sampled periods**, not a claim of uninterrupted availability or an uptime percentage. A gap exists when round starts are more than 2.5 times the larger expected spacing of adjacent rounds apart; equality does not split. For interval-less single-round runs, infer spacing from the lower median of consecutive sorted start gaps only after at least three samples. With no expected spacing, separate samples are separate periods. A gap splits periods even when both bounding samples see the host.
+
+Sort stored rounds by `(started, round_id)`, because concurrent runs can finish out of order. Clamp successive per-host sample times so last-seen and period endpoints cannot move backwards when an earlier-started slow round sampled later. Model memory holds aggregate host state and required online periods, not all prior rounds; storage reads are paginated. Unavoidable memory is proportional to hosts plus reported periods, not a claim of fixed memory regardless of history.
+
+An online period has `to: null` only when the host was seen in the latest included round **and the run owning that round is currently live**. Another live run alone is insufficient. A completed writer's final output closes its own periods at their last sample; show/follow can report open periods of a live request.
+
+## 7. SQLite history and read modes
+
+Use `modernc.org/sqlite` through `database/sql` for a native, CGO-free binary. Pin an audited version and its complete transitive module graph in `go.mod`/`go.sum` during the foundation milestone. Preserve the reference **schema version 1 read/write contract**. Existing cn-tool history may be explicitly selected with `--history-file`; no import command, automatic migration, automatic discovery, or overwrite is required. The separate default file avoids surprising cn-tool users. Continuing an old database is supported only after interoperability tests pass; stored keys and positional host lists are never recomputed or rewritten.
+
+Logical schema (column names and meanings are compatibility requirements):
+
+| Table | Columns |
+| --- | --- |
+| `meta` | `key` primary key, `value`; `schema_version = '1'` |
+| `request` | autoincrement integer `id`; unique `key`; JSON `targets`, `tcp_ports`, `hosts` |
+| `run` | text UUID `id`; `request_id`; nullable `source`; `started`, nullable `interval`, nullable `until`; `host`, `pid`, `heartbeat`; nullable `round_seconds`, nullable `ended`; `status` |
+| `round` | autoincrement integer `id`; `run_id`; `started`; positional `observations`; `answered` |
+| `result` | `(round_id, host)` primary key, without rowid; `address`, sample timestamp `t`, `result`, nullable JSON `tcp` |
+
+Retain foreign keys with delete cascades, indexes `run_by_request(request_id, started)` and `round_by_run(run_id, started)`, epoch-second REAL timestamps, decimal-string TCP map keys, reference observation alphabet `!RTU.E?`, and statuses `running`, `finished`, `stopped`, `failed`. `answered` is the number of seen detail rows. A run stores its input file basename in `source` where applicable. Request/run creation is one transaction; each completed round plus all seen result rows is one transaction. Preserve autoincrement non-reuse of round IDs. No observation string may be shorter/longer than its stored host list; no incomplete round is committed.
+
+Enable foreign keys, WAL, a bounded 10-second busy wait, and short transactions. Writers create missing parent directories and a new schema only in an empty database, after confirming no foreign tables/schema exist. Unknown, malformed, corrupt or newer schemas fail safely without journal-mode changes, migration, pruning, or other mutation. SQL values are parameterized. Validate decoded data before indexing/allocating; malformed rows produce a history error rather than a panic or partial summary. Ensure cancellation can interrupt lock waits and reads.
+
+Prune rounds older than the retention cutoff at run startup, cascading results. Delete runs with no remaining rounds when finalized or truly old/stale; preserve live runs awaiting their first/next round, including intervals longer than retention. Delete requests only when no runs remain. A writer encountering its first history read/write/finalization failure closes that store, reports the failure once, continues with in-memory rounds, prints the available summary, and exits 3; never claim unsaved data was persisted.
+
+Readers (`--list`, `--show`, `--follow`) open read-only and never create the database or parent directories, prune, update run status, set WAL, or checkpoint. Do not use SQLite `immutable=1` for a changing WAL database. SQLite may use WAL/SHM coordination files during read-only access; this contract guarantees no history/schema mutation, not byte-identical shared-memory files while writers are active. If the SQLite driver cannot access required sidecars with available permissions, report a history error; do not silently reopen as a writer. Tests verify no database writes or missing-history creation by reader modes. Missing history means an empty list/exit 1, or missing ID/exit 2 for show/follow.
+
+`--list` includes every recorded request, newest activity first (latest round or newest run start), with deterministic tie-breaking. Its targets label prefixes the newest run's file basename, then comma-joins canonical tokens until adding another would exceed 44 characters, always retaining the first token and suffixing ` +N` for omitted tokens; this label also appears in JSON. State is the newest live run if any, otherwise newest run. A stored `running` run is **lost** when heartbeat age is greater than `max(2.5*interval, 60s)`, or its local-machine PID is definitely gone. An inaccessible PID is not proof of death. Lost state is computed by readers and not persisted. Include zero-round active runs. Display running progress/next slot, finished, stopped early, failed, or lost-at-heartbeat detail.
+
+`--show` reads a consistent snapshot, applies the fixed since cutoff, folds rounds chronologically, and prints a summary without probing. `--follow` requires stderr to be a terminal, polls at most every 2 seconds, displays that request while any of its runs is live, and prints a final summary when all end or the follower is stopped. `q`/Ctrl+C stop only the follower. If nothing is live initially, print a note to stderr and the summary immediately.
+
+A follower uses a transaction-consistent request state, round high-water mark and ordered pages. It must notice new runs, out-of-start-order commits, new one-round samples changing inferred spacing, pruning of already folded rounds, and a request pruned then recreated under the same key/new integer ID. Rebuild the selected window when incremental folding is invalid; emit each newly committed change only once. A final follow read after `q` includes rounds committed since the preceding poll. Keep database snapshots short and release them between polling cycles.
+
+## 8. Terminal and report contract
+
+All final reports go to stdout; diagnostics, progress, changes and live frames go to stderr. JSON/CSV stdout must remain parseable while the live screen is active. Output errors other than an ordinary closed downstream pipe are reported as failures (exit 3); a closed pipe terminates quietly. No telemetry or secret configuration exists.
+
+Live drawing requires stderr TTY and, on Linux, foreground process-group ownership. Keys require stdin TTY and foreground ownership. Do not consume redirected target data as keys. A background job, cron invocation, or job moved to the background draws nothing and reads no keys; drawing may resume after `fg`. A disappearing terminal disables drawing without aborting useful work. Restore terminal input/console modes and cursor on graceful stop, normal exit, and errors. Handle Windows console modes and Linux suspend/resume explicitly; arrow/function-key escape sequences must not become `q`/`v` commands.
+
+The grid has a block for each canonical subnet and a `Hosts` block for single literals/names. Preserve subnet address positions, leaving excluded addresses blank; overlapping target blocks may reference the same host. Choose the largest fitting row length of 64, 32 or 16 cells, grouped by eight. If the grid cannot fit, use one counter line per target block. Fit header, counters, legend and footer to terminal width/height, counting display cells rather than bytes. Show only present legend characters, bounded change lines, and `(+N more)` when cropped. Recompute on resize. `v` toggles to a live table of hosts seen so far with Host, Latest, Last seen and Seen counts, including provisional current-round observations; another `v` returns to the grid. `q` stops; `Q`/`V` are equivalent to lowercase. No alternate menu or target prompt exists.
+
+Table output defaults to readable section tables. Its online-period cell shows the last three periods and `(+N earlier)` when needed; JSON/CSV/Markdown keep all periods. Color is disabled for redirected output and when `NO_COLOR` is set; meaning remains legible without color. Sanitize control/escape characters in human terminal text without corrupting structured values.
+
+JSON keeps empty sections and lower_snake_case keys. Existing keys below are stable; additions require an explicit contract change. All times are UTC to seconds as `2026-10-09T09:14:00+00:00`; absent text values are `""`, while the defined null cases remain JSON null. Counts are numbers, never formatted strings.
+
+| Mode | Exact top-level sections |
+| --- | --- |
+| Target run | `seen`, `latest`, `summary`, `not_found` |
+| List | `requests` |
+| Show/follow | `seen`, `latest`, `summary` |
+
+| Section | Row fields |
+| --- | --- |
+| `seen` | `host`, `address`, `latest`, ascending `tcp_<port>` fields, `first_seen`, `last_seen`, integer `seen_rounds`, integer `rounds`, `online: [{"from": timestamp, "to": timestamp|null}]` |
+| `latest` | Every host of the last completed round in canonical order: `host`, `address`, `result`, ascending `tcp_<port>` fields |
+| `summary` | One row when any selected round exists, otherwise `[]`: `id`, `started`, `ended`, `rounds`, `earlier_rounds`, `interval`, `hosts`, `seen`, `answering` |
+| `not_found` | `object`, `reason`; invalid input and names never resolved in the current target run |
+| `requests` | `id`, `targets`, `tcp` (comma list or `-`), integer `runs`, integer `rounds`, `last_round`, `state`, `detail` |
+
+For a target run, `summary.rounds` counts this run and `earlier_rounds` its initial historical snapshot; for show/follow, `rounds` counts all selected rounds and `earlier_rounds` is 0. `started`/`ended` are first/last selected **round starts**, not process lifetime. `interval` is seconds (number), null for an interval-less last/current run. A summary may show earlier data after a run finishes no round, but that run's success remains false. `seen.rounds` counts all included rounds.
+
+A current run retains full latest rows, including silent hosts' resolved addresses/TCP states. History stores details only for seen hosts: show/follow reconstruct unseen rows from their observation character with empty address/TCP fields; `NO ROUTE` is reconstructed as `UNREACHABLE` from `U`. This deliberate reference behavior must be documented and tested, not silently “repaired” with fabricated data.
+
+CSV is one UTF-8 table with `section` first, followed by the union of human-readable column headers in first-seen order across sections; standard quoting handles commas, quotes and newlines, and records use LF. Non-JSON seen rows use `Seen` (`N of M rounds`) and textual `Online`, not nested JSON. Markdown has one titled section and pipe table per nonempty output section; escape pipes and replace cell newlines with `<br/>`. Table/CSV/Markdown omit empty sections and emit nothing when every section is empty; JSON still keeps every section key. Textual periods use UTC `HH:MM`, include `MM-DD` across days, and show `now` only for genuinely open periods. All nonempty output ends with one newline. Cosmetic table borders may differ from Rich; fields, ordering, meaning, truncation disclosure and escaping may not.
+
+## 9. Exit status
+
+| Code | Target run | List | Show/follow |
+| --- | --- | --- | --- |
+| 0 | At least one round completed in this run and a host was seen in its selected window; with TCP, some selected round had an open requested port | At least one request | Host seen in selected window; with TCP, an open requested port |
+| 1 | Nothing met success, or no current round completed | Empty/missing history | No host/required open port in the selected window |
+| 2 | Usage/input/configuration error, including no usable targets | Invalid mode/options | Bad/missing/ambiguous ID, invalid options, or follow without stderr TTY |
+| 3 | Probe execution failed in a completed current round, or history/report-output failed; print available results | History/output read/write-to-stdout failure | History/output failure |
+| 130 | Second Ctrl+C; Ctrl+C during pre-run input parsing | Ctrl+C | Ctrl+C for show; second Ctrl+C for follow |
+
+Ordinary precedence is **3 > 2 > 0 > 1**; immediate interruption is 130. Invalid targets can coexist with useful output and exit 2; a probe/history failure then wins with 3. First graceful stop computes the normal code. Earlier recorded probe errors alone do not make a new run or show/follow exit 3. `REJECTED` without TCP is success; `NO ROUTE` alone is 1; a TCP closed-only round is seen but exits 1 with `--tcp`. Merely observing silence, unreachable, DNS absence or a closed port is not an execution error.
+
+## 10. Architecture, licensing and delivery
+
+Keep the application small and testable. One command at `cmd/cn-mon`; internal packages for `target` (input/canonical request), `probe` (DNS/ICMP/TCP and OS mapping), `monitor` (pure tracker plus orchestration), `history` (SQLite), and `output` (reports/live terminal). Split OS-specific files with build tags; do not create one interface per type. Introduce interfaces only at real nondeterministic boundaries: clock, resolver/prober, store, terminal/signal input. A single orchestrator owns tracker state and store writes; workers return indexed values. Renderers never mutate the model or write history. Keep output DTOs separate where JSON typing differs from human tables. Stdlib handles flags/JSON/CSV/networking where adequate; a small option parser is acceptable for interspersed flags, but no large CLI/TUI framework is required. Terminal primitives use `x/term`/`x/sys`, plus a small permissive display-width package if needed.
+
+Use Go modules and pin the development/CI toolchain (initial validated toolchain: Go 1.27.2; dependency floor currently Go 1.25). Build release artifacts with `CGO_ENABLED=0`; activate `GO111MODULE=on` and `GOTOOLCHAIN=local` in this environment because its existing Hello World activation disables modules. Do not make a runtime toolchain download a hidden prerequisite.
+
+All new first-party code and documentation are **Apache-2.0**, allowing reuse without a requirement to disclose derivative source. The destination currently carries GPL-3.0; replace that project licensing declaration for this newly authorized utility, inventory any retained material, and do not copy third-party GPL/copyleft code. Changing a root LICENSE cannot relicense someone else's material. Preserve cn-tool Apache attribution for adapted logic; preserve pro-bing's root MIT license and Apache source headers rather than asserting one overrides the other; retain Digineo MIT attribution if code is copied. Include `NOTICE`/third-party notices as applicable and an auditable dependency-license inventory, including SQLite bindings/transitives and any UI library. No GPL, LGPL, AGPL, SSPL, or other source-disclosure/copyleft runtime or build dependency is allowed. Pin/checksum modules and run dependency vulnerability checks proportionately; do not disable verification or claim a license audit before performing it.
+
+Release versioned `cn-mon_<version>_linux_amd64.tar.gz` and `cn-mon_<version>_windows_amd64.zip`, each containing the binary, concise usage/permission documentation, LICENSE and third-party notices, plus published SHA-256 checksums. `--version` reports version and revision. Run the built binaries on both native OSes; publish the tested OS/toolchain versions and the actual ICMP permission requirements. No installer, automatic update, signing service, or packaging ecosystem is required for v1.
+
+## 11. Acceptance scenarios
+
+These IDs are implementation/review traceability, not claims that the tests already passed.
+
+| ID | Required observable result |
+| --- | --- |
+| CLI-01 | Every mode/option combination, interspersed options, no-argument invocation, help/version, invalid durations/IDs/ports, and exit precedence behave as specified; no prompt occurs |
+| CLI-02 | BOM/comments/file/stdin/duplicate `-` cases collect exact targets once; unreadable and invalid UTF-8 input exit 2 |
+| TGT-01 | Canonicalization reproduces the golden SHA-256; reordering/duplicates/case/host-bit CIDRs agree; trailing-dot names, ports and changed expansion distinguish requests |
+| TGT-02 | `/16`, `/112`, `/31`, `/32`, `/127`, `/128`, equivalent IPv4 dotted netmasks/hostmasks, invalid masks, reserved/loopback/multicast exclusions, mapped IPv6, scoped link-local, malformed numeric tokens, and aggregate 1,024 TCP boundary match fixtures |
+| DNS-01 | Names resolve IPv4-first afresh each round; DNS address changes affect both probes together without changing request ID; unresolved/resolved transitions and cancellation are correct |
+| PRB-01 | Native IPv4 and IPv6 loopback each send/count two distinct requests; one reply is partial, duplicate/out-of-order replies never inflate count, and 3-second silence terminates |
+| PRB-02 | Packet fixtures cover each supported ICMP error type/family, target/intermediate sender, minimum quote, IPv6 extensions, malformed/truncated/unrelated/late packets, reply-over-error precedence, filter acceptance, and senderless Windows behavior |
+| PRB-03 | Native Linux and Windows tests actually exercise echo and controlled ICMP errors through OS sockets; Linux capability denied/granted and Windows ordinary/elevated outcomes are recorded; no shell probe is invoked |
+| PRB-04 | Controlled local TCP servers/refusals plus timeout/route/resource-error fixtures produce all five states; closed counts seen but open alone supplies TCP success; cancellation closes sockets |
+| MOD-01 | `!RT` seen, `x`, sticky `U`, first-round absence of change events, partial highlight, and pending-versus-committed state follow the precedence table |
+| MOD-02 | Seen times/counts/last address and every period match deterministic fixtures; exactly 2.5 intervals stays joined, a larger gap splits; fewer than three cron samples do not imply continuous coverage |
+| MOD-03 | Concurrent start-order/commit-order inversion never moves last-seen backwards; open period requires the owner of the latest round to be live |
+| RUN-01 | Fake clocks prove aligned slots, bounded duration, default interval, overrun skips, exact-slot completion, backward/forward clock jumps and suspend behavior without sleeping through long tests |
+| RUN-02 | Cancellation in DNS, queued work, active probing, waiting, history lock/read, and finalization restores terminal promptly; incomplete rounds vanish; a completed round stopped during commit remains |
+| RUN-03 | Earlier snapshot/since filtering, cancelled single-round cron-spacing correction, current-round counts, retained success with new silence, and current-versus-earlier failure precedence are exact |
+| DB-01 | Transaction fault injection never leaves half a round or orphan request; killed writers retain completed rounds; read/write failures continue in memory and exit 3 |
+| DB-02 | Python schema-1 fixtures are read and appended correctly; cn-tool can read Go-written fixtures; IDs/host positions/rows are stable; foreign/corrupt/newer DBs remain unchanged |
+| DB-03 | Readers do not create missing history or mutate history/schema/statuses; SQLite coordination sidecars are distinguished from history changes; concurrent writers/readers, lock timeout/cancel, retention, live zero-round runs and long-interval runs behave correctly |
+| HIS-01 | List ordering/counts/states, prefix ambiguity, missing history/ID, local PID disappearance, heartbeat threshold, and inaccessible PID outcomes are correct |
+| HIS-02 | Follow sees new runs, late commits, median changes, pruning and same-key recreation; stop affects only follower; completed-round changes are emitted once |
+| OUT-01 | Golden JSON validates exact sections/types/timestamps/nulls, historical sparse latest rows and exit-independent available output; live/status never contaminates stdout |
+| OUT-02 | CSV union/quoting/LF, Markdown escaping/all periods, omitted empty human-format sections, all-empty output, table period limit and no-color behavior match fixtures |
+| TTY-01 | Both OSes demonstrate grid/table toggle, q/Ctrl+C, resize/crop, restored console modes and stdin redirection; Linux additionally demonstrates foreground/background, suspend/resume, SIGTERM/SIGHUP and nohup |
+| REL-01 | Native full CI, race checks where supported, bounded-concurrency/cancellation tests, dependency/license review, CGO-free binary smoke tests, artifact contents/checksums and refreshed docs pass |
+
+The detailed TDD sequence, review gates, and current evidence limits are in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).

@@ -1,0 +1,132 @@
+# cn-mon development and review plan
+
+This is the specification milestone only. It delivers reviewed requirements, architecture, acceptance criteria and this plan to `evdanil/gotest`; it does not authorize or include utility implementation in the current task. The implementation milestones below define subsequent work. The product/executable name is **cn-mon**.
+
+## Working rules for every milestone
+
+1. Use **Astra at xhigh** for architecture and code review and **Luna at high** for implementation agents, as requested. Verify the assigned model/effort; do not silently substitute or claim a model was used when unavailable. Delegate implementation in bounded packages/behaviors with shared contracts; avoid concurrent edits to the same files. Delegation is permitted by the user's explicit agent request.
+2. Practice TDD: select acceptance IDs; write a failing behavior test/fixture first; demonstrate the expected failure; implement the smallest change; run it green; refactor with tests green. Record concise red/green evidence in the PR. Do not merge failing tests or use network silence/public DNS as a deterministic test oracle. Do not write tests that merely restate implementation constants.
+3. Apply KISS, DRY and YAGNI: reuse proven permissive libraries, isolate only actual nondeterministic boundaries, and add no unrequested subsystem. Resolve architectural contract changes in the specification before implementations diverge.
+4. Refresh README, help/examples, architecture/behavior documentation, dependency notices and this progress checklist after each major milestone as relevant. State implemented, partial and unverified capabilities accurately. Required tests, runtime permissions and known limitations belong with the feature they describe.
+5. Deliver each milestone as a separate branch and PR to `evdanil/gotest` targeting `main`. Keep PRs reviewable and dependency ordered; dependent work may prepare locally but cannot bypass the prior gate. Never commit unrelated setup artifacts, credentials or user changes. No direct push to `main`.
+6. Run appropriate local checks; request an **Astra xhigh** code review; fix its findings. Publish the PR with acceptance mapping, concise behavior/validation evidence and remaining limitations. Trigger the external Codex reviewer with the exact PR comment **`@codex review`**. This task explicitly authorizes that review request.
+7. Monitor CI checks, external review results and comments. Fix actionable findings, refresh docs, rerun affected checks, and request review again after material changes. Dismiss a finding only with a recorded technical explanation and reviewer resolution where required. A posted review request is not completed review; no response/timeout is not approval.
+8. Merge into `main` only when the current reviewed commit has all required checks green, Astra review is resolved, external Codex review has completed with no unresolved actionable findings, and repository protections allow merging. Do not equate cross-compilation or skipped native tests with a passed runtime gate. If API/network access or a reviewer is unavailable, preserve the completed branch/PR and report the precise blocked publication/review step; do not bypass it.
+
+Use the existing isolated checkout; do not create a worktree merely for onboarding. Tool activation must override this environment's inherited `GO111MODULE=off` with `GO111MODULE=on` and use `GOTOOLCHAIN=local`. The available Go toolchain is `/workspace/.cloud-setup/gotest/toolchains/go1.27.2/bin/go`. Setup scripts remain outside application code unless a later coding milestone deliberately introduces a repository development helper.
+
+## Milestone dependency order
+
+```text
+M0 specification/license boundary
+ └─ M1 executable foundation + target/model contracts
+     └─ M2 native ICMP/TCP and two-platform feasibility gate
+         └─ M3 compatible persistent history
+             └─ M4 complete run engine + machine output
+                 └─ M5 list/show/follow + live terminal + human formats
+                     └─ M6 release qualification and delivery
+```
+
+No implementation milestone is marked complete by this document. If a milestone becomes too large for useful review, split it into dependent PRs while keeping its combined acceptance gate and documentation current.
+
+### M0 — specification and permissive-license foundation (current task)
+
+Deliver `APPLICATION_SPEC.md` and `DEVELOPMENT_PLAN.md`, a concise README explaining that the repository is at specification stage, and the explicit Apache-2.0 license transition for the newly authorized utility. Inventory the tiny existing Hello World code before making licensing assertions; a root license replacement does not relicense third-party material. Record cn-tool source revision and the selected pro-bing adaptation/provenance approach. No `go.mod`, probes, migrations, fixtures, tests or CLI implementation is part of M0 unless already present in the repository.
+
+Review the complete behavioral map, native probing decision, schema-1 support, exit codes, exclusions and release scope. Astra performs architecture review. Open the specification PR, request external `@codex review`, resolve feedback, and merge only through the common gate. Documentation-only verification is appropriate here; do not invent an implementation test pass.
+
+Completion evidence: links to reviewed specification PR/merge, recorded external review, Apache licensing declaration and retained-material attribution. If publication is blocked, retain a reviewable local branch and distinguish local completion from PR/review/merge status.
+
+### M1 — executable, targets and pure monitor model
+
+Create the Go module at `github.com/evdanil/gotest`, `cmd/cn-mon`, the minimal internal package boundaries and pinned toolchain/module configuration. Replace the starter program through the normal coding PR. Pin permissive dependencies and notices, including the SQLite driver/terminal primitives when first needed; do not import unused frameworks. Add native Linux/Windows CI for deterministic tests/builds from the beginning.
+
+First write source-derived input/canonicalization/golden-ID fixtures and pure tracker tests. Cover reference subnet exclusions, scope IDs, port validation, one-round spacing, observed periods, state precedence and concurrent sample-time clamping. Implement only enough command parsing/help/version to establish the CLI contract; document remaining runtime modes as pending until integrated.
+
+Acceptance: **CLI-01, CLI-02, TGT-01, TGT-02, MOD-01, MOD-02, MOD-03** at unit/contract level. Inputs cover the exact golden request in the specification, changed ports/trailing dots, equivalent CIDRs, IPv4 dotted netmask/hostmask forms with identical expansion/key to `/24`, invalid masks, overlapping inputs, `/31`/`/127`, and UTF-8/BOM/stdin failures. Clock-independent model tests include no-history, zero-seen, changing DNS address supplied as fixture data, and millions of conceptual slots without sleeping.
+
+Gate: formatter, `go vet`, meaningful `go test` on both native OSes, race checks on supported runner configurations, and bounded-memory synthetic target/model checks. README/help show the product name, supported targets, build/test commands, output expectations and implementation status. Freeze reviewed first-party and dependency licensing inventory.
+
+### M2 — native ICMP, TCP and runtime feasibility
+
+This milestone retires the principal platform risk before persistence/UI work grows around an unproved backend. Add the pinned scoped pro-bing adaptation and keep an explicit upstream patch/provenance record. Use fixtures to prove the unmodified behavior fails required error-attribution tests, then add the smallest extension: structured error callback, quoted-packet correlation, sufficient receive buffers, admission through Linux filtering, active identifier management, and reply-over-error aggregation.
+
+Build the context-cancellable DNS and TCP adapters and the bounded batch executor. Use captured/generated packet fixtures for every type/family and an injected packet connection for races/deadlines/cancellation. Fuzz only hostile parsing boundaries: malformed ICMP/IP quotations and extension chains; seeded deterministic tests still run normally. Use local TCP listeners and injected route/resource errors rather than uncontrolled public services.
+
+Acceptance: **DNS-01, PRB-01, PRB-02, PRB-03, PRB-04**. Real native tests must exercise both IPv4 and IPv6 echo. In isolated test infrastructure, provoke at least one target-sourced rejection and one intermediate-sourced error for each family and verify receive/filter/correlation behavior; packet-decoder tests alone do not prove the OS delivers required packets. Windows sender-unavailable cases must remain honest no-response cases. Compare ordinary and elevated Windows behavior, and Linux denied/granted raw-socket access; publish actual results rather than upstream README promises.
+
+Gate: native Windows and Linux jobs, upstream-core adaptation tests, race tests around cancellation/reply/error races, no subprocess probes, 100-host concurrency cap and two-reply accounting. Required runtime cases are not silently skipped; when shared hosted runners cannot create the controlled topology, use an authorized isolated native runner/lab and attach reproducible evidence. No changes to the user's host firewall, capabilities or sysctls are made automatically. If the backend fails an essential platform behavior, stop the dependent implementation milestone and revise architecture through review; do not weaken the acceptance contract.
+
+Docs: actual runtime permission/install instructions, clear permission-denied behavior, IPv6 availability rules, probe timing and library patch maintenance instructions.
+
+### M3 — schema-1 SQLite history and interoperability
+
+Implement the small `database/sql` store with the pinned CGO-free SQLite driver. Generate representative SQLite schema-1 fixtures from the pinned cn-tool reference in a separate test-fixture preparation step; commit fixtures/provenance so Go's ordinary tests need no Python. Include a controlled interoperability check that cn-tool reads Go-created/appended history correctly. Retain all notices needed for adapted schema/logic.
+
+Write transaction/failure tests before writes: cancel/fail during request creation and mid-round insertion; verify rollback. Then implement safe schema validation, WAL writer setup, parameterized writes, read-only readers, paging/snapshots, retention and lifecycle state. Inject read/write/commit/close/lock errors and verify the error boundary; do not mock away every real SQLite behavior. Use real temporary databases and separate connections/processes for concurrency tests.
+
+Acceptance: **DB-01, DB-02, DB-03, HIS-01** at store/state level. Include filenames with spaces/Unicode/URI punctuation, Windows path handling, missing/unreadable files, existing WAL, unknown/newer/corrupt schemas, reader non-mutation, out-of-order commits, autoincrement non-reuse, stale local PIDs, inaccessible PIDs, zero-round live runs and intervals exceeding retention.
+
+Gate: deterministic SQLite tests on both native OSes, interoperability evidence in both directions, no external SQLite runtime, CGO-free build, clean licensing inventory. Full schema compatibility is an assertion supported by these checks, not by matching table names alone.
+
+Docs: schema/invariants, separate default history file, how `--history-file` reads or continues cn-tool history, local-filesystem requirement, supported backup procedure (SQLite backup/checkpoint-aware copy), retention, permissions and read-only limitations. Do not tell users to copy only a live database file while its WAL contains data.
+
+### M4 — run orchestration, cancellation and JSON
+
+Connect targets, probes, tracker and store with one state owner. Test scheduling against fake wall/monotonic clocks first. Add slot alignment, overrun handling, duration bounds, heartbeat, historical snapshot inclusion, per-round atomic completion, store failure fallback, signal/control abstraction, outcome/exit-code calculation and final JSON rendering. No UI is required to prove the engine.
+
+Acceptance: **RUN-01, RUN-02, RUN-03, OUT-01**, integrated **CLI-01**, and regression of prior IDs. Test cancellation during resolving, probing, waiting, read/lock wait and committing; complete-vs-incomplete round boundary; first/second Ctrl+C semantics; forward/backward clocks; all-invalid/partially-valid/all-unresolved targets; a past open TCP port with current silence; no current completed round despite earlier seen data. Ensure errors in cancelled partial rounds do not poison committed outcomes.
+
+Use subprocess tests for real signal/process lifetime/exit code and redirected stdout/stderr, plus local TCP/loopback native smoke tests. Run-engine tests must not wait minutes/hours to exercise schedules. Check goroutine/socket cleanup at cancellation and memory growth over many synthetic rounds; retain only aggregate state, required periods, and current rows.
+
+Gate: both OS unit/integration jobs and JSON goldens pass, no stdout progress contamination, a real native one-round recording can be read back, no partial-round history survives cancellation, and store failure still prints available JSON with exit 3.
+
+Docs: usable target-run examples, scheduling/window/exit-code contract, sampled-period limitation, JSON field semantics and current implementation status.
+
+### M5 — history commands, terminal and all output formats
+
+Implement list/show/follow from read-only snapshots, then the live UI and table/Markdown/CSV rendering. Pure frame/layout/golden-output tests precede terminal I/O. Keep console/platform handling behind a thin adapter; no menu, prompts or generalized event framework. Add a permissive display-cell-width helper only if necessary and audit it with its transitives.
+
+Acceptance: **HIS-01, HIS-02, OUT-02, TTY-01**, fully integrated **OUT-01** and **CLI-01**. Real concurrent writer/follower tests exercise late earlier-started commits, changed median spacing, pruning, new runs, same-key recreation and terminal-independent final summaries. Assert reader history/schema non-mutation and no missing-database creation, distinguishing SQLite WAL/SHM coordination from history writes; forbid silent write-mode fallback.
+
+Terminal validation uses Linux PTY and Windows console/ConPTY facilities. Exercise resize, tiny/narrow terminals, Unicode source labels, grid fallback, v/q, arrow/function keys, terminal disappearance, redirected stdin/stdout, `NO_COLOR`, and restoration after errors. Linux tests cover process groups, background/foreground, suspend/resume, SIGTERM, SIGHUP and ignored signals. Show which manual console cases were actually performed if the CI harness cannot exercise them; a skipped required case is not green.
+
+Gate: all four command modes work end to end with all four formats; output contracts match fixtures; follow never probes or stops its writer; final output survives UI disablement. Documentation includes CLI help, input-file examples, cron and Windows Task Scheduler examples, history-reader usage, grid legend, period semantics and permissions. Verify the examples against built binaries.
+
+### M6 — release qualification
+
+Run the complete acceptance matrix against release-built binaries on native Linux and Windows, not just `go test` packages. Use clean temporary homes/history files and an environment without system `ping` available to confirm there is no runtime dependency. Verify real loopback/TCP, controlled ICMP errors, denied/granted privileges, signals/console behavior, repeated historical aggregation, concurrent follow, read-only storage, and failure output.
+
+Complete **REL-01** and every outstanding acceptance ID. Required CI includes formatting/vet, native unit/integration suites, explicit adapted-library tests, CGO-free release builds, race tests where the selected toolchain supports them, fixed-duration parsing fuzz smoke, and pinned dependency/vulnerability/license inventory checks. Record genuine skips and infrastructure constraints; unresolved required platform cases block release and the final milestone merge. An unrelated upstream vulnerability advisory requires a reviewed applicability/fix decision, not a blind suppression.
+
+Build versioned Linux `.tar.gz` and Windows `.zip` artifacts with cn-mon/cn-mon.exe, README usage/permissions, Apache license, third-party notices and SHA-256 sums. Verify archive contents, execute the extracted binaries, and confirm `--version` identifies the release commit. Do not add an installer, updater, signing service or extra architecture.
+
+Refresh documentation from implemented behavior after final review: full command reference, tested platform/toolchain matrix, dependencies/licenses, maintenance instructions for the pro-bing patch, history compatibility, sampled-period caveats, troubleshooting, development/test workflow and release notes. Publish through the repository's authorized release workflow only after the normal review/green gate; do not represent locally created artifacts as published.
+
+## Native validation responsibilities
+
+| Layer | Routine CI | Explicit native/controlled evidence |
+| --- | --- | --- |
+| Targets/model/output | Deterministic fixtures and property cases on Linux/Windows | CLI executable smoke with redirected streams |
+| Probes | Packet/connection fixtures, parser fuzz seeds, local TCP, cancellation/race tests | Raw IPv4/IPv6 echo and error attribution on both OSes, permission denied/granted cases |
+| History | Real temporary SQLite, faults and concurrency on both OSes | Python schema-1 round trip and killed-process recovery |
+| Lifecycle/UI | Fake clocks, signal/process tests, pure frame goldens | Linux PTY/job control and native Windows console control/restore |
+| Release | CGO-free builds, checksums/archive validation, dependency inventory | Extracted-binary smoke on each claimed OS |
+
+Deterministic suites need no external service or ICMP privilege. Native jobs explicitly declare the privileges and network topology they require and are isolated from the user's network. Network/privilege restrictions in the current cloud environment may prevent some native checks; those restrictions are evidence limits, not permission to infer a pass.
+
+## Current evidence and unresolved verification
+
+Source behavior was inspected at the pinned cn-tool revision. The pro-bing and Digineo source revisions above were inspected; deterministic pro-bing packet tests showed that non-echo messages are currently ignored. This supports the need for an extension, **not** that the proposed extension works. No cn-mon code or new runtime test is delivered by this milestone. Windows runtime behavior, native error delivery, complete schema interoperability, chosen SQLite version/transitive audit and release validation remain future implementation gates.
+
+There is no unresolved product choice in this specification: name, destination, platforms, native ICMP requirement, library strategy, history compatibility, license, exclusions and model/review workflow are settled. Exact dependency versions beyond the reviewed ICMP source are pinned at first implementation after their platform/license checks; compatibility discoveries require a documented reviewable amendment, not an implicit feature loss.
+
+Progress checklist:
+
+- [ ] M0 specification/license PR reviewed and merged
+- [ ] M1 foundation/model PR reviewed and merged
+- [ ] M2 native-probe PR and runtime gate reviewed and merged
+- [ ] M3 history/interoperability PR reviewed and merged
+- [ ] M4 orchestration/JSON PR reviewed and merged
+- [ ] M5 readers/UI/formats PR reviewed and merged
+- [ ] M6 release qualification PR reviewed and merged; artifacts published as authorized
