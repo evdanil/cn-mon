@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1573,18 +1574,37 @@ func startNativeWindowsConsoleBootstrap(t *testing.T, directory, database, logPa
 		t.Fatalf("start private-console bootstrap: %v", err)
 	}
 	lines := make(chan []byte, 32)
+	var readers sync.WaitGroup
+	readers.Add(2)
 	go func() {
+		defer readers.Done()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			lines <- append([]byte(nil), scanner.Bytes()...)
 		}
-		close(lines)
 	}()
 	var stderrBytes bytes.Buffer
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
-		_, _ = io.Copy(&stderrBytes, stderr)
+		defer readers.Done()
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			_, _ = stderrBytes.Write(line)
+			_, _ = stderrBytes.Write([]byte{'\n'})
+			// Diagnostics are opportunistic so they can never back-pressure the
+			// bootstrap's stdout protocol or cleanup path.
+			diagnostic := append([]byte("BOOTSTRAP STDERR: "), line...)
+			select {
+			case lines <- diagnostic:
+			default:
+			}
+		}
+	}()
+	go func() {
+		readers.Wait()
+		close(lines)
 	}()
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- command.Wait() }()
@@ -1631,17 +1651,29 @@ func readNativeWindowsMarker(t *testing.T, lines <-chan []byte, marker string, t
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
+	recent := make([]string, 0, 12)
+	remember := func(line []byte) {
+		const maxLine = 512
+		if len(line) > maxLine {
+			line = append(append([]byte(nil), line[:maxLine]...), []byte("...[truncated]")...)
+		}
+		recent = append(recent, string(line))
+		if len(recent) > 12 {
+			recent = recent[len(recent)-12:]
+		}
+	}
 	for {
 		select {
 		case line, ok := <-lines:
 			if !ok {
-				t.Fatalf("bootstrap exited before marker %q", marker)
+				t.Fatalf("bootstrap exited before marker %q; recent helper output: %q", marker, recent)
 			}
 			if bytes.HasPrefix(line, []byte(marker)) {
 				return string(line)
 			}
+			remember(line)
 		case <-timer.C:
-			t.Fatalf("timed out waiting for private-console marker %q", marker)
+			t.Fatalf("timed out waiting for private-console marker %q; recent helper output: %q", marker, recent)
 		}
 	}
 }
