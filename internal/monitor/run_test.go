@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -474,6 +475,52 @@ func TestLiveWaitingDrawServicesDueHeartbeatImmediately(t *testing.T) {
 	case <-finished:
 	case <-time.After(time.Second):
 		t.Fatal("wait did not stop after cancellation")
+	}
+}
+
+func TestLiveWaitingDrawActivatesAfterForegroundEligibilityReturns(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	clock := &engineTestClock{now: start, added: make(chan time.Duration, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var enabled atomic.Bool
+	draws := make(chan LiveUpdate, 1)
+	r := &runner{
+		plan: RunPlan{Request: target.Request{Hosts: []string{"192.0.2.1"}}},
+		deps: RunDeps{Clock: clock, Live: &LiveHooks{
+			Enabled: func() bool { return enabled.Load() },
+			Draw:    func(update LiveUpdate) { draws <- update },
+		}},
+		hardCtx: ctx, workCtx: ctx, clock: newRunClock(clock), tracker: NewTracker([]string{"192.0.2.1"}, nil, 0),
+	}
+	finished := make(chan struct{})
+	go func() {
+		_, _ = r.waitUntilLive(cancel, start.Add(5*time.Second), nil, LiveWaiting)
+		close(finished)
+	}()
+	select {
+	case delay := <-clock.added:
+		if delay > liveRedrawPeriod {
+			t.Fatalf("disabled live wait timer=%s, want bounded eligibility poll <=%s", delay, liveRedrawPeriod)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial disabled live wait timer was not registered")
+	}
+	enabled.Store(true)
+	clock.Advance(liveRedrawPeriod)
+	select {
+	case update := <-draws:
+		if update.Phase != LiveWaiting {
+			t.Fatalf("reactivated live phase=%v, want waiting", update.Phase)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live drawing did not resume after foreground eligibility returned")
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("live wait did not stop after cancellation")
 	}
 }
 

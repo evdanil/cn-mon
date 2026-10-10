@@ -24,6 +24,7 @@ type terminalPlatform struct {
 	inputTTY     bool
 	outputTTY    bool
 	changed      bool
+	suspending   atomic.Bool
 	originalMode atomic.Pointer[unix.Termios]
 	inputErr     error
 	mu           sync.Mutex
@@ -126,13 +127,13 @@ func (s *Screen) readPlatformKeys() {
 	p := s.platform.(*terminalPlatform)
 	buffer := make([]byte, 32)
 	for {
-		if s.handlePlatformSignals(p) {
-			continue
-		}
 		select {
 		case <-s.done:
 			return
 		default:
+		}
+		if s.handlePlatformSignals(p) {
+			continue
 		}
 		if p.inputTTY && !linuxForeground(p.inFD) {
 			time.Sleep(50 * time.Millisecond)
@@ -214,6 +215,9 @@ func linuxForeground(fd int) bool {
 func (p *terminalPlatform) ensureInputMode() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.suspending.Load() {
+		return nil
+	}
 	if !p.changed && p.inputTTY && linuxForeground(p.inFD) {
 		if p.originalMode.Load() == nil {
 			original, err := unix.IoctlGetTermios(p.inFD, unix.TCGETS)
@@ -250,6 +254,10 @@ func (s *Screen) handlePlatformSignals(p *terminalPlatform) bool {
 	}
 	select {
 	case <-p.suspend:
+		if s.closedFlag.Load() {
+			return true
+		}
+		p.suspending.Store(true)
 		p.mu.Lock()
 		if original := p.originalMode.Load(); p.changed && original != nil && linuxForeground(p.inFD) {
 			_ = unix.IoctlSetTermios(p.inFD, unix.TCSETS, original)
@@ -261,8 +269,18 @@ func (s *Screen) handlePlatformSignals(p *terminalPlatform) bool {
 		}
 		signal.Stop(p.suspend)
 		signal.Reset(syscall.SIGTSTP)
-		_ = unix.Kill(-unix.Getpgrp(), unix.SIGTSTP)
+		select {
+		case <-s.done:
+			p.suspending.Store(false)
+			return true
+		default:
+		}
+		_ = unix.Kill(unix.Getpid(), syscall.SIGSTOP)
+		if s.closedFlag.Load() {
+			return true
+		}
 		signal.Notify(p.suspend, syscall.SIGTSTP)
+		p.suspending.Store(false)
 		if linuxForeground(p.inFD) {
 			p.ensureInputMode()
 			if s.activeFlag.Load() {

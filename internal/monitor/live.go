@@ -155,7 +155,7 @@ func (r *runner) liveChange(changes []Change) {
 
 func (r *runner) liveDelay(now time.Duration, last *time.Duration) time.Duration {
 	delay := heartbeatDelay(now, last)
-	if r.liveDrawEnabled() {
+	if r.deps.Live != nil && r.deps.Live.Draw != nil {
 		delay = min(delay, liveRedrawPeriod)
 	}
 	return delay

@@ -809,7 +809,7 @@ func (r *runner) waitUntil(cancelWork context.CancelFunc, slot time.Time, lastHe
 }
 
 func (r *runner) waitUntilLive(cancelWork context.CancelFunc, slot time.Time, lastHeartbeat *time.Duration, phase LivePhase) (bool, error) {
-	if !r.liveDrawEnabled() {
+	if r.deps.Live == nil || r.deps.Live.Draw == nil {
 		return r.waitUntil(cancelWork, slot, lastHeartbeat)
 	}
 	return r.waitUntilPhase(cancelWork, slot, lastHeartbeat, &phase)
