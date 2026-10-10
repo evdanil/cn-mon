@@ -195,7 +195,7 @@ type requestSummaryRow struct {
 
 func (s *Snapshot) requestPage(where string, args []any, limit int, paged bool) ([]requestSummaryRow, bool, error) {
 	query := requestSummaryCTE + `
-SELECT id, key, targets, tcp_ports, run_count, round_count, first_round, last_round,
+SELECT id, key, targets, tcp_ports, hosts, run_count, round_count, first_round, last_round,
        newest_id, newest_source, newest_started, newest_interval, newest_until, newest_host,
        newest_pid, newest_heartbeat, newest_rounds, newest_round_seconds, newest_ended, newest_status,
        activity
@@ -256,14 +256,14 @@ func finiteFloat(value float64) bool {
 }
 
 const requestActivityCTE = `WITH params(through) AS (VALUES (?)), request_activity AS (
- SELECT q.id, q.key, q.targets, q.tcp_ports,
+ SELECT q.id, q.key, q.targets, q.tcp_ports, q.hosts,
         (SELECT MAX(rd.started) FROM round rd JOIN run rr ON rr.id=rd.run_id
          WHERE rr.request_id=q.id AND rd.id <= (SELECT through FROM params)) AS last_round,
         (SELECT r.rowid FROM run r WHERE r.request_id=q.id
          ORDER BY r.started DESC, r.rowid DESC LIMIT 1) AS newest_rowid
  FROM request q
 ), request_rows AS (
- SELECT a.id, a.key, a.targets, a.tcp_ports, a.last_round,
+ SELECT a.id, a.key, a.targets, a.tcp_ports, a.hosts, a.last_round,
         n.id AS newest_id, n.source AS newest_source, n.started AS newest_started,
         n.interval AS newest_interval, n.until AS newest_until, n.host AS newest_host,
         n.pid AS newest_pid, n.heartbeat AS newest_heartbeat,
@@ -293,13 +293,13 @@ request_summary AS (
 func readRequestSummary(ctx context.Context, scanner interface{ Scan(...any) error }) (requestSummaryRow, error) {
 	var row requestSummaryRow
 	var id, runs, rounds int64
-	var key, targets, ports string
+	var key, targets, ports, hosts string
 	var firstRound, lastRound sql.NullFloat64
 	var newestID, newestSource, newestHost, newestStatus sql.NullString
 	var newestStarted, newestInterval, newestUntil, newestHeartbeat, newestRoundSeconds, newestEnded sql.NullFloat64
 	var newestPID, newestRounds sql.NullInt64
 	err := scanner.Scan(
-		&id, &key, &targets, &ports, &runs, &rounds, &firstRound, &lastRound,
+		&id, &key, &targets, &ports, &hosts, &runs, &rounds, &firstRound, &lastRound,
 		&newestID, &newestSource, &newestStarted, &newestInterval, &newestUntil, &newestHost,
 		&newestPID, &newestHeartbeat, &newestRounds, &newestRoundSeconds, &newestEnded, &newestStatus,
 		&row.activity,
@@ -307,10 +307,12 @@ func readRequestSummary(ctx context.Context, scanner interface{ Scan(...any) err
 	if err != nil {
 		return row, normalizeDBError(ctx, err)
 	}
-	meta, err := decodeRequestMeta(id, key, targets, ports)
+	// Validate the complete stored request; keep only its list metadata in the page.
+	request, err := decodeRequest(id, key, targets, ports, hosts)
 	if err != nil {
 		return row, fmt.Errorf("invalid request summary: %w", err)
 	}
+	meta := request.RequestMeta
 	if runs < 0 || rounds < 0 || (row.activity.Valid && !finiteFloat(row.activity.Float64)) {
 		return row, errors.New("request summary contains invalid counts or activity")
 	}

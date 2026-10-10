@@ -607,6 +607,71 @@ func TestReadRejectsNullNewestRunIdentifier(t *testing.T) {
 	}
 }
 
+func TestRequestSummariesRejectMalformedStoredHostsAndAcceptEmptyArray(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		hosts string
+	}{
+		{name: "malformed-json", hosts: `not-json`},
+		{name: "null-array", hosts: `null`},
+		{name: "null-element", hosts: `[null]`},
+		{name: "wrong-element-type", hosts: `[1]`},
+		{name: "duplicate-host", hosts: `["x","x"]`},
+		{name: "empty-host", hosts: `[""]`},
+		{name: "invalid-utf8", hosts: "[\"" + string([]byte{0xff}) + "\"]"},
+		{name: "unpaired-surrogate", hosts: `["\ud800"]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			writer, reader, _ := readTestOpenPair(t)
+			readTestExec(t, writer, `UPDATE request SET hosts=? WHERE id=?`, test.hosts, 1)
+			err := reader.View(context.Background(), func(snapshot *Snapshot) error {
+				_, err := snapshot.Requests(nil, 10)
+				if err == nil {
+					t.Fatalf("request summary accepted host JSON %q: %v", test.hosts, err)
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatalf("View: %v", err)
+			}
+			if got := readTestRequestHosts(t, writer, 1); got != test.hosts {
+				t.Fatalf("reader mutated stored host JSON to %q", got)
+			}
+		})
+	}
+	t.Run("valid-empty-array", func(t *testing.T) {
+		writer, reader, _ := readTestOpenPair(t)
+		readTestExec(t, writer, `UPDATE request SET hosts=? WHERE id=?`, `[]`, 1)
+		if err := reader.View(context.Background(), func(snapshot *Snapshot) error {
+			page, err := snapshot.Requests(nil, 10)
+			if err != nil {
+				return err
+			}
+			if len(page.Items) != 1 || page.Items[0].ID != 1 {
+				t.Fatalf("valid empty-host summary = %+v", page.Items)
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("View valid empty array: %v", err)
+		}
+		if got := readTestRequestHosts(t, writer, 1); got != `[]` {
+			t.Fatalf("readers changed valid empty hosts: %q", got)
+		}
+	})
+}
+
+func readTestRequestHosts(t *testing.T, store *Store, id int64) string {
+	t.Helper()
+	var hosts string
+	err := store.withTx(context.Background(), false, func(conn *sql.Conn) error {
+		return conn.QueryRowContext(context.Background(), `SELECT hosts FROM request WHERE id=?`, id).Scan(&hosts)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hosts
+}
+
 func TestSpacingMatchesExpectedSpacingForGeneratedSamples(t *testing.T) {
 	cases := []struct {
 		name   string

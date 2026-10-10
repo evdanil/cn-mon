@@ -1,6 +1,6 @@
 # cn-mon
 
-`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components passed their Linux and Windows gates. M3 adds persistent history APIs and cross-language Linux/Windows gates; local Linux interoperability passes, and the Windows history result remains a required CI check. The CLI does not yet connect these components, and live display and reports remain pending. This is not yet an operational network monitor.
+`cn-mon` is being built as a native Go network monitor for Linux x86-64 and Windows x86-64. The M1 foundation includes help/version, CLI validation, configuration and logging components, target input and request identity, and the pure monitor model. M2 native probe components passed their Linux and Windows gates. M3 adds persistent history APIs and cross-language interoperability; all seven required history cases passed on hosted Linux and Windows CI. The current [PR 10](https://github.com/evdanil/gotest/pull/10) is awaiting final review and merge. The CLI does not yet connect these components; target runs and JSON reports are M4 work, while table/CSV/Markdown reports and live display/readers remain M5 work. This is not yet an operational network monitor.
 
 ## Current CLI
 
@@ -111,17 +111,34 @@ CGO_ENABLED=0 go test -v -timeout=8m \
 
 The native interop gate records the Python and Go SQLite versions, source
 revision and checksums, WAL page details and bounded WAL growth during held
-snapshots, and sampled Go heap usage. The checked-in fallback history path is
+snapshots, and sampled Go heap usage. The seven required cases passed on both
+hosted platforms at candidate commit `6b1dc93236fff50828957b92698993d4de07de7c`.
+The runs verified these runtime versions and the same two pinned raw source
+hashes on each platform:
+
+| Hosted runner | Go / mode | Go SQLite driver / SQLite | Python / stdlib SQLite |
+| --- | --- | --- | --- |
+| Linux `amd64` | Go 1.27.2, `CGO_ENABLED=0` | ncruces driver 0.35.6 / SQLite 3.53.4 | Python 3.12.14 / SQLite 3.45.1 |
+| Windows `amd64` | Go 1.27.2, `CGO_ENABLED=0` | ncruces driver 0.35.6 / SQLite 3.53.4 | Python 3.12.10 / SQLite 3.49.1 |
+
+Both source files were checked against their pinned raw SHA-256 values:
+`ping_store.py` `326ab0570dc7bf3fc43209d21d00f46f8c2b8778ea0daf4cf905c52a8c337fd4`;
+`ping_history.py` `d491678b240f23d26a2673951ba293eabff3a992d2840bbc1219a63ec31a89bf`.
+See the [Linux native history job](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473559)
+and [Windows native history job](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473348)
+for the runtime annotations and passing case markers. The checked-in fallback history path is
 `~/.cn-ping-history.db` with 30-day retention; the five INI settings and CLI
 override precedence are listed in [Configuration foundation](#configuration-foundation).
 History databases are local files for use on one machine; WAL on NFS/SMB or
 shared concurrently across machines is unsupported. For a backup, use SQLite's
 online-backup facility, or stop every writer, complete a successful checkpoint
 and close the database, then copy it. Do not copy only a live `.db` file while
-its WAL may contain committed pages. Linux interoperability, including the
-pure-Go test binary, has passed locally; native Windows interoperability and
-the official vulnerability scans remain required hosted CI checks. The Python
-dependency is test-only and is not part of the application runtime.
+its WAL may contain committed pages. Hosted `govulncheck` v1.8.0 scans against
+the official Go vulnerability database passed for both `linux/amd64` and
+`windows/amd64`, covering `./cmd/...` and `./internal/...` at the same candidate
+commit; see the [Linux scan](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473308)
+and [Windows scan](https://github.com/evdanil/gotest/actions/runs/38043224090/job/114187473356).
+The Python dependency is test-only and is not part of the application runtime.
 
 ## Configuration foundation
 
