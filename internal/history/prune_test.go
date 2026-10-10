@@ -182,10 +182,12 @@ func TestPruneEmptyRunRequiresBothStrictStalenessConditions(t *testing.T) {
 		{"stale running empty run deleted", "running", cutoff.Add(-time.Second), nil, false},
 		{"long interval keeps empty live run", "running", now.Add(-3 * 24 * time.Hour), pruneTestDuration(2 * 24 * time.Hour), true},
 		{"finalized empty run deleted", "finished", now, nil, false},
+		{"stopped empty run deleted", "stopped", now, nil, false},
+		{"failed empty run deleted", "failed", now, nil, false},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			key := strings.Repeat(string("789abc"[i]), 64)
+			key := strings.Repeat(string("123456abcdef"[i]), 64)
 			request := writeTestRequest(key)
 			run := writeTestRun("prune-empty-"+tc.name, tc.heartbeat)
 			run.Interval = tc.interval
@@ -212,6 +214,101 @@ func TestPruneEmptyRunRequiresBothStrictStalenessConditions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPruneRejectsMalformedStoredRunStatusWithoutMutation(t *testing.T) {
+	statuses := []string{"bogus", "", "lost"}
+	for statusIndex, status := range statuses {
+		for _, hasOldRound := range []bool{false, true} {
+			name := "empty_run"
+			if hasOldRound {
+				name = "run_with_old_round"
+			}
+			t.Run(status+"/"+name, func(t *testing.T) {
+				store := writeTestOpen(t)
+				ctx := context.Background()
+				now := writeTestTime(7000)
+				request := writeTestRequest(strings.Repeat(string("abcdef"[statusIndex]), 64))
+				runID := "prune-invalid-status-" + name
+				requestID, err := store.BeginRun(ctx, request, writeTestRun(runID, now.Add(-48*time.Hour)))
+				if err != nil {
+					t.Fatalf("BeginRun: %v", err)
+				}
+				if hasOldRound {
+					pruneTestRecord(t, store, runID, now.Add(-48*time.Hour))
+				}
+				validRunID := runID + "-valid-prunable"
+				validRequest := writeTestRequest(strings.Repeat(string("012345"[statusIndex]), 64))
+				if _, err := store.BeginRun(ctx, validRequest, writeTestRun(validRunID, now.Add(-48*time.Hour))); err != nil {
+					t.Fatalf("BeginRun otherwise-prunable fixture: %v", err)
+				}
+				pruneTestRecord(t, store, validRunID, now.Add(-48*time.Hour))
+				if err := store.EndRun(ctx, validRunID, now.Add(-47*time.Hour), "finished"); err != nil {
+					t.Fatalf("EndRun otherwise-prunable fixture: %v", err)
+				}
+				if _, err := store.db.ExecContext(ctx, `UPDATE run SET status = ? WHERE id = ?`, status, runID); err != nil {
+					t.Fatalf("inject stored status %q: %v", status, err)
+				}
+				before := pruneTestRawState(t, store)
+				deleted, err := store.Prune(ctx, now, big.NewInt(1))
+				if err == nil {
+					t.Fatalf("Prune accepted malformed stored status %q and deleted %d rounds", status, deleted)
+				}
+				if deleted != 0 {
+					t.Fatalf("Prune reported %d deleted rounds on malformed stored status", deleted)
+				}
+				after := pruneTestRawState(t, store)
+				if !reflect.DeepEqual(after, before) {
+					t.Fatalf("Prune mutated related raw history on malformed status %q: before=%#v after=%#v", status, before, after)
+				}
+				if requestID <= 0 {
+					t.Fatalf("invalid request fixture ID %d", requestID)
+				}
+			})
+		}
+	}
+}
+
+type pruneTestState struct {
+	requests [][]any
+	runs     [][]any
+	rounds   [][]any
+	results  [][]any
+}
+
+func pruneTestRawState(t *testing.T, store *Store) pruneTestState {
+	t.Helper()
+	return pruneTestState{
+		requests: pruneTestQueryRows(t, store, `SELECT id, key, targets, tcp_ports, hosts FROM request ORDER BY id`, 5),
+		runs:     pruneTestQueryRows(t, store, `SELECT id, request_id, source, started, interval, until, host, pid, heartbeat, round_seconds, ended, status FROM run ORDER BY id`, 12),
+		rounds:   pruneTestQueryRows(t, store, `SELECT id, run_id, started, observations, answered FROM round ORDER BY id`, 5),
+		results:  pruneTestQueryRows(t, store, `SELECT round_id, host, address, t, result, tcp FROM result ORDER BY round_id, host`, 6),
+	}
+}
+
+func pruneTestQueryRows(t *testing.T, store *Store, query string, columns int) [][]any {
+	t.Helper()
+	rows, err := store.db.QueryContext(context.Background(), query)
+	if err != nil {
+		t.Fatalf("query raw history: %v", err)
+	}
+	defer rows.Close()
+	var found [][]any
+	for rows.Next() {
+		values := make([]any, columns)
+		pointers := make([]any, columns)
+		for i := range values {
+			pointers[i] = &values[i]
+		}
+		if err := rows.Scan(pointers...); err != nil {
+			t.Fatalf("scan raw history: %v", err)
+		}
+		found = append(found, values)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate raw history: %v", err)
+	}
+	return found
 }
 
 func TestPruneRecreateRequestKeepsCommittedRoundIDsIncreasing(t *testing.T) {

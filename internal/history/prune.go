@@ -30,6 +30,24 @@ func (s *Store) Prune(ctx context.Context, now time.Time, days *big.Int) (int64,
 
 	var deletedRounds int64
 	err = s.withTx(ctx, true, func(conn *sql.Conn) error {
+		// Validate all persisted states before deleting rounds: an old round
+		// can become an empty run during this prune, so checking only rows that
+		// are already empty would silently discard malformed history.
+		var invalidRunID string
+		var invalidStatus sql.NullString
+		err := conn.QueryRowContext(ctx, `SELECT id, status FROM run
+			WHERE status IS NULL OR status NOT IN ('running', 'finished', 'stopped', 'failed') LIMIT 1`).Scan(&invalidRunID, &invalidStatus)
+		if err == nil {
+			status := "<NULL>"
+			if invalidStatus.Valid {
+				status = invalidStatus.String
+			}
+			return fmt.Errorf("run %q has invalid stored status %q", invalidRunID, status)
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return normalizeDBError(ctx, err)
+		}
+
 		canDeleteRoundsInt := 0
 		if canDeleteRounds {
 			canDeleteRoundsInt = 1
