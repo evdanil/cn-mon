@@ -208,7 +208,7 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	}()
 
 	if !terminalOutput.waitContains([]byte("next round in"), 20*time.Second) {
-		t.Fatalf("PTY command did not reach its post-round waiting phase: %q", terminalOutput.bytes())
+		t.Fatalf("PTY command did not reach its post-round waiting phase; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	if err := waitLinuxPTYCompletedRounds(database, request.Key, 1, 2*time.Second); err != nil {
 		t.Fatalf("PTY command did not persist a completed round before accepting keys: %v", err)
@@ -243,7 +243,7 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		t.Fatalf("send v through PTY input: %v", err)
 	}
 	if !terminalOutput.waitContains([]byte("Last seen"), 2*time.Second) {
-		t.Fatalf("v did not switch the live display to table view: %q", terminalOutput.bytes())
+		t.Fatalf("v did not switch the live display to table view; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	if err := waitLinuxPTYCommandStatus(database, request.Key, "running", 2*time.Second); err != nil {
 		t.Fatalf("Escape, arrow, or Unicode input unexpectedly stopped the run: %v", err)
@@ -253,14 +253,14 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		t.Fatalf("resize PTY to tiny dimensions: %v", err)
 	}
 	if !terminalOutput.waitGrowth(beforeResize, 3*time.Second) {
-		t.Fatalf("live screen did not redraw after resize to a tiny terminal: %q", terminalOutput.bytes())
+		t.Fatalf("live screen did not redraw after resize to a tiny terminal; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	beforeResize = terminalOutput.length()
 	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 80}); err != nil {
 		t.Fatalf("restore PTY dimensions: %v", err)
 	}
 	if !terminalOutput.waitGrowth(beforeResize, 3*time.Second) {
-		t.Fatalf("live screen did not redraw after restoring terminal dimensions: %q", terminalOutput.bytes())
+		t.Fatalf("live screen did not redraw after restoring terminal dimensions; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	if _, err := master.Write([]byte("q")); err != nil {
 		t.Fatalf("send q through PTY input: %v", err)
@@ -272,7 +272,7 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	case waitErr = <-waitDone:
 	case <-time.After(20 * time.Second):
 		_ = command.Process.Kill()
-		t.Fatal("PTY command did not stop after q")
+		t.Fatalf("PTY command did not stop after q; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	code := 0
 	if waitErr != nil {
@@ -283,7 +283,7 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		code = exit.ExitCode()
 	}
 	if code != 0 && code != 3 {
-		t.Fatalf("q stop exit=%d, want 0 or execution-error 3; terminal=%q", code, terminalOutput.bytes())
+		t.Fatalf("q stop exit=%d, want 0 or execution-error 3; terminal tail=%q", code, terminalOutput.tail(2048))
 	}
 	data := <-stdoutDone
 	var report struct {
@@ -618,6 +618,15 @@ func (out *nativePTYOutput) bytes() []byte {
 	out.mu.Lock()
 	defer out.mu.Unlock()
 	return append([]byte(nil), out.data...)
+}
+
+func (out *nativePTYOutput) tail(limit int) []byte {
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if limit < 0 || len(out.data) <= limit {
+		return append([]byte(nil), out.data...)
+	}
+	return append([]byte(nil), out.data[len(out.data)-limit:]...)
 }
 
 func (out *nativePTYOutput) length() int {

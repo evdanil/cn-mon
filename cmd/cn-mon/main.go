@@ -46,7 +46,7 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	startUTC := time.Now().UTC()
 	opts, err := parseCLI(args, startUTC)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: %v\n", err)
 		return 2
 	}
 	switch opts.Mode {
@@ -83,11 +83,11 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	if opts.Mode == modeRun {
 		objects, err = target.ReadObjects(opts.Objects, opts.File, stdin)
 		if err != nil {
-			fmt.Fprintf(stderr, "cn-mon: %v\n", err)
+			writeCommandDiagnostic(stderr, "cn-mon: %v\n", err)
 			return 2
 		}
 		if len(objects) == 0 {
-			fmt.Fprintln(stderr, "cn-mon: no target objects were provided")
+			writeCommandDiagnostic(stderr, "cn-mon: no target objects were provided\n")
 			return 2
 		}
 	}
@@ -98,17 +98,17 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	}
 	configEnv, err := env()
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot resolve configuration paths: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot resolve configuration paths: %v\n", err)
 		return 2
 	}
 	cfg, warnings, err := loadSettings(configEnv, opts.Overrides)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot resolve configuration: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot resolve configuration: %v\n", err)
 		return 2
 	}
 	logger, err := openLogger(cfg, configEnv.HomeDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot initialize logging: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot initialize logging: %v\n", err)
 		return 3
 	}
 	logFailure := func(err error) {
@@ -134,7 +134,7 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 
 	request, rejected, err := target.Build(objects, opts.Ports)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: invalid target request: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: invalid target request: %v\n", err)
 		logFailure(logger.Close())
 		return 2
 	}
@@ -163,13 +163,13 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	}
 	requestID, err := uuid.NewRandom()
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot generate run ID: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot generate run ID: %v\n", err)
 		logFailure(logger.Close())
 		return 3
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot resolve host name: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot resolve host name: %v\n", err)
 		logFailure(logger.Close())
 		return 3
 	}
@@ -273,8 +273,15 @@ func reportExitCode(ordinary int, err error, stdout, stderr io.Writer) int {
 	if err == nil || isClosedOutputPipe(err, stdout) {
 		return ordinary
 	}
-	fmt.Fprintf(stderr, "cn-mon: write report: %v\n", err)
+	writeCommandDiagnostic(stderr, "cn-mon: write report: %v\n", err)
 	return 3
+}
+
+func writeCommandDiagnostic(stderr io.Writer, format string, args ...any) {
+	if !output.DiagnosticWriteAllowed(stderr) {
+		return
+	}
+	fmt.Fprintf(stderr, format, args...)
 }
 
 const usageText = `Usage:

@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"os"
 
@@ -56,11 +55,14 @@ func closeCommandScreen(state *commandScreenState) {
 }
 
 func commandNote(state *commandScreenState, stderr io.Writer, message string) {
+	if !output.DiagnosticWriteAllowed(stderr) {
+		return
+	}
 	if state != nil && state.screen != nil && state.screen.Enabled() {
 		state.screen.Note("cn-mon: " + message)
 		return
 	}
-	fmt.Fprintf(stderr, "cn-mon: %s\n", message)
+	writeCommandDiagnostic(stderr, "cn-mon: %s\n", message)
 }
 
 func readerModeName(mode commandMode) string {
@@ -106,7 +108,7 @@ func runReaderCLI(
 	}
 
 	if opts.Mode == modeFollow && !commandIsTerminal(runtime, stderr) {
-		fmt.Fprintln(stderr, "cn-mon: --follow requires stderr to be a terminal")
+		writeCommandDiagnostic(stderr, "cn-mon: --follow requires stderr to be a terminal\n")
 		var empty monitor.ReadOutcome
 		empty.Run = monitor.RunOutcome{Seen: []monitor.HostSummary{}, Latest: []monitor.LatestRow{}, Unresolved: []string{}}
 		code := write(2, writeCommandReport(control, stdout, formatOptions, func() error {
@@ -208,7 +210,7 @@ func runReaderCLI(
 		logFailure(logger.Log("INFO", readerModeName(opts.Mode)+" operation finished"))
 		return finish(code)
 	default:
-		fmt.Fprintf(stderr, "cn-mon: invalid reader mode %d\n", opts.Mode)
+		writeCommandDiagnostic(stderr, "cn-mon: invalid reader mode %d\n", opts.Mode)
 		return finish(3)
 	}
 }
