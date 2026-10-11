@@ -177,35 +177,25 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	terminalOutput := &nativePTYOutput{}
 	terminalDone := make(chan struct{})
 	terminalStop := make(chan struct{})
-	go func() {
-		defer close(terminalDone)
-		buffer := make([]byte, 2048)
-		for {
-			select {
-			case <-terminalStop:
-				return
-			default:
-			}
-			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
-			_, pollErr := unix.Poll(fds, 100)
-			if pollErr != nil {
-				return
-			}
-			if fds[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
-				return
-			}
-			if fds[0].Revents&unix.POLLIN == 0 {
-				continue
-			}
-			n, readErr := unix.Read(int(master.Fd()), buffer)
-			if n > 0 {
-				terminalOutput.append(buffer[:n])
-			}
-			if readErr != nil && !errors.Is(readErr, unix.EAGAIN) {
-				return
-			}
+	go collectNativeLinuxPTY(master, terminalOutput, terminalStop, terminalDone)
+	terminalStopped := false
+	terminalJoined := false
+	stopTerminalCollector := func() {
+		if !terminalStopped {
+			close(terminalStop)
+			terminalStopped = true
 		}
-	}()
+		if terminalJoined {
+			return
+		}
+		select {
+		case <-terminalDone:
+			terminalJoined = true
+		case <-time.After(time.Second):
+			t.Error("PTY output collector did not stop within 1s")
+		}
+	}
+	defer stopTerminalCollector()
 
 	if !terminalOutput.waitContains([]byte("next round in"), 20*time.Second) {
 		t.Fatalf("PTY command did not reach its post-round waiting phase; terminal tail=%q", terminalOutput.tail(2048))
@@ -329,12 +319,7 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	if err := assertLinuxPTYRun(database, request.Key); err != nil {
 		t.Fatalf("q-stop history: %v", err)
 	}
-	close(terminalStop)
-	select {
-	case <-terminalDone:
-	case <-time.After(time.Second):
-		t.Fatal("PTY output collector did not stop after q completion")
-	}
+	stopTerminalCollector()
 	t.Logf("CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored no-color=attrs-only report=complete termios=restored cursor=visible history=finished icmp_exit=%d", code)
 }
 
@@ -490,42 +475,15 @@ func TestNativeCommandLinuxRestoresScreenBeforeBlockedFinalReport(t *testing.T) 
 	terminalOutput := &nativePTYOutput{}
 	terminalStop := make(chan struct{})
 	terminalDone := make(chan struct{})
-	go func() {
-		defer close(terminalDone)
-		buffer := make([]byte, 2048)
-		for {
-			select {
-			case <-terminalStop:
-				return
-			default:
-			}
-			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
-			if _, pollErr := unix.Poll(fds, 100); pollErr != nil {
-				return
-			}
-			if fds[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
-				return
-			}
-			if fds[0].Revents&unix.POLLIN == 0 {
-				continue
-			}
-			n, readErr := unix.Read(int(master.Fd()), buffer)
-			if n > 0 {
-				terminalOutput.append(buffer[:n])
-			}
-			if readErr != nil && !errors.Is(readErr, unix.EAGAIN) {
-				return
-			}
-		}
-	}()
+	go collectNativeLinuxPTY(master, terminalOutput, terminalStop, terminalDone)
 	defer func() {
 		close(terminalStop)
-		_ = master.Close()
 		select {
 		case <-terminalDone:
 		case <-time.After(time.Second):
 			t.Error("PTY output collector did not stop after terminal close")
 		}
+		_ = master.Close()
 	}()
 	if !terminalOutput.waitContains([]byte("ended"), 25*time.Second) {
 		t.Fatalf("command did not finish its live screen: %q", terminalOutput.bytes())

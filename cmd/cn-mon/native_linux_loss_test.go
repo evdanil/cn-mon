@@ -93,31 +93,7 @@ func TestNativeCommandLinuxPTYLossWithInheritedHangupIgnored(t *testing.T) {
 			}
 		})
 	}
-	go func() {
-		defer close(readerDone)
-		buffer := make([]byte, 2048)
-		for {
-			select {
-			case <-readerStop:
-				return
-			default:
-			}
-			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
-			if _, pollErr := unix.Poll(fds, 100); pollErr != nil {
-				return
-			}
-			if fds[0].Revents&unix.POLLIN == 0 {
-				continue
-			}
-			n, readErr := unix.Read(int(master.Fd()), buffer)
-			if n > 0 {
-				terminalOutput.append(buffer[:n])
-			}
-			if readErr != nil && !errors.Is(readErr, unix.EAGAIN) {
-				return
-			}
-		}
-	}()
+	go collectNativeLinuxPTY(master, &terminalOutput, readerStop, readerDone)
 	markers := make(chan string, 4)
 	scanner := bufio.NewScanner(markerRead)
 	go func() {

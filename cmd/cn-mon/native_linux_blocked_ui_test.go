@@ -80,31 +80,7 @@ func TestNativeCommandLinuxPTYHardInterruptRestoresWhileUIWritesBlocked(t *testi
 			}
 		}
 	}
-	go func() {
-		defer close(readerDone)
-		buffer := make([]byte, 2048)
-		for {
-			select {
-			case <-readerStop:
-				return
-			default:
-			}
-			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
-			if _, pollErr := unix.Poll(fds, 100); pollErr != nil {
-				return
-			}
-			if fds[0].Revents&unix.POLLIN == 0 {
-				continue
-			}
-			n, readErr := unix.Read(int(master.Fd()), buffer)
-			if n > 0 {
-				terminalOutput.append(buffer[:n])
-			}
-			if readErr != nil {
-				return
-			}
-		}
-	}()
+	go collectNativeLinuxPTY(master, terminalOutput, readerStop, readerDone)
 	defer func() { stopReader(); _ = master.Close() }()
 	if !terminalOutput.waitContains([]byte("\x1b[?25l"), 20*time.Second) {
 		t.Fatalf("blocked-UI command never activated its live terminal: %q", terminalOutput.bytes())

@@ -25,7 +25,7 @@ fi
 
 set +e
 CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 CNMON_NATIVE_COMMAND_BINARY="$command_binary" \
-	go test -tags native -v -timeout=10m -run '^TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)$' ./cmd/cn-mon >"$main_log" 2>&1
+	go test -tags native -v -timeout=10m -run '^(TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$' ./cmd/cn-mon >"$main_log" 2>&1
 result=$?
 set -e
 cat "$main_log"
@@ -105,6 +105,10 @@ required=(
 	'CNMON_NATIVE_COMMAND_LINUX_PTY background-start=unchanged foreground-activation=pass background-owner-mode=unchanged suspend=restored resume=rearmed q=graceful cursor=restored'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY terminal-loss=inherited-hup-ignore useful-round=complete report=complete history=finished post-loss-cpu-ticks-per-2s='
 	'CNMON_NATIVE_COMMAND_LINUX_PTY blocked-ui=second-interrupt exit=130 termios=restored'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY collector=poll-eintr token=collected fd=live'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY collector=readable-hup multi-chunk=drained cursor-tail=present'
+	'--- PASS: TestNativePTYCollectorRetriesInterruptedPoll'
+	'--- PASS: TestNativePTYCollectorDrainsQueuedBytesWithHangup'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=normal tostop=false owner-mode=unchanged frame=none cursor-show=1'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=normal tostop=true owner-mode=unchanged frame=none cursor-show=0'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=graceful tostop=false owner-mode=unchanged frame=none cursor-show=1'

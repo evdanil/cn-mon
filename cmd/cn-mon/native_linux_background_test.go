@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -104,42 +103,18 @@ func runNativeLinuxBackgroundCleanup(t *testing.T, exitMode string, tostop bool)
 	terminalDone := make(chan struct{})
 	terminalStop := make(chan struct{})
 	terminalStopped := false
-	go func() {
-		defer close(terminalDone)
-		buffer := make([]byte, 2048)
-		for {
-			select {
-			case <-terminalStop:
-				return
-			default:
-			}
-			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
-			if _, pollErr := unix.Poll(fds, 100); pollErr != nil || fds[0].Revents&(unix.POLLHUP|unix.POLLERR|unix.POLLNVAL) != 0 {
-				return
-			}
-			if fds[0].Revents&unix.POLLIN == 0 {
-				continue
-			}
-			n, readErr := unix.Read(int(master.Fd()), buffer)
-			if n > 0 {
-				terminalOutput.append(buffer[:n])
-			}
-			if readErr != nil && !errors.Is(readErr, unix.EAGAIN) {
-				return
-			}
-		}
-	}()
+	go collectNativeLinuxPTY(master, terminalOutput, terminalStop, terminalDone)
 	defer func() {
 		if !terminalStopped {
 			close(terminalStop)
 			terminalStopped = true
 		}
-		_ = master.Close()
 		select {
 		case <-terminalDone:
 		case <-time.After(time.Second):
 			t.Error("background cleanup PTY collector did not stop")
 		}
+		_ = master.Close()
 	}()
 	markerScanner := bufio.NewScanner(markerRead)
 	markers := make(chan string, 8)
