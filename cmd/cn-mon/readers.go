@@ -73,6 +73,14 @@ func readerModeName(mode commandMode) string {
 		return "show"
 	case modeFollow:
 		return "follow"
+	case modeListRuns:
+		return "list-runs"
+	case modeDeleteRun:
+		return "delete-run"
+	case modeDeleteRequest:
+		return "delete-request"
+	case modeClearHistory:
+		return "clear-history"
 	default:
 		return "run"
 	}

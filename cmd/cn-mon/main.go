@@ -134,6 +134,9 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		logFailure(logger.Log("INFO", "starting target run"))
 	} else {
 		logFailure(logger.Log("INFO", "starting "+readerModeName(opts.Mode)+" operation"))
+		if isHistoryManagementMode(opts.Mode) {
+			return runHistoryManagementCLI(opts, stdout, stderr, cfg, logger, logFailure, hardCtx, control, runtime)
+		}
 		return runReaderCLI(opts, stdout, stderr, cfg, logger, logFailure, hardCtx, control, signals, runtime)
 	}
 
@@ -293,8 +296,12 @@ const usageText = `Usage:
   cn-mon [TARGET ...|-] [-f|--file PATH|-] [--tcp PORTS] [--every INTERVAL] [--for DURATION]
          [--since WHEN] [--history-file PATH] [--history-days DAYS] [--format table|json|md|csv] [COMMON]
   cn-mon --list [--history-file PATH] [--format FORMAT] [COMMON]
+  cn-mon --list-runs REQUEST_ID [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --show ID [--since WHEN] [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --follow ID [--since WHEN] [--history-file PATH] [--format FORMAT] [COMMON]
+  cn-mon --delete-run RUN_ID [--history-file PATH] [--format FORMAT] [COMMON]
+  cn-mon --delete-request REQUEST_ID [--history-file PATH] [--format FORMAT] [COMMON]
+  cn-mon --clear-history [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon -h|--help
   cn-mon -v|--version
 
@@ -318,8 +325,12 @@ Run options:
 
 History options:
       --list              List stored requests
+      --list-runs ID      List runs for a request ID or unique prefix
       --show ID           Show one request by ID or unique prefix
       --follow ID         Follow a running request in the terminal; q stops following
+      --delete-run ID     Delete a run by its exact, case-sensitive run ID
+      --delete-request ID Delete one request and all its runs by unique ID prefix
+      --clear-history     Delete all stored requests and runs
 
 TARGET is an IP address, CIDR, or ASCII DNS name. Options may appear before or after
 targets; use -- to end option parsing. Without targets or an input file, use '-' for

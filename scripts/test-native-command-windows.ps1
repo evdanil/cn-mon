@@ -124,7 +124,7 @@ try {
 
     $adminArgs = @(
         '-test.v',
-        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ|NoColorQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun|NativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization|NativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|EndedFollowAllFormats))$',
+        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandHistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ|NoColorQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun|NativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization|NativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|EndedFollowAllFormats))$',
         '-test.count=1',
         '-test.timeout=8m'
     )
@@ -132,6 +132,11 @@ try {
     $elevatedRoleMarker = "CNMON_NATIVE_COMMAND_WINDOWS_ROLE expected_role=elevated expected_sid=$elevatedSid parent_sid=$elevatedSid parent_elevated=true parent_admin_enabled=true child_sid=$elevatedSid child_elevated=true child_admin_enabled=true"
     $elevated = Require-CommandTests 'elevated' $adminArgs 'elevated' $runnerSid @(
         '--- PASS: TestNativeCommandINIHistoryRetention',
+        '--- PASS: TestNativeCommandHistoryManagement',
+        '--- PASS: TestNativeCommandHistoryManagementReportsCommittedOutputFailure',
+        '--- PASS: TestNativeCommandHistoryManagementSelectionSemantics',
+        '--- PASS: TestNativeCommandHistoryManagementLockedCancellation',
+        '--- PASS: TestNativeCommandHistoryManagementLiveWriterProtection',
         '--- PASS: TestNativeCommandWindowsFirstCtrlCStopsAndReports',
         '--- PASS: TestNativeCommandWindowsSecondCtrlCInterruptsFinalization',
         '--- PASS: TestNativeCommandWindowsPreInputCtrlCDoesNoStartupIO',
@@ -147,6 +152,11 @@ try {
         '--- PASS: TestNativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole',
         '--- PASS: TestNativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization',
         'CNMON_NATIVE_COMMAND_CONFIG ini90=retained cli30=pruned-old-seed recent-round-retained history-path=ini log-path=ini',
+        'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT formats=json,table,csv,md exact-utf8-id=pass request-prefix=pass delete-cascade=pass clear=pass live-owner=protected dead-local-owner=deletable',
+        'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT postcommit-report-error=committed-diagnostic=pass exit=3 closed-pipe=quiet missing-clear=no-create',
+        'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT selection=zero-run-success ambiguous-prefix=exit2-no-mutation',
+        'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT locked-delete=ctrlc exit=130 committed=false history=unchanged',
+        'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT live-writer=protected stale-display=lost pid=alive mixed-request=blocked-then-deleted stopped-pid=dead persisted-round=verified',
         $elevatedRoleMarker,
         "CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=elevated sid=$elevatedSid icmp=OK exit=0 tcp=open json=pass history=one-round",
         "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=$elevatedSid",

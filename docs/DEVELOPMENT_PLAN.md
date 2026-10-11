@@ -2,6 +2,8 @@
 
 M0–M6 are complete through [PR #13](https://github.com/evdanil/gotest/pull/13). M6 merged as `f156255812308db7039d9721945957348ddbf8b4` after all 20 applicable checks passed at reviewed head `9c5266dd343c4e09d48a88c39561143b261f8f4d`, independent Sol approval and completed external review. [Version 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0) was then qualified and published from that exact merged source. The final evidence below records native execution, permission outcomes, tag identity and verified public hashes.
 
+M7 history management is implemented from base `cca0a24af78423f5c6619349b823745ad977bfaf`, with passing local tests and completed independent review of storage, CLI/output and native harnesses. Current hosted Linux/Windows checks, external review and merge remain pending. M8 separately addresses live-screen flicker, wide-table timestamp wrapping and live-state labels after M7 merges. A later 0.2.0 delivery may include both milestones after exact merged-source qualification; M7 does not change release tooling or strip the executable. Published 0.1.0 source, tag and assets remain unchanged.
+
 ## Working rules for every milestone
 
 1. Use **`gpt-6-astra` at xhigh** for architecture and milestone planning, **`gpt-6.1-sol` at medium** for independent code review, and **`gpt-6-luna` at medium** for implementation agents, as requested. Verify the assigned model/effort; do not silently substitute or claim a model was used when unavailable. Delegate implementation in bounded packages/behaviors with shared contracts; avoid concurrent edits to the same files. Delegation is permitted when explicitly requested by the user.
@@ -25,6 +27,8 @@ M0 specification/license boundary
              └─ M4 complete run engine + machine output
                  └─ M5 list/show/follow + live terminal + human formats
                      └─ M6 release qualification and delivery
+                         └─ M7 history discovery and transactional deletion
+                             └─ M8 live redraw and table-width fixes
 ```
 
 M0–M6 are merged and version 0.1.0 passed exact merged-source qualification and publication. An acceptance ID referenced before its full integration milestone covers only the named component portion, not the entire scenario. Explicit-JSON target commands passed the M4 gate; reader commands, human formats and terminal integration passed M5, and the full release-binary matrix belongs to M6. Keep these component/integration boundaries and current documentation when splitting a milestone into dependent reviewable PRs.
@@ -230,6 +234,56 @@ Required CI retains formatting/vet, native unit/integration and adapted-library 
 
 Refresh documentation from implemented behavior after review: complete command reference, tested platform/toolchain/permission matrix, dependency/license and pro-bing maintenance notes, schema compatibility, sampled-period caveats, troubleshooting and checksums/download instructions. No candidate archive, workflow artifact or draft release is represented as published. M5 source/native success does not qualify an M6 archive.
 
+### M7 — history discovery and transactional deletion (active)
+
+Application sections 2.2 and 10.4 freeze `--list-runs REQUEST_ID`, `--delete-run RUN_ID`, `--delete-request REQUEST_ID` and `--clear-history`. The request is the existing canonical scan group; run IDs remain exact stored UTF-8 strings. Keep all 26 original acceptance rows and the M6 evidence map unchanged, adding **CLI-03**, **HIS-03** and **DB-04** for this extension. No new dependency, schema, interactive prompt, force mode, probe/monitor behavior or release-tool redesign is needed.
+
+| Owner / model | Exclusive scope | Bounded responsibility |
+| --- | --- | --- |
+| History / Luna medium | `internal/history/` management implementation/tests; only necessary changes to store/path/transaction/PID helpers and their tests | Existing-only writer, raw scalar/owner validation, commit-aware atomic deletion/counts, cascade/affected orphan cleanup and concurrency/failure tests. Preserve established writer/read APIs and schema. |
+| CLI/native / Luna medium | `cmd/cn-mon/` parser/dispatch/management tests and native fixtures; additive `internal/output/management.go`, `management_test.go`; `scripts/test-native-command-linux.sh`, `scripts/test-native-command-windows.ps1`; `README.md` | Wire the frozen history API; implement list-runs from existing snapshots, four-format reports and exits; extend actual built-command native selectors/required markers on both OSes. Document discovery/deletion and clarify that `T` means a TCP response (open or closed), while `--tcp` adds checks alongside ICMP. |
+| Architecture / Astra xhigh | `docs/APPLICATION_SPEC.md`, `docs/DEVELOPMENT_PLAN.md` | Stable interfaces, safety/output contracts, acceptance mapping and accurate evidence/status. |
+| Independent review / Sol medium | Read-only cross-scope review | Genuine RED/GREEN, transaction/ownership/cancellation/report behavior and both native gates. Root owns Git, external review, normal merge and later release authorization. |
+
+The two coding scopes share only the frozen history API in section 10.4. CLI performs no SQL mutations itself. Storage exposes no presentation types or generic command dispatcher. The CLI owner has the explicit additive output-file handoff above and reuses the existing report writer without changing frame/report/terminal implementations. A demonstrated need to edit another owner's files requires an explicit handoff. Reuse existing native binary selection and process/console fixtures; no product fault switches, parallel native framework or weakening of existing required selectors.
+
+Implementation and review order:
+
+1. Storage starts with real temporary-SQLite failing tests for exact run/group selection, atomic clear/cascades/counts and affected orphan cleanup. Cover missing versus empty/incompatible history, unchanged schema/journal-mode policy/sequences, raw storage-class rejection and local/dead versus stale-alive/foreign/unknown/malformed owners. Resolve the request prefix and check every selected owner inside the same `BEGIN IMMEDIATE`. A single protected row must preserve the whole selected group or clear operation.
+2. Exercise real lock/cancellation and two-writer ordering, held reader snapshots, follow high-water preservation after deletion/recreation, rollback failures and successful COMMIT followed by cleanup failure. Retain existing bounded cleanup behavior; result counts/`Committed` must reflect the actual commit boundary. No failed test is replaced by a weaker assertion or an assumed dead-process PID.
+3. CLI starts with failing parser/dispatch/report tests: early help/version and invalid paths have no data I/O; valid management uses configured history/logging without target stdin/probes/terminal; IDs round-trip without truncation; all four report formats and new-mode statuses agree. Verify an existing zero-run group succeeds, no match differs from ambiguity, missing clear creates no database, and post-commit cleanup/output errors are reported truthfully. Preserve existing command/report contracts.
+4. Extend both native command jobs with bounded actual-executable cases using isolated compatible databases and real writer processes: discover/delete an ended run, delete a complete request group, clear logically, refuse a selected active writer even with a stale heartbeat, and safely delete a same-host running record after its owner has conclusively exited. Prove all-or-nothing mixed groups, correct residual counts, missing-path behavior and real Ctrl+C while waiting for a write lock. Confirm no terminal mode changes or input consumption and unchanged existing native cases. Component tests retain exhaustive malformed/fault matrices rather than duplicating all internals through the executable.
+5. Complete source tests, race/vet and required native Linux/Windows jobs at the current revision; independent Sol review, refreshed docs/README and completed external `@codex review` precede the M7 merge. Cross-compilation alone is not a native gate. No M7 archive qualification or publication is claimed from source tests.
+
+| Added ID | Component proof | Required native command boundary |
+| --- | --- | --- |
+| CLI-03 | Parser/config/log side-effect ordering, all formats/statuses, committed-output/cleanup failure, unchanged old reports | Actual command missing/invalid/success/protected paths, real locked-history Ctrl+C, redirected streams and no terminal/input effects on both OSes |
+| HIS-03 | One-view paged metadata, exact/control-character IDs, full canonical keys, order and raw/display state distinction, empty/missing/ambiguous selection | Discover a real stored run and delete that exact identifier; existing request/group reports remain useful |
+| DB-04 | Real SQLite selection/guards/counts/cascade/rollback/cleanup/concurrency, raw classes, preserved sequences and stable snapshots | Actual alive/dead writer ownership, whole-group refusal/deletion and logical clear without file replacement on Linux and Windows |
+
+### M8 — responsive live redraw, table widths and states (planned)
+
+M8 begins implementation only after M7 merges, in its own reviewed PR. The identified redraw path currently replaces the entire frame on each 500 ms display callback, including unchanged frames; displayed clock/countdown values can still change once a second independently of the probe interval. The table allocator also caps every column at an equal share of width even when shorter columns leave room, wrapping a 25-character timestamp at width 24 in a wide terminal. These are display defects, not scheduler or timestamp-format changes.
+
+Application section 10.5 freezes the bounded correction. Compare the exact styled/sanitized presented rows, suppress identical frames and update only changed rows when geometry/view/request layout and row count are stable. Rewrite a changed row without scrolling and erase its former suffix. Publish the cache only after successful output; invalidate on full replacement/removal, permanent notes/changes, eligibility transitions and suspend/resume. Signal invalidation remains independent of the draw mutex. Keep the existing scheduler cadence and restoration behavior. Table widths use natural display widths if they fit, otherwise the largest feasible common cap plus stable leftover distribution; preserve tiny-width fallback and grapheme-safe wrapping.
+
+The live `v` table also exposes its existing observation in a `State` column and labels `Latest` as `ICMP`. Use `LiveRow.Cell` and existing partial-reply styling; explain `!` as ICMP reply and `T` as TCP response, which can mean an open or closed port. No new classification, live TCP map, final report header or JSON/CSV/Markdown schema is introduced. Exact per-port results remain in the final report. This requested display extension is distinct from changing probe/exit semantics.
+
+| Future owner / model | Exclusive files after M7 merge | Bounded responsibility |
+| --- | --- | --- |
+| Redraw / Luna medium | `internal/output/terminal.go`, `terminal_linux.go`, `terminal_windows.go` and matching terminal tests; private `terminal_redraw*.go` helpers/tests if needed | Presented-row cache, changed-row output, invalidation and unchanged lifecycle/error behavior. Call the existing styled writer; do not edit `frame.go`. |
+| Table / Luna medium | `internal/output/frame.go`, `frame_test.go`, `report.go`, `report_test.go`; focused additional frame/report tests if needed | Natural-width allocation, live State/ICMP presentation, legend wording and unchanged structured-report goldens. No terminal-adapter or monitor edits. |
+| Native command/docs / Luna medium | Relevant `cmd/cn-mon/` native PTY/private-console fixtures, both native-command scripts and `README.md`; help wording only if it repeats the legend | Actual built-command display/width/state assertions using current harnesses, strict selectors/markers and user-facing clarification. Root grants this scope after the M7 owner finishes. |
+| Architecture/review | Astra owns specification/plan; independent Sol medium reviews all scopes | Review the small display contract and genuine RED/GREEN evidence; root owns Git/external review/merge. |
+
+Add **TTY-02**, leaving the original 26 and M7's three acceptance rows intact. Before implementation, demonstrate failing duplicate-frame and header-only emission tests, the fitting 25-character timestamp case, and missing live glyph/ICMP labeling. Then cover shortening/styled-row updates, resize/view/request changes, note/change and resume invalidation, partial-reply glyph style, narrow/Unicode layout and unchanged JSON/CSV/Markdown goldens. Exercise actual Linux PTY and Windows private-console redraw/resize/view/state/mode/cursor behavior with the existing native suites. Unit byte assertions prove emission scope; Linux PTY bytes and Windows screen readback have the distinct evidence limits stated in section 10.5. Do not claim screen snapshots alone prove flicker-free intermediate writes. Independent Sol review, current native checks and completed external review precede the separate M8 merge. No M8 implementation or validation is claimed here.
+
+| Added ID | Component proof | Required native command boundary |
+| --- | --- | --- |
+| TTY-02 | Exact presented-row writes/invalidation, width allocation and State/ICMP rendering; unchanged structured-report goldens | Actual PTY/private-console display updates, wide timestamps, view/resize/controls and restoration, preserving the existing terminal gates |
+
+After both milestones merge, a bounded delivery amendment can qualify version 0.2.0 with the existing M6 archive/receipt/publication model and the expanded acceptance coverage. Any currently hardcoded release-version inputs must be updated consistently under a separate exclusive tooling scope then. Do not alter, retarget or overwrite version 0.1.0, and do not infer authorization to strip binaries from the user's question about their current build.
+
 ## Native validation responsibilities
 
 | Layer / first integrated milestone | Routine CI | Explicit native/controlled evidence |
@@ -239,10 +293,18 @@ Refresh documentation from implemented behavior after review: complete command r
 | History (M3 APIs; M4 writers; M5 readers) | Real temporary SQLite, faults and concurrency on both OSes | M3 schema-1 round trip and killed test-writer recovery; M4/M5 command/configuration integration |
 | Lifecycle (M4); UI (M5) | Fake clocks and signal/process tests in M4; frame/terminal integration in M5 | M4 native process control; M5 Linux PTY/job control and Windows console restoration |
 | Release (M6) | Complete 26-ID component/integration acceptance matrix, CGO-free builds, checksums/archive validation, dependency inventory | Native release-command integration on both OSes, including extracted-binary smoke |
+| History management (M7) | CLI-03/HIS-03/DB-04 parser/report and real-SQLite transaction/guard/failure coverage | Actual management commands and alive/dead process protection on Linux and Windows; existing native suites remain required |
+| Display refinements (M8) | TTY-02 exact row-emission/layout/state tests with unchanged structured reports | Linux PTY bytes and Windows actual screen readback, controls/resize and restoration; no cross-compilation substitute |
 
 Deterministic suites need no external service or ICMP privilege. Native jobs explicitly declare the privileges and network topology they require and are isolated from the user's network. Network/privilege restrictions in the current cloud environment may prevent some native checks; those restrictions are evidence limits, not permission to infer a pass.
 
 ## Current evidence and unresolved verification
+
+M7 implements existing-only transactional history deletion, run discovery and four-format reports. Recorded local RED-to-GREEN evidence covers absent management behavior, exact UTF-8 selection/cascade counts, and review regressions for orphan-row clear counts and malformed canonical parent keys. Real SQLite tests cover lock cancellation, held snapshots, sequence preservation and committed deletion followed by injected connection-cleanup failure; CLI/output tests cover parser/dispatch, missing-history behavior and exact ID/report formatting. Independent Sol review approved storage, CLI/output and the complete native harnesses. Root's forced full-source race run passed all seven packages; affected package race tests and vet also passed.
+
+All five local Linux management command cases passed, with independent native race validation. They include real Ctrl+C while SQLite holds a write lock, refusal of an actual live writer whose stale heartbeat displays `lost` while its PID remains alive, all-or-nothing mixed-request protection, and a genuine non-pipe report failure that preserves the committed deletion with an explicit diagnostic and exit 3. The final two affected cases passed root replay in 1.119 s and independent race replay in 2.276 s. Windows native-tagged cross-compilation and vet passed; they are not Windows runtime evidence. Complete current hosted Linux/Windows gates, external review and M7 merge remain pending; these local management checks make no new privileged ICMP claim.
+
+M8 has source-level explanations for the two display defects and an independently approved plan including the requested live-state clarification; implementation begins only after M7 merges. Neither milestone changes the completed 0.1.0 release evidence below.
 
 Source behavior was inspected at the pinned cn-tool revision. Characterization of unmodified pro-bing showed that it ignored non-echo messages; the scoped M2 adaptation now handles correlated errors and has passed the controlled native gate. M1's component implementation, native Linux/Windows checks and internal/external reviews passed its merge gate in [PR #8](https://github.com/evdanil/gotest/pull/8), merge commit `e958cff`.
 
@@ -298,3 +360,6 @@ Progress checklist:
 - [x] M5 readers/UI/formats PR reviewed and merged ([PR #12](https://github.com/evdanil/gotest/pull/12), `9cb7d3bc77a38e70dc1a138b38ba1db74cc1051c`)
 - [x] M6 release-tooling qualification PR reviewed and merged ([PR #13](https://github.com/evdanil/gotest/pull/13), `f156255812308db7039d9721945957348ddbf8b4`)
 - [x] Exact M6 merged-SHA archives qualified and published as [version 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0)
+- [ ] M7 history-management implementation, native gates, reviews and merge
+- [ ] M8 redraw/table-width implementation, native gates, reviews and merge
+- [ ] Subsequent version 0.2.0 tooling update, exact merged-source qualification and authorized publication

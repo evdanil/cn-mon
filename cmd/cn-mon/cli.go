@@ -19,6 +19,10 @@ const (
 	modeList
 	modeShow
 	modeFollow
+	modeListRuns
+	modeDeleteRun
+	modeDeleteRequest
+	modeClearHistory
 	modeHelp
 	modeVersion
 )
@@ -208,6 +212,31 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 				modeConflict = true
 			}
 			selectedMode, opts.Mode = modeList, modeList
+		case "--list-runs", "--delete-run", "--delete-request":
+			v, next, err := value(i, inline, hasInline, name)
+			if err != nil {
+				return opts, err
+			}
+			i = next
+			selected := modeListRuns
+			switch name {
+			case "--delete-run":
+				selected = modeDeleteRun
+			case "--delete-request":
+				selected = modeDeleteRequest
+			}
+			if selectedMode != 0 && selectedMode != selected {
+				modeConflict = true
+			}
+			selectedMode, opts.Mode, opts.ID = selected, selected, v
+		case "--clear-history":
+			if hasInline {
+				return opts, fmt.Errorf("--clear-history does not take a value")
+			}
+			if selectedMode != 0 && selectedMode != modeClearHistory {
+				modeConflict = true
+			}
+			selectedMode, opts.Mode = modeClearHistory, modeClearHistory
 		case "--show", "--follow":
 			v, next, err := value(i, inline, hasInline, name)
 			if err != nil {
@@ -235,14 +264,17 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 		return opts, fmt.Errorf("unknown option %q", unknownOption)
 	}
 	if modeConflict {
-		return opts, fmt.Errorf("--list, --show, and --follow are mutually exclusive")
+		return opts, fmt.Errorf("history modes are mutually exclusive")
 	}
 	if opts.Mode != modeRun {
 		if len(opts.Objects) != 0 || opts.File != nil || len(opts.Ports) != 0 || opts.Every != nil || opts.For != nil {
-			return opts, fmt.Errorf("reader modes do not accept targets, --file, --tcp, --every, or --for")
+			return opts, fmt.Errorf("history modes do not accept targets, --file, --tcp, --every, or --for")
 		}
 		if opts.Mode == modeList && opts.Since != nil {
 			return opts, fmt.Errorf("--list does not accept --since")
+		}
+		if isHistoryManagementMode(opts.Mode) && opts.Since != nil {
+			return opts, fmt.Errorf("history management modes do not accept --since")
 		}
 		if opts.Overrides.HistoryDays != nil {
 			return opts, fmt.Errorf("--history-days applies to target runs only")
@@ -252,6 +284,13 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 	}
 	if (opts.Mode == modeShow || opts.Mode == modeFollow) && !validRequestID(opts.ID) {
 		return opts, fmt.Errorf("%s requires a 4–64 character hexadecimal request ID", map[commandMode]string{modeShow: "--show", modeFollow: "--follow"}[opts.Mode])
+	}
+	if (opts.Mode == modeListRuns || opts.Mode == modeDeleteRequest) && !validRequestID(opts.ID) {
+		name := map[commandMode]string{modeListRuns: "--list-runs", modeDeleteRequest: "--delete-request"}[opts.Mode]
+		return opts, fmt.Errorf("%s requires a 4–64 character hexadecimal request ID", name)
+	}
+	if opts.Mode == modeDeleteRun && (opts.ID == "" || !utf8.ValidString(opts.ID)) {
+		return opts, fmt.Errorf("--delete-run requires a nonempty valid UTF-8 run ID")
 	}
 	if opts.Every != nil && *opts.Every < 10*time.Second {
 		return opts, fmt.Errorf("--every must be at least 10 seconds")
@@ -266,6 +305,15 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 		return opts, fmt.Errorf("--for must be at least --every")
 	}
 	return opts, nil
+}
+
+func isHistoryManagementMode(mode commandMode) bool {
+	switch mode {
+	case modeListRuns, modeDeleteRun, modeDeleteRequest, modeClearHistory:
+		return true
+	default:
+		return false
+	}
 }
 
 func splitOption(arg string) (name, inline string, hasInline bool) {
