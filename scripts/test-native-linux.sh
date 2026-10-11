@@ -62,7 +62,7 @@ if [[ $release_qualify == 1 ]]; then
 		echo 'release namespace qualification requires an absolute regular extracted command binary' >&2
 		exit 1
 	}
-	[[ ${CNMON_RELEASE_VERSION:-} == 0.1.0 && ${CNMON_RELEASE_REVISION:-} =~ ^[0-9a-f]{40}$ ]] || {
+	[[ ${CNMON_RELEASE_VERSION:-} == 0.2.0 && ${CNMON_RELEASE_REVISION:-} =~ ^[0-9a-f]{40}$ ]] || {
 		echo 'release namespace qualification version/revision inputs are invalid' >&2
 		exit 1
 	}

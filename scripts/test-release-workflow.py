@@ -57,13 +57,16 @@ with tempfile.TemporaryDirectory(prefix='cnmon-workflow-') as temp:
         env = os.environ.copy()
         env.update({'GITHUB_OUTPUT': str(output), 'EVENT_NAME': 'workflow_dispatch',
                     'PR_REVISION': '', 'PR_REPOSITORY': '', 'INPUT_REVISION': revision,
-                    'INPUT_VERSION': '0.1.0', 'PUBLISH': 'false',
+                    'INPUT_VERSION': '0.2.0', 'PUBLISH': 'false',
                     'REPOSITORY': 'fixture/repo', 'WORKFLOW_REF': 'refs/heads/main'})
         env.update(overrides)
         return run(selector, clone, env), output.read_text(encoding='utf-8')
 
     result, outputs = select()
     assert result.returncode == 0 and f'revision={revision}' in outputs, result.stdout
+    result, _ = select(INPUT_VERSION='0.1.0')
+    assert result.returncode != 0 and 'unsupported release version' in result.stdout, result.stdout
+    print('source selector rejects obsolete 0.1.0 release version: pass')
     subprocess.run(['git', '-C', str(clone), 'remote', 'set-url', 'origin',
                     str(base / 'missing-private-origin.git')], check=True)
     result, outputs = select()
@@ -84,10 +87,10 @@ with tempfile.TemporaryDirectory(prefix='cnmon-workflow-') as temp:
     assert result.returncode != 0 and 'checkout did not fetch origin/main' in result.stdout, result.stdout
     print('source selector rejects checkout missing fetched main ancestry ref: pass')
 
-filenames = ['cn-mon_0.1.0_linux_amd64.tar.gz', 'cn-mon_0.1.0_windows_amd64.zip']
+filenames = ['cn-mon_0.2.0_linux_amd64.tar.gz', 'cn-mon_0.2.0_windows_amd64.zip']
 
 
-def populate_qualifications(root, mutate=False, missing=False):
+def populate_qualifications(root, mutate=False, missing=False, mixed_version=False):
     for target, name, dirname in [('linux_amd64', filenames[0], 'linux'),
                                  ('windows_amd64', filenames[1], 'windows')]:
         directory = root / dirname
@@ -95,7 +98,8 @@ def populate_qualifications(root, mutate=False, missing=False):
         archive = directory / name
         archive.write_bytes((target + ' bytes').encode())
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-        receipt = {'version': '0.1.0', 'revision': 'a' * 40, 'target': target,
+        version = '0.1.0' if mixed_version and dirname == 'windows' else '0.2.0'
+        receipt = {'version': version, 'revision': 'a' * 40, 'target': target,
                    'archive': name, 'archive_sha256': digest}
         if not (missing and dirname == 'windows'):
             (directory / 'qualification.json').write_text(json.dumps(receipt), encoding='utf-8')
@@ -106,7 +110,7 @@ def populate_qualifications(root, mutate=False, missing=False):
 def assemble_fixture(root, **options):
     populate_qualifications(root, **options)
     env = os.environ.copy()
-    env.update({'REVISION': 'a' * 40, 'VERSION': '0.1.0',
+    env.update({'REVISION': 'a' * 40, 'VERSION': '0.2.0',
                 'LINUX_DIR': str(root / 'linux'), 'WINDOWS_DIR': str(root / 'windows'),
                 'ASSET_DIR': str(root / 'assets')})
     return run(assembler, ROOT, env)
@@ -125,6 +129,11 @@ with tempfile.TemporaryDirectory(prefix='cnmon-assets-missing-') as temp:
     result = assemble_fixture(Path(temp), missing=True)
     assert result.returncode != 0 and 'missing required' in result.stdout, result.stdout
     print('asset assembler rejects missing platform receipt: pass')
+with tempfile.TemporaryDirectory(prefix='cnmon-assets-mixed-version-') as temp:
+    root = Path(temp)
+    result = assemble_fixture(root, mixed_version=True)
+    assert result.returncode != 0 and 'receipt does not match' in result.stdout, result.stdout
+    print('asset assembler rejects mixed 0.2.0/0.1.0 receipts: pass')
 
 
 def publication_fixture(root, tamper=False):
@@ -138,14 +147,14 @@ def publication_fixture(root, tamper=False):
         digest = hashlib.sha256(data).hexdigest()
         lines.append(f'{digest}  {name}')
         (directory / 'qualification.json').write_text(json.dumps({
-            'version': '0.1.0', 'revision': 'a' * 40, 'target': target,
+            'version': '0.2.0', 'revision': 'a' * 40, 'target': target,
             'archive': name, 'archive_sha256': digest}), encoding='utf-8')
     lines.sort(key=lambda value: value.split('  ', 1)[1])
     (assets / 'SHA256SUMS').write_text('\n'.join(lines) + '\n', encoding='ascii')
     if tamper:
         (assets / filenames[1]).write_bytes(b'tampered')
     env = os.environ.copy()
-    env.update({'REVISION': 'a' * 40, 'VERSION': '0.1.0', 'ASSET_DIR': str(assets),
+    env.update({'REVISION': 'a' * 40, 'VERSION': '0.2.0', 'ASSET_DIR': str(assets),
                 'LINUX_DIR': str(linux), 'WINDOWS_DIR': str(windows)})
     return run(publish_check, ROOT, env)
 
@@ -172,7 +181,7 @@ with tempfile.TemporaryDirectory(prefix='cnmon receipt fixture ') as temp:
     built_binary.write_bytes(b'extracted executable'); extracted_binary.write_bytes(b'extracted executable'); archive.write_bytes(b'archive')
     binary_sha = hashlib.sha256(extracted_binary.read_bytes()).hexdigest()
     archive_sha = hashlib.sha256(archive.read_bytes()).hexdigest()
-    pack = {'version': '0.1.0', 'revision': 'a' * 40, 'target': 'linux_amd64',
+    pack = {'version': '0.2.0', 'revision': 'a' * 40, 'target': 'linux_amd64',
             'archive_sha256': archive_sha, 'binary_path': str(built_binary), 'binary_sha256': '0' * 64}
     verify = dict(pack, binary_path=str(extracted_binary), binary_sha256=binary_sha)
     pack_path, verify_path = root / 'pack.json', root / 'verify.json'
@@ -221,13 +230,14 @@ with tempfile.TemporaryDirectory(prefix='cnmon-readme-checksum-') as temp:
     root = Path(temp); fake_bin = root / 'bin'; fake_bin.mkdir()
     (root / 'SHA256SUMS').write_text('0' * 64 + '  cn-mon_0.1.0_linux_amd64.tar.gz\n', encoding='ascii')
     (root / 'cn-mon_0.1.0_linux_amd64.tar.gz').write_bytes(b'not the expected archive')
-    sha = fake_bin / 'sha256sum'; sha.write_text('#!/bin/sh\ncat >/dev/null\nexit 1\n', encoding='ascii'); sha.chmod(0o755)
+    invoked = root / 'sha256sum.invoked'
+    sha = fake_bin / 'sha256sum'; sha.write_text(f'#!/bin/sh\nprintf called > {invoked}\ncat >/dev/null\nexit 1\n', encoding='ascii'); sha.chmod(0o755)
     extracted = root / 'extracted.marker'
     tar = fake_bin / 'tar'; tar.write_text(f'#!/bin/sh\nprintf called > {extracted}\n', encoding='ascii'); tar.chmod(0o755)
     env = os.environ.copy(); env['PATH'] = str(fake_bin) + os.pathsep + env.get('PATH', '')
     result = subprocess.run(['bash', '-c', linux_example], cwd=root, env=env,
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    assert result.returncode != 0 and not extracted.exists(), result.stdout
+    assert result.returncode != 0 and invoked.exists() and not extracted.exists(), result.stdout
     print('README checksum instructions stop before extraction on verification failure: pass')
 
 # Match the PowerShell wrapper's normalized `go version -m` setting guard

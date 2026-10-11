@@ -7,7 +7,7 @@ cd "$repo_root"
 fail() { printf 'release qualification: %s\n' "$*" >&2; exit 1; }
 version=${CNMON_RELEASE_VERSION:-}
 revision=${CNMON_RELEASE_REVISION:-}
-[[ $version == 0.1.0 ]] || fail 'CNMON_RELEASE_VERSION must be 0.1.0'
+[[ $version == 0.2.0 ]] || fail 'CNMON_RELEASE_VERSION must be 0.2.0'
 [[ $revision =~ ^[0-9a-f]{40}$ ]] || fail 'CNMON_RELEASE_REVISION must be a full lowercase 40-hex commit'
 [[ $(git rev-parse HEAD) == "$revision" ]] || fail 'checked out HEAD does not match CNMON_RELEASE_REVISION'
 [[ -z $(git status --porcelain --untracked-files=all) ]] || fail 'source checkout is not clean'
@@ -49,14 +49,14 @@ go build -trimpath -buildvcs=true -mod=readonly -ldflags "$ldflags" -o "$binary"
 
 pack_receipt="$artifact_dir/pack-receipt.json"
 go run ./scripts/release-artifact pack -binary "$binary" -source-root "$repo_root" -out-dir "$archive_dir" -version "$version" -revision "$revision" -commit-unix "$commit_unix" -target linux_amd64 > "$pack_receipt"
-archive="$archive_dir/cn-mon_0.1.0_linux_amd64.tar.gz"
+archive="$archive_dir/cn-mon_0.2.0_linux_amd64.tar.gz"
 [[ -f $archive ]] || fail 'pack did not create the expected archive'
 archive_sha=$(sha256sum "$archive" | cut -d' ' -f1)
 
 verify_receipt="$artifact_dir/verify-receipt.json"
 extract_dir="$work_dir/extracted with spaces"
 go run ./scripts/release-artifact verify -archive "$archive" -sha256 "$archive_sha" -source-root "$repo_root" -extract-dir "$extract_dir" -version "$version" -revision "$revision" -target linux_amd64 > "$verify_receipt"
-extracted="$extract_dir/cn-mon_0.1.0_linux_amd64/cn-mon"
+extracted="$extract_dir/cn-mon_0.2.0_linux_amd64/cn-mon"
 [[ -x $extracted ]] || fail 'verified extraction did not produce an executable'
 
 python3 - "$pack_receipt" "$verify_receipt" "$archive" "$binary" "$extracted" "$revision" <<'PY'
@@ -71,8 +71,8 @@ def digest(path):
             h.update(chunk)
     return h.hexdigest()
 checks = {
-    'pack version/revision/target': (pack['version'], pack['revision'], pack['target']) == ('0.1.0', revision, 'linux_amd64'),
-    'verify identity': (verify['version'], verify['revision'], verify['target']) == ('0.1.0', revision, 'linux_amd64'),
+    'pack version/revision/target': (pack['version'], pack['revision'], pack['target']) == ('0.2.0', revision, 'linux_amd64'),
+    'verify identity': (verify['version'], verify['revision'], verify['target']) == ('0.2.0', revision, 'linux_amd64'),
     'archive receipt hash': pack['archive_sha256'] == digest(archive) == verify['archive_sha256'],
     'pack binary receipt hash': pack['binary_sha256'] == digest(pathlib.Path(pack['binary_path'])) == digest(built_binary),
     'pack binary path': pathlib.Path(pack['binary_path']).resolve() == pathlib.Path(built_binary).resolve(),
@@ -130,7 +130,7 @@ python3 - "$artifact_dir" "$archive" "$extracted" "$revision" "$commit_unix" "$a
 import json, os, pathlib, platform, subprocess, sys
 out, archive, binary, revision, commit_unix, archive_sha, binary_sha, linux_granted_role, linux_denied_role = sys.argv[1:]
 summary = {
-    'version': '0.1.0', 'revision': revision, 'target': 'linux_amd64',
+    'version': '0.2.0', 'revision': revision, 'target': 'linux_amd64',
     'commit_unix': int(commit_unix), 'archive': os.path.basename(archive),
     'archive_sha256': archive_sha, 'binary_sha256': binary_sha,
     'binary_path': os.path.abspath(binary), 'go': subprocess.check_output(['go', 'version'], text=True).strip(),
