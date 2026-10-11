@@ -1,33 +1,34 @@
 # cn-mon
 
-`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. It supports target runs, read-only history listing and inspection, follow mode, JSON/CSV/Markdown/table reports, and best-effort native terminal controls. The current source includes history management and live display refinements, with all 30 acceptance mappings retained. See the [development plan](docs/DEVELOPMENT_PLAN.md) for implementation evidence and release qualification details.
+`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. It supports target runs, read-only history listing and inspection, follow mode, JSON/CSV/Markdown/table reports, saved-batch reruns, and best-effort native terminal controls. The current source retains all 31 acceptance mappings. See the [development plan](docs/DEVELOPMENT_PLAN.md) for implementation evidence and release qualification details.
 
 ## Download a release
 
-Download the published [cn-mon 0.2.0 release](https://github.com/evdanil/gotest/releases/tag/v0.2.0), published 2026-10-11 from qualified source `968ea23aed5541e86860bde45743ee054ad4a4d8`. It includes [the Linux archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_linux_amd64.tar.gz), [the Windows archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_windows_amd64.zip), and [SHA256SUMS](https://github.com/evdanil/gotest/releases/download/v0.2.0/SHA256SUMS). The exact-source release workflow completed all 13 jobs in [run 38119825919](https://github.com/evdanil/gotest/actions/runs/38119825919). Linux qualification covered granted and denied ICMP permission roles; Windows covered elevated and ordinary roles. Version 0.2.0 includes history management and live display refinements, retaining all 30 acceptance mappings.
+The currently published release is [cn-mon 0.2.0](https://github.com/evdanil/gotest/releases/tag/v0.2.0), published 2026-10-11 from qualified source `968ea23aed5541e86860bde45743ee054ad4a4d8`. It includes [the Linux archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_linux_amd64.tar.gz), [the Windows archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_windows_amd64.zip), and [SHA256SUMS](https://github.com/evdanil/gotest/releases/download/v0.2.0/SHA256SUMS). Its exact-source workflow completed all 13 jobs in [run 38119825919](https://github.com/evdanil/gotest/actions/runs/38119825919). Linux qualification covered granted and denied ICMP permission roles; Windows covered elevated and ordinary roles. Version 0.2.0 includes history management and live display refinements, retains all 30 acceptance mappings, and does not include rerun. Version 0.3.0 is being prepared with rerun and remains pending its separate qualification and publication.
 
-### Install cn-mon 0.2.0
+### Install cn-mon 0.3.0
 
-On Linux, for a cn-mon 0.2.0 archive:
+After 0.3.0 is published, use its archive and verify the checksum before extracting.
+On Linux:
 
 ```sh
-line=$(grep -F '  cn-mon_0.2.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
+line=$(grep -F '  cn-mon_0.3.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
 test "$(printf '%s\n' "$line" | wc -l)" -eq 1 || exit 1
 printf '%s\n' "$line" | sha256sum --check - || exit 1
-tar -xzf cn-mon_0.2.0_linux_amd64.tar.gz
-./cn-mon_0.2.0_linux_amd64/cn-mon --version
+tar -xzf cn-mon_0.3.0_linux_amd64.tar.gz
+./cn-mon_0.3.0_linux_amd64/cn-mon --version
 ```
 
-On Windows PowerShell, for a cn-mon 0.2.0 archive:
+On Windows PowerShell:
 
 ```powershell
-$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.2.0_windows_amd64.zip') })
+$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.3.0_windows_amd64.zip') })
 if ($lines.Count -ne 1) { throw 'Windows archive checksum is missing or duplicated' }
 $expected = ($lines[0] -split '\s+', 2)[0]
-$actual = (Get-FileHash .\cn-mon_0.2.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$actual = (Get-FileHash .\cn-mon_0.3.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -cne $expected) { throw 'Windows archive checksum mismatch' }
-Expand-Archive .\cn-mon_0.2.0_windows_amd64.zip .\cn-mon
-.\cn-mon\cn-mon_0.2.0_windows_amd64\cn-mon.exe --version
+Expand-Archive .\cn-mon_0.3.0_windows_amd64.zip .\cn-mon
+.\cn-mon\cn-mon_0.3.0_windows_amd64\cn-mon.exe --version
 ```
 
 Release binaries identify their version and full source revision with `cn-mon <version> (<revision>)`; a source build reports `cn-mon dev`. The archives include the matching README, Apache-2.0 license, and third-party notices.
@@ -59,7 +60,7 @@ go run ./cmd/cn-mon --clear-history
 
 These history-management commands are available in the 0.2.0 release. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
 
-`--rerun` is part of the next source milestone and is not included in the published 0.2.0 binaries. It accepts the request ID or unique hexadecimal prefix shown by `--list`, then repeats the newest saved run using its stored targets, hosts, ports, interval, and configured duration. `--every` and `--for` replace only the corresponding saved setting; these values start from a fresh run time. The current invocation supplies output, logging, history, retention, and `--since` settings. Rerunning does not read the original input file or stdin, so the saved batch remains usable after that file is removed. Delivery in a future 0.3.0 release remains pending separate qualification.
+`--rerun` is merged source functionality intended for 0.3.0 and is not included in the published 0.2.0 binaries. It accepts the request ID or unique hexadecimal prefix shown by `--list`, then repeats the newest saved run using its stored targets, hosts, ports, interval, and configured duration. `--every` and `--for` replace only the corresponding saved setting; these values start from a fresh run time. The current invocation supplies output, logging, history, retention, and `--since` settings. Rerunning does not read the original input file or stdin, so the saved batch remains usable after that file is removed. Version 0.3.0 remains pending separate qualification and publication.
 
 Deletion checks every affected running run before committing. It refuses the entire operation if any selected run is active or its owner cannot be verified; only a run on this host with a PID conclusively verified dead may be removed while its status is still marked running. `--delete-request` acts on the canonical request group, including all of its runs, so an active sibling prevents deleting the other runs in that group.
 

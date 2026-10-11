@@ -63,8 +63,8 @@ func TestNativeReleaseBinaryQualification(t *testing.T) {
 	version := os.Getenv(releaseVersionEnv)
 	revision := os.Getenv(releaseRevisionEnv)
 	wantDigest := os.Getenv(releaseSHA256Env)
-	if version != "0.2.0" {
-		t.Fatalf("qualified version=%q, want 0.2.0", version)
+	if version != "0.3.0" {
+		t.Fatalf("qualified version=%q, want 0.3.0", version)
 	}
 	if !releaseRevisionPattern.MatchString(revision) {
 		t.Fatalf("qualified revision must be 40 lowercase hex characters: %q", revision)
