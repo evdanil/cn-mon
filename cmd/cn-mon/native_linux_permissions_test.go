@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -198,6 +199,26 @@ func assertLinuxPermissionDiagnostic(t *testing.T, stderr string) {
 	}
 	if !strings.Contains(diagnostic, "CAP_NET_RAW") || !strings.Contains(diagnostic, "authorized elevated process") {
 		t.Fatalf("permission diagnostic omits the Linux remedy: %q", diagnostic)
+	}
+}
+
+func verifyNativeRerunProbeOutcome(t *testing.T, code int, icmpState, stderr string) {
+	t.Helper()
+	switch {
+	case code == 0 && icmpState == "OK":
+		return
+	case code == 3 && icmpState == "ERROR":
+		conn, cause := net.ListenPacket("ip4:icmp", "127.0.0.1")
+		if conn != nil {
+			_ = conn.Close()
+			t.Fatal("native rerun returned probe error although raw ICMP socket access is available")
+		}
+		if !errors.Is(cause, syscall.EPERM) && !errors.Is(cause, syscall.EACCES) {
+			t.Fatalf("native rerun exit 3 lacks typed EPERM/EACCES raw-socket witness: %v", cause)
+		}
+		assertLinuxPermissionDiagnostic(t, stderr)
+	default:
+		t.Fatalf("native rerun permission result ICMP=%q exit=%d", icmpState, code)
 	}
 }
 
