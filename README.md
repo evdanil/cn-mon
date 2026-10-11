@@ -4,7 +4,7 @@
 
 ## Download a release
 
-The [GitHub releases page](https://github.com/evdanil/gotest/releases) is the download location for published versions. Each release provides `cn-mon_<version>_linux_amd64.tar.gz` and `cn-mon_<version>_windows_amd64.zip`, plus `SHA256SUMS`. Verify the selected archive before extracting it.
+Download [cn-mon 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0), built and qualified from source `f156255812308db7039d9721945957348ddbf8b4`. The release provides `cn-mon_0.1.0_linux_amd64.tar.gz`, `cn-mon_0.1.0_windows_amd64.zip` and `SHA256SUMS`. Verify the selected archive before extracting it.
 
 On Linux, for example:
 
