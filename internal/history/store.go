@@ -19,6 +19,8 @@ type Store struct {
 	writable  bool
 	closeOnce sync.Once
 	closeErr  error
+	// closeConnection provides a transaction-cleanup fault seam for storage tests.
+	closeConnection func(*sql.Conn) error
 }
 
 // Opening and schema-gate behavior adapts cn_tool/utils/ping_store.py:232–333

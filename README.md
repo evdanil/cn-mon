@@ -47,9 +47,19 @@ go run ./cmd/cn-mon --format json --tcp 443 example.com
 go run ./cmd/cn-mon --list
 go run ./cmd/cn-mon --show REQUEST_ID --format md
 go run ./cmd/cn-mon --follow REQUEST_ID
+go run ./cmd/cn-mon --list-runs REQUEST_ID --format table
+go run ./cmd/cn-mon --delete-run RUN_ID
+go run ./cmd/cn-mon --delete-request REQUEST_ID
+go run ./cmd/cn-mon --clear-history
 ```
 
+These management commands are available in the current source; the published 0.1.0 binary predates them, and a later delivery will include them. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
+
+Deletion checks every affected running run before committing. It refuses the entire operation if any selected run is active or its owner cannot be verified; only a run on this host with a PID conclusively verified dead may be removed while its status is still marked running. `--delete-request` acts on the canonical request group, including all of its runs, so an active sibling prevents deleting the other runs in that group.
+
 Target runs collect input, resolve configuration and logging, probe targets, write completed rounds to history, and render the selected report. Exit 0 means the selected success condition was met, exit 1 means the completed run had no selected success, and exit 3 reports probe/history or other execution failure. List and show are read-only history operations. Follow requires stderr to be an interactive terminal. A real stdin terminal accepts `q` to stop and `v` to switch the live run display to a table view even when live drawing is unavailable or stderr is redirected.
+
+`--tcp PORTS` adds TCP checks alongside ICMP echo probes; it does not create a TCP-only mode. `!` records an ICMP echo reply. `T` means a TCP response arrived without an ICMP echo reply or a target rejection; the port may have accepted or refused the connection. Each cell has one glyph, so `!` and `T` do not combine. Use the table report to inspect each requested port's open or closed state.
 
 Live terminal setup is best-effort: a setup or drawing failure does not prevent useful reports or history following. The program restores terminal modes and cursor state on normal completion, graceful stop, and Linux job-control suspension; it rearms input after returning to the foreground. Windows restoration preserves the original cursor visibility and size. If that state cannot be captured, live drawing stays disabled while eligible keys and reports remain available. On Linux, an ordinary diagnostic is omitted when its destination is the controlling terminal, the process is in the background, and that terminal has `TOSTOP` enabled; uncertain terminal job-control state also makes that physical write best-effort silent. Redirected diagnostics, file logging, report generation, and exit status remain available.
 

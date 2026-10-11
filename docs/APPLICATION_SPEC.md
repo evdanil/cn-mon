@@ -2,6 +2,8 @@
 
 Status: M0–M6 are complete through [PR #13](https://github.com/evdanil/gotest/pull/13). Target/list/show/follow, all four formats, native terminal controls and release tooling are implemented. [Version 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0) was qualified and published from M6 merge `f156255812308db7039d9721945957348ddbf8b4` on 2026-10-11 after the required checks and both reviews completed. The public tag and all three asset hashes were verified against the qualified source and bytes. Section 10.3 defines the release contract; the development plan records final source/native/publication evidence.
 
+M7 history management is implemented under the approved contracts in sections 2.2 and 10.4, with passing local tests and completed independent review of storage, CLI/output and native harnesses. Current hosted Linux/Windows checks, external review and merge remain pending. The separately planned M8 in section 10.5 addresses live-screen flicker, timestamp wrapping and clearer live-table states. Neither milestone is present in the published 0.1.0 assets.
+
 Destination: `evdanil/gotest`. Product and executable: **cn-mon** (`cn-mon.exe` on Windows).
 
 ## 1. Purpose and compatibility boundary
@@ -90,6 +92,39 @@ Theme names are case-sensitive after INI cleaning; an unknown INI theme emits a 
 Preserve effective logging bootstrap semantics rather than applying history-path coercion to it: INI logging values come directly from the non-interpolating parser, then CLI overrides apply; an empty final `-l/--log-file` leaves the INI/default selection in effect. For example, `--log-file first.log --log-file ""` uses the INI/default path, neither `first.log` nor an empty path, matching [main.py, lines 165–171](https://github.com/evdanil/cn-tool/blob/2e2f3c40ef6718486f1ca4477f9145029ec495fa/cn_tool/main.py#L165-L171). Expand `~` in the log path but do not remove literal INI quote characters. Relative log paths use the working directory. Uppercase the level; the standard named levels and Python aliases `WARN`, `FATAL`, `NOTSET` are recognized in INI, and an unknown name falls back to `INFO`. CLI levels remain the five exact uppercase choices above. Following [logging.py, lines 18–64](https://github.com/evdanil/cn-tool/blob/2e2f3c40ef6718486f1ca4477f9145029ec495fa/cn_tool/utils/logging.py#L18-L64), create log parent directories and append UTF-8 records with local timestamp, severity and message; do not rotate or truncate an existing log. If configured directory creation/file preparation fails, use `~/cn.log`; a successful fallback does not fail the command. If the selected/fallback log cannot be opened, report the startup failure on stderr and exit 3 before opening/pruning history or probing. Log run start/end, round/probe failures and relevant diagnostics at the selected level; never dump the full INI or unrelated credential values. Read-only history commands may append to the log; they still never mutate history.
 
 Parse and validate CLI syntax/mode combinations first, before reading stdin, configuration or logs. For target runs, read explicitly requested target input and reject unreadable/empty input before configuration or other startup work, matching [main.py, lines 1035–1049](https://github.com/evdanil/cn-tool/blob/2e2f3c40ef6718486f1ca4477f9145029ec495fa/cn_tool/main.py#L1035-L1049). Then load/resolve settings and CLI overrides, initialize logging, validate usable targets, and only then open history or probe. Reader modes never consume target stdin. Invalid CLI history/theme/log-level values exit 2 before configuration reads or file creation; no help/version path performs any of these reads/writes. Resolve effective history path and retention before any prune so a configured database is never accidentally replaced by the fallback.
+
+### 2.2 M7 history management
+
+The following new modes manage persistent SQLite history. A scan batch means the existing canonical request group, containing all runs with the same canonical targets and TCP ports; no additional batch identity or cache subsystem is introduced.
+
+```text
+cn-mon --list-runs REQUEST_ID [--history-file PATH] [--format FORMAT] [COMMON]
+cn-mon --delete-run RUN_ID [--history-file PATH] [--format FORMAT] [COMMON]
+cn-mon --delete-request REQUEST_ID [--history-file PATH] [--format FORMAT] [COMMON]
+cn-mon --clear-history [--history-file PATH] [--format FORMAT] [COMMON]
+```
+
+`REQUEST_ID` uses the existing case-insensitive, uniquely matching 4–64 hexadecimal prefix of the canonical request key, not SQLite's internal numeric request ID. `RUN_ID` is the exact, case-sensitive, nonempty UTF-8 identifier stored in `run.id`; do not trim, normalize, restrict it to UUID syntax or accept a prefix. Use `--list` to discover a request, then `--list-runs REQUEST_ID --format json` to obtain its full run IDs. Existing show/list reports and their fields remain unchanged. An ID beginning with `-` can be supplied with `--delete-run=VALUE`.
+
+An imported run ID containing NUL remains representable in JSON, but neither supported OS can carry embedded NUL in a process argument. Such a row can be removed through its request group or clear-history, subject to the same writer guard. The CLI does not decode escape strings into IDs, which would alias legitimate literal identifiers.
+
+These modes are mutually exclusive with one another and with target/list/show/follow modes. They reject targets, `-f/--file`, `--tcp`, `--every`, `--for`, `--since` and `--history-days` before data I/O. Existing early help/version precedence, final repeated scalar values, common configuration/logging/theme options and `--history-file` selection apply. All four existing formats are accepted, defaulting to `table`. No mode reads target stdin, resolves or probes targets, starts the scheduler, acquires terminal modes, handles live keys or prunes history. Configured logging retains its existing startup/fallback/runtime-error behavior. There is no prompt or force option.
+
+`--list-runs` reads one snapshot and lists metadata for the selected request in existing run order: start time descending, then stored row ID descending. JSON is `{"runs":[...]}`; each object has fields `id`, `request_id`, `status`, `state`, `started`, `ended`, `host`, `pid`, `rounds`. Here `request_id` is the full canonical key, `status` is the persisted status, and `state` is the existing display liveness classification. Timestamps use the existing UTC report representation; `ended` is nullable. Table, Markdown and CSV use those columns in that order. JSON and CSV preserve the exact run ID. Table and Markdown display the complete ID as a JSON string literal, with additional Markdown escaping where required; never truncate the only deletion identifier or emit its control characters directly. Other human fields retain normal terminal escaping. A uniquely matched request with no runs succeeds with `{"runs":[]}` in JSON and no section in the other formats. Pagination is internal to the single snapshot; no round/result payload is loaded for this list.
+
+`--delete-run` removes one exact run and its rounds/results, then its request only if that request has no remaining runs. `--delete-request` removes every run in the uniquely matched group, its rounds/results, and the request itself. `--clear-history` removes all request/run/round/result rows transactionally, retaining the compatible database, schema and monotonically advancing SQLite sequences. These operations do not unlink the database or WAL/SHM files, vacuum it, reset sequences or alter retention. Section 10.4 defines the mandatory live-writer guard and transaction boundary.
+
+Successful mutation JSON is `{"committed":true,"deleted":{"requests":N,"runs":N,"rounds":N,"results":N}}`, with actual affected-row counts. Table, Markdown and CSV report one row with columns `committed`, `requests`, `runs`, `rounds`, `results`. Clearing a missing database succeeds without creating it and reports zero counts with `committed:false`; clearing an existing empty compatible database reports zero counts with `committed:true`. No success report is emitted before commit. If commit succeeded but later connection/store cleanup fails, attempt the committed-count report, explicitly diagnose that deletion committed, and exit 3. An output failure after commit also exits 3 and must not imply rollback or suggest that blindly retrying will undo the deletion. Section 8's ordinary closed-downstream-pipe exception retains the existing operation status, including exit 3 for an earlier cleanup failure. Other failures emit a diagnostic and no result report.
+
+| Code | New history-management modes |
+| --- | --- |
+| 0 | Successful list or deletion; includes a selected request with zero runs and clearing missing/empty history |
+| 1 | Missing database or no matching run/request for list-runs/delete-run/delete-request |
+| 2 | Invalid options/ID/configuration or ambiguous request prefix |
+| 3 | Protected selected run, incompatible/malformed history, lock/storage/output failure, or logging initialization failure |
+| 130 | Ctrl+C, using the existing one-shot list/show hard-cancellation behavior |
+
+These new-mode statuses do not change existing target/list/show/follow statuses. A reported cancellation before commit rolls back the operation; first Ctrl+C cancels the hard context and exits promptly as for one-shot readers. SQLite's atomic transaction remains authoritative if interruption races commit: an already committed deletion is not undone, and an interrupted command without a success report is not proof of rollback. No terminal restoration or new signal phase is needed.
 
 ## 3. Targets and stable request identity
 
@@ -609,6 +644,50 @@ PR-head archives are unpublished validation candidates. Complete source/native/e
 
 After proving `v0.1.0` absent, create its lightweight Git ref through the create-only refs API at the exact qualified merged SHA; a collision or API error fails without updating/deleting a ref. Verify the exact ref, commit object type and SHA before creating the draft with `--verify-tag`. Do not rely on draft release creation to create the tag. Verify draft assets and the tag target before publication, then recheck the tag and public asset hashes afterward. Tag immutability here is the never-retarget policy, not a claim that GitHub protects draft tags. A failure can leave the created tag or an unpublished draft; automatic reruns still reject an existing tag. Root-owned recovery must retain that target and verified qualified bytes, with no deletion/retargeting or overwrite of different assets. Failed preparation/upload/checks leave no claimed release; rebuilt retries require fresh qualification.
 
+### 10.4 M7 history-management implementation contract
+
+Management uses `internal/history` for storage, `cmd/cn-mon` for dispatch and the additive `internal/output/management.go` reports, with no new dependency, schema, monitor mode, generic repository abstraction or public plugin API. The storage boundary is:
+
+```go
+type DeleteGuard struct {
+    Hostname string
+    PIDState func(int64) PIDState
+}
+type DeleteResult struct {
+    Requests, Runs, Rounds, Results int64
+    Committed bool
+}
+func OpenExistingWriter(ctx context.Context, path string) (*Store, error)
+func (s *Store) DeleteRun(ctx context.Context, id string, guard DeleteGuard) (DeleteResult, error)
+func (s *Store) DeleteRequest(ctx context.Context, prefix string, guard DeleteGuard) (DeleteResult, error)
+func (s *Store) ClearHistory(ctx context.Context, guard DeleteGuard) (DeleteResult, error)
+// errors.Is categories: ErrNotFound, ErrAmbiguousRequest, ErrProtectedRun.
+```
+
+The dedicated opener uses SQLite `mode=rw` for an existing file, returns `(nil, nil)` when it is missing and validates the existing compatible nonempty schema. It never creates parent directories/schema, converts the journal mode or runs retention. The existing read-only opener remains the list-runs path. SQLite's normal transaction coordination sidecars are not an application request to create or replace history. CLI supplies the local hostname and `LocalPIDState`; a missing PID callback is unknown, never proof of death.
+
+Each mutation uses one `BEGIN IMMEDIATE` transaction for current schema/selection validation, unique request-prefix resolution, all selected-run guard checks, counts, deletes/cascades and removal of affected empty requests. A blocked or malformed selected row rejects the whole action without partial deletion. Validate the actual SQLite storage classes of identity/status/lifetime/owner operands before scan coercion; a REAL PID or BLOB status must not become plausible typed guard data. Unknown statuses, malformed IDs, missing parent identities and inconsistent status/end values fail closed. Validate fields needed for safe selection and writer eligibility, not discarded observation/result payloads or an unrelated full-database audit.
+
+Finished, stopped and failed rows require a valid, non-NULL end timestamp. A raw `running` row requires NULL `ended`; it is eligible only when its stored nonempty UTF-8 hostname equals the current nonempty hostname exactly and its positive INTEGER PID is representable on this platform, then conclusively classified `PIDDead`. The valid range is 1–2147483647 on Linux and 1–4294967295 on Windows. Range-check before calling `LocalPIDState`, whose invalid-PID fallback cannot authorize deletion. Foreign-host, alive, inaccessible/unknown and unverifiable running owners block the entire selected action with `ErrProtectedRun`; malformed safety scalars are storage errors. Neither heartbeat age nor display `RunState == "lost"` authorizes deletion. Do not infer death from missing process-query privileges or rename/fix stored statuses. Finalized rows do not require their former owner process to have exited.
+
+The immediate write reservation serializes against cooperative history writers: selection and eligibility cannot be checked in an earlier read transaction and reused for deletion. A later writer may create new history after the deletion commits; clear is an atomic removal of the selected transaction's rows, not a persistent ban on future runs. Preserve `sqlite_sequence` so follow's committed-round high-water marks remain valid after request recreation. Cancellation, lock failure or another error before commit follows the existing bounded rollback/discard path. The smallest shared transaction helper may expose whether COMMIT succeeded; retain existing callers' behavior and set `DeleteResult.Committed` at that actual boundary, even if later cleanup returns an error. Counts are meaningful as deletion results only after successful commit. No automatic retry follows a known committed result.
+
+List-runs reuses `OpenReader`, `Store.View`, `Snapshot.Find`, `Snapshot.Request` and paged `Snapshot.Runs`; it needs no new storage listing API. Resolve one request and collect its run metadata within one view, close history before writing the report, and preserve existing read-only/error behavior. The CLI owner supplies dispatch and the small additive output reports while retaining current configuration, diagnostics, logging and signal handling. Storage and CLI implementation have separate owners under the development plan.
+
+### 10.5 M8 live display and table layout (planned)
+
+M8 is a separate display milestone after M7 merges. Keep the existing 500 ms display callback and immediate phase/progress/result updates; the probe interval does not govern the visible clock/countdown. Fix repeated whole-frame erase/repaint in the terminal adapter, not by slowing the scheduler or hiding changing status. Preserve existing key handling, permanent notes, safe diagnostic routing, background/suspend behavior, failure handling and exact native mode/cursor restoration.
+
+`Screen` retains only the last successfully presented frame's sanitized, styled row bytes and its geometry/view/layout identity. Obtain each row through the existing styled writer into a private buffer and compare those exact bytes, including ANSI style, rather than raw `LiveUpdate` values. With unchanged dimensions, view/request layout and row count, identical rows produce no output; changed rows are overwritten in place, then any old suffix is erased with the default style. Do not blank a row before rewriting it; assemble the cursor-relative patch into one write where practical and leave the cursor on the final frame row. A clock-only header change must not delete/repaint the unchanged body or scroll the terminal. Publish the new cache only after all required writes succeed; an output failure follows the existing drawing-disable/cleanup behavior.
+
+Dimensions, row count, grid/table view or request-layout changes require full replacement. Frame removal, permanent `Note`/`Change` output, drawing ineligibility/foreground loss, reacquisition and suspend/resume invalidate the presented cache so the next eligible draw fully repaints. Invalidation from signal/key handling must not wait for the draw mutex; a small atomic invalidation flag or generation is sufficient. Resume and emergency cleanup retain their existing bounded paths. Reuse the current styled writer; no terminal framework, background renderer, new monitor DTO or production test hook is introduced.
+
+For human report tables, compute each column's natural sanitized display width from its header/cells, at least one cell. Subtract the existing inter-column separators from the terminal budget. Use natural widths unchanged when their sum fits. Otherwise use the largest shared cap whose sum of capped natural widths fits, then distribute the remaining cells to still-unsatisfied columns in stable column order. This transfers spare space from short columns instead of imposing a uniform cap on every column. Retain the existing tiny-width vertical fallback, grapheme-safe wrapping and styles. A 25-character UTC timestamp remains on one line when the complete natural table fits; do not shorten timestamps or change their values to mask the layout defect.
+
+The live `v` table adds a `State` column using the existing `LiveRow.Cell`, and renames its `Latest` header to `ICMP`. Match the existing glyph/style semantics, including applicable partial-reply highlighting; do not derive a new classification from the displayed ICMP text. The legend describes `!` as an ICMP reply and `T` as a TCP response: open or closed TCP can produce `T` when neither echo nor target rejection wins. `T` does not guarantee an open port. `--tcp` adds probes alongside ICMP. The live DTO deliberately has no per-port map; exact port outcomes remain in the final reports. Do not add live TCP columns, alter final report headers, or change JSON/CSV/Markdown schemas or probe/exit semantics in M8.
+
+Source byte-output tests prove duplicate suppression, changed-row/suffix updates and invalidation; focused layout tests prove width allocation and existing state reuse. Native Linux PTY and Windows private-console tests prove actual display updates, controls, resize and restoration. Linux raw PTY bytes can additionally witness emission scope; Windows screen-buffer readback is evidence of actual visible content, not a claim that snapshots alone measure the absence of transient flicker. Retain the existing required native suite and its blocked-output/loss cases.
+
 ## 11. Acceptance scenarios
 
 These IDs are implementation/review traceability, not claims that the tests already passed.
@@ -641,5 +720,9 @@ These IDs are implementation/review traceability, not claims that the tests alre
 | OUT-02 | CSV union/quoting/LF, Markdown escaping/all periods, omitted empty human-format sections, all-empty output, table period limit and all four source theme styles match fixtures; INI/CLI theme precedence, unknown-INI fallback and no-color behavior are correct |
 | TTY-01 | Both OSes demonstrate grid/table toggle, q/Ctrl+C, resize/crop, restored console modes and stdin redirection; Linux additionally demonstrates foreground/background, suspend/resume, SIGTERM/SIGHUP and nohup |
 | REL-01 | Native full CI, race checks where supported, bounded-concurrency/cancellation tests, dependency/license review, CGO-free binary smoke tests, artifact contents/checksums and refreshed docs pass |
+| CLI-03 | New history modes preserve early-exit/config/log ordering, reject incompatible input before I/O, never probe or acquire terminal modes, implement all four reports/exits, and truthfully distinguish committed deletion from later cleanup/output failure |
+| HIS-03 | List-runs discovers full exact run IDs and canonical parent keys in one snapshot, preserves order/status/state/timestamps/counts and control-character round trips, and distinguishes an existing empty group from missing/ambiguous selection |
+| DB-04 | Exact run deletion, unique-prefix group deletion and logical clear atomically guard all selected writers and remove only intended rows; malformed/foreign/alive/unknown owners fail closed, same-host confirmed-dead running rows are eligible, rollback/lock/cancel and post-commit failures are truthful, and schema/files/sequences/read snapshots remain compatible |
+| TTY-02 | Identical presented frames emit no bytes and stable-layout updates rewrite only changed rows; invalidation restores full redraw, wide tables retain fitting timestamps, and live State/ICMP labels match existing observations without changing structured reports, controls or native restoration |
 
 The detailed TDD sequence, review gates, and current evidence limits are in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).

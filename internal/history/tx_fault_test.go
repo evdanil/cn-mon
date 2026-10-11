@@ -133,6 +133,26 @@ func TestOpenTxFailedCommitRollsBackAndPreservesCause(t *testing.T) {
 	}
 }
 
+func TestOpenTxCommitOutcomeTracksSuccessBeforePostCommitCancellation(t *testing.T) {
+	commitErr := errors.New("commit failed")
+	state := &openingFaultState{commitErr: commitErr}
+	store := newOpeningFaultStore(t, state)
+	committed := false
+	err := store.withTxOperationCommit(context.Background(), "delete", true, func(*sql.Conn) error { return nil }, &committed)
+	if !errors.Is(err, commitErr) || committed {
+		t.Fatalf("failed commit outcome committed=%v err=%v", committed, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	state.commitErr = nil
+	state.commitHook = cancel
+	committed = false
+	err = store.withTxOperationCommit(ctx, "delete", true, func(*sql.Conn) error { return nil }, &committed)
+	if err != nil || !committed || !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("successful commit/cleanup outcome committed=%v err=%v ctx=%v", committed, err, ctx.Err())
+	}
+}
+
 func TestOpenTxSuccessfulCommitSurvivesImmediateCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	state := &openingFaultState{commitHook: cancel}

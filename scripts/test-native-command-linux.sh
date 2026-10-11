@@ -49,7 +49,7 @@ if [[ -n "$(getcap -n "$command_binary")" || -n "$(getcap -n "$test_binary")" ]]
 fi
 
 set +e
-selector='^(TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$'
+selector='^(TestNativeCommand(LoopbackHistoryJSON|HistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$'
 if [[ $release_qualify == 1 ]]; then
 	selector=${selector%$} # replace the final anchor before adding qualification cases
 	selector="${selector%)}|TestNativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|FollowDoesNotStopWriter|EndedFollowAllFormats))$"
@@ -98,6 +98,11 @@ fi
 
 required=(
 	'--- PASS: TestNativeCommandLoopbackHistoryJSON'
+	'--- PASS: TestNativeCommandHistoryManagement'
+	'--- PASS: TestNativeCommandHistoryManagementReportsCommittedOutputFailure'
+	'--- PASS: TestNativeCommandHistoryManagementSelectionSemantics'
+	'--- PASS: TestNativeCommandHistoryManagementLockedCancellation'
+	'--- PASS: TestNativeCommandHistoryManagementLiveWriterProtection'
 	'--- PASS: TestNativeCommandLinuxPTYQuitRestoresTerminal'
 	'--- PASS: TestNativeCommandLinuxPTYKeysRemainActiveWithRedirectedStderr'
 	'--- PASS: TestNativeCommandLinuxRestoresScreenBeforeBlockedFinalReport'
@@ -120,6 +125,11 @@ required=(
 	'--- PASS: TestNativeCommandClosedStdoutPipeIsQuiet'
 	'CNMON_NATIVE_COMMAND_RESULT'
 	'CNMON_NATIVE_COMMAND_CONFIG ini90=retained cli30=pruned-old-seed recent-round-retained history-path=ini log-path=ini'
+	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT formats=json,table,csv,md exact-utf8-id=pass request-prefix=pass delete-cascade=pass clear=pass live-owner=protected dead-local-owner=deletable'
+	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT postcommit-report-error=committed-diagnostic=pass exit=3 closed-pipe=quiet missing-clear=no-create'
+	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT selection=zero-run-success ambiguous-prefix=exit2-no-mutation'
+	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT locked-delete=ctrlc exit=130 committed=false history=unchanged'
+	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT live-writer=protected stale-display=lost pid=alive mixed-request=blocked-then-deleted stopped-pid=dead persisted-round=verified'
 	'CNMON_NATIVE_COMMAND_PREINPUT_INTERRUPT exit=130 side-effects=none'
 	'CNMON_NATIVE_COMMAND_SECOND_INTERRUPT exit=130 finalizer=write-locked'
 	'CNMON_NATIVE_COMMAND_RUN_SIGNAL signal=interrupt '

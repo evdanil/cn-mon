@@ -24,6 +24,10 @@ func (s *Store) withTx(ctx context.Context, write bool, fn func(*sql.Conn) error
 }
 
 func (s *Store) withTxOperation(ctx context.Context, op string, write bool, fn func(*sql.Conn) error) error {
+	return s.withTxOperationCommit(ctx, op, write, fn, nil)
+}
+
+func (s *Store) withTxOperationCommit(ctx context.Context, op string, write bool, fn func(*sql.Conn) error, committed *bool) error {
 	if ctx == nil {
 		return s.wrap(op, errors.New("nil context"))
 	}
@@ -68,10 +72,20 @@ func (s *Store) withTxOperation(ctx context.Context, op string, write bool, fn f
 		primary := normalizeDBError(ctx, err)
 		return s.finishFailedTransaction(ctx, op, conn, primary)
 	}
-	if err := conn.Close(); err != nil {
+	if committed != nil {
+		*committed = true
+	}
+	if err := s.closeTxConnection(conn); err != nil {
 		return s.wrap(op, markCleanup(err))
 	}
 	return nil
+}
+
+func (s *Store) closeTxConnection(conn *sql.Conn) error {
+	if s.closeConnection != nil {
+		return s.closeConnection(conn)
+	}
+	return conn.Close()
 }
 
 func invokeTransactionCallback(conn *sql.Conn, fn func(*sql.Conn) error) (err error, panicValue any) {

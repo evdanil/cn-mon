@@ -32,7 +32,11 @@ func sqliteURI(path string, readOnly bool) (string, error) {
 
 func sqliteURIForAbsolute(path string, readOnly bool) string {
 	location, host := sqliteURIPath(path)
-	return sqliteURIForLocation(location, host, readOnly)
+	mode := "rwc"
+	if readOnly {
+		mode = "ro"
+	}
+	return sqliteURIForLocationMode(location, host, mode)
 }
 
 func sqliteURIForLocation(location, host string, readOnly bool) string {
@@ -40,6 +44,15 @@ func sqliteURIForLocation(location, host string, readOnly bool) string {
 	if readOnly {
 		mode = "ro"
 	}
+	return sqliteURIForLocationMode(location, host, mode)
+}
+
+func sqliteURIForAbsoluteMode(path, mode string) string {
+	location, host := sqliteURIPath(path)
+	return sqliteURIForLocationMode(location, host, mode)
+}
+
+func sqliteURIForLocationMode(location, host, mode string) string {
 	query := url.Values{}
 	query.Set("mode", mode)
 	query.Add("_pragma", "busy_timeout(10000)")
