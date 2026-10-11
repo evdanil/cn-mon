@@ -81,7 +81,7 @@ function Get-GoTestFailureContext([string] $Text) {
             }
             continue
         }
-        if ($activeTest -and $line -match '^\s+[^\s:]+\.go:\d+:\s*' -and $line -notmatch 'CNMON_') {
+        if ($activeTest -and $line -match '^\s+[^\s:]+\.go:\d+:\s*' -and $line -notmatch '^\s+[^\s:]+\.go:\d+:\s*CNMON_[A-Za-z0-9_]+(?:\s|$)') {
             $diagnostic = $line.Trim()
             $diagnostic = [regex]::Replace($diagnostic, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '?')
             if ($diagnostic.Length -gt 500) { $diagnostic = $diagnostic.Substring(0, 500) + '…' }
