@@ -244,7 +244,10 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	}
 	edgeChanged := false
 	edgeFingerprint := nativeWindowsMarkerField(edge, "fingerprint")
-	deadline := time.Now().Add(3 * time.Second)
+	// At 33 columns the high-priority round and request ID fit, while the
+	// countdown and clock are cropped. Wait through the next scheduled round
+	// for visible content to change without invalidating the live frame cache.
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
 		next := requestNativeWindowsConsoleState(t, control, output)
