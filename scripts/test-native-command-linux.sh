@@ -31,11 +31,21 @@ set -e
 cat "$main_log"
 if [[ $result -ne 0 ]]; then
 	failure_context=$(awk '
-		/^[[:space:]]+[^[:space:]]+\.go:[0-9]+:/ { diagnostic = $0 }
-		/^--- FAIL:/ {
-			if (diagnostic != "") print diagnostic
+		/^=== RUN[[:space:]]+/ { current_test = $3 }
+		/^[[:space:]]+[^[:space:]]+\.go:[0-9]+:/ && $0 !~ /:[[:space:]]*CNMON_[A-Za-z0-9_]+([[:space:]]|$)/ {
+			if (diagnostic_count[current_test] == 5) {
+				for (i = 1; i < 5; i++) diagnostic[current_test, i] = diagnostic[current_test, i + 1]
+				diagnostic_count[current_test] = 4
+			}
+			diagnostic[current_test, ++diagnostic_count[current_test]] = $0
+		}
+		/^[[:space:]]*--- FAIL:/ {
+			failed_test = $3
+			for (i = 1; i <= diagnostic_count[failed_test]; i++) {
+				key = failed_test SUBSEP i
+				if (key in diagnostic) print diagnostic[key]
+			}
 			print
-			diagnostic = ""
 			failures++
 			if (failures == 5) exit
 		}
