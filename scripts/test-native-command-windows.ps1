@@ -27,13 +27,76 @@ function Write-Log([string] $Text) {
 }
 
 function Write-GitHubFailure([string] $Title, [string] $Message) {
-    if ($Message.Length -gt 6000) { $Message = $Message.Substring($Message.Length - 6000) }
     $escaped = $Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    if ($escaped.Length -gt 3900) {
+        $limit = 3897
+        $twoBack = $limit - 2
+        $oneBack = $limit - 1
+        if ($twoBack -ge 0 -and $escaped.Substring($twoBack, 1) -eq '%') { $limit -= 2 }
+        elseif ($oneBack -ge 0 -and $escaped.Substring($oneBack, 1) -eq '%') { $limit-- }
+        $escaped = $escaped.Substring(0, $limit) + '...'
+    }
     Write-Host "::error title=${Title}::$escaped"
 }
 
 function Count-MatchingLines([string] $Text, [string] $Pattern) {
     return @($Text -split '\r?\n' | Where-Object { $_ -match $Pattern }).Count
+}
+
+function Get-GoTestFailureContext([string] $Text) {
+    $diagnostics = @{}
+    $activeTest = ''
+    $failures = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ($Text -split '\r?\n')) {
+        if ($line -match '^\s*=== RUN\s+(\S+)') {
+            $activeTest = $Matches[1]
+            if (-not $diagnostics.ContainsKey($activeTest)) {
+                $diagnostics[$activeTest] = [System.Collections.Generic.List[string]]::new()
+            }
+            continue
+        }
+        if ($line -match '^\s*--- FAIL:\s+(\S+)') {
+            $failedTest = $Matches[1]
+            $section = [System.Collections.Generic.List[string]]::new()
+            $section.Add("failed Go test: $failedTest")
+            if ($diagnostics.ContainsKey($failedTest) -and $diagnostics[$failedTest].Count -gt 0) {
+                foreach ($diagnostic in $diagnostics[$failedTest]) { $section.Add($diagnostic) }
+            } else {
+                $section.Add('(no test-local source diagnostics captured)')
+            }
+            $section.Add("--- FAIL: $failedTest")
+            $failures.Add(($section -join "`n"))
+            if ($failures.Count -ge 5) { break }
+            if ($activeTest -eq $failedTest) {
+                $lastSlash = $failedTest.LastIndexOf('/')
+                $activeTest = if ($lastSlash -ge 0) { $failedTest.Substring(0, $lastSlash) } else { '' }
+            }
+            continue
+        }
+        if ($line -match '^\s*--- (?:PASS|SKIP):\s+(\S+)') {
+            $finishedTest = $Matches[1]
+            if ($activeTest -eq $finishedTest) {
+                $lastSlash = $finishedTest.LastIndexOf('/')
+                $activeTest = if ($lastSlash -ge 0) { $finishedTest.Substring(0, $lastSlash) } else { '' }
+            }
+            continue
+        }
+        if ($activeTest -and $line -match '^\s+[^\s:]+\.go:\d+:\s*' -and $line -notmatch 'CNMON_') {
+            $diagnostic = $line.Trim()
+            $diagnostic = [regex]::Replace($diagnostic, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '?')
+            if ($diagnostic.Length -gt 500) { $diagnostic = $diagnostic.Substring(0, 500) + '…' }
+            if (-not $diagnostics.ContainsKey($activeTest)) {
+                $diagnostics[$activeTest] = [System.Collections.Generic.List[string]]::new()
+            }
+            $items = $diagnostics[$activeTest]
+            $items.Add($diagnostic)
+            if ($items.Count -gt 5) { $items.RemoveAt(0) }
+        }
+    }
+    if ($failures.Count -eq 0) { return '' }
+    $context = $failures -join "`n"
+    if ($context.Length -gt 2400) { $context = $context.Substring(0, 2400) + "`n(failure context truncated)" }
+    return $context
 }
 
 function Invoke-CommandTests([string] $Name, [string[]] $Arguments, [string] $ExpectedRole, [string] $ExpectedSid, [System.Management.Automation.PSCredential] $Credential = $null) {
@@ -70,9 +133,24 @@ function Require-CommandTests([string] $Name, [string[]] $Arguments, [string] $E
     $result = Invoke-CommandTests $Name $Arguments $ExpectedRole $ExpectedSid $Credential
     $missing = @($Markers | Where-Object { $result.Output -notmatch $_ })
     if ($result.ExitCode -ne 0 -or $missing.Count -gt 0) {
-        $detail = $result.Output
-        if (-not $detail) { $detail = '(native command tests emitted no output)' }
-        if ($missing.Count -gt 0) { $detail += "`nmissing pass markers: $($missing -join ', ')" }
+        $failureContext = Get-GoTestFailureContext $result.Output
+        $tail = $result.Output
+        if (-not $tail) { $tail = '(native command tests emitted no output)' }
+        if ($tail.Length -gt 700) { $tail = $tail.Substring($tail.Length - 700) }
+        $tail = [regex]::Replace($tail, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '?')
+        $detail = ''
+        if ($failureContext) {
+            $detail += "failure-specific Go test context:`n$failureContext`n"
+        } else {
+            $detail += "no Go test failure record was present`n"
+        }
+        $detail += "bounded output tail:`n$tail"
+        if ($missing.Count -gt 0) {
+            $missingSummary = @($missing | Select-Object -First 5) -join ', '
+            if ($missing.Count -gt 5) { $missingSummary += " (+$($missing.Count - 5) more)" }
+            if ($missingSummary.Length -gt 500) { $missingSummary = $missingSummary.Substring(0, 470) + "... (+$($missing.Count) missing markers)" }
+            $detail += "`nmissing required markers: $missingSummary"
+        }
         Write-GitHubFailure 'cn-mon native Windows command' "phase '$Name' failed with exit $($result.ExitCode):`n$detail"
         throw "required Windows command native phase '$Name' failed"
     }
@@ -244,8 +322,15 @@ try {
     $validOrdinaryResult = ($ordinarySuccessCount -eq 1 -and $ordinaryDeniedCount -eq 0 -and $ordinaryWitnessCount -eq 0) -or
         ($ordinaryDeniedCount -eq 1 -and $ordinarySuccessCount -eq 0 -and $ordinaryWitnessCount -eq 1)
     if ($ordinary.ExitCode -ne 0 -or $ordinaryPassCount -ne 1 -or $ordinaryRoleCount -ne 1 -or -not $validOrdinaryResult) {
-        $detail = $ordinary.Output
-        if (-not $detail) { $detail = '(native command tests emitted no output)' }
+        $failureContext = Get-GoTestFailureContext $ordinary.Output
+        $tail = $ordinary.Output
+        if (-not $tail) { $tail = '(native command tests emitted no output)' }
+        if ($tail.Length -gt 700) { $tail = $tail.Substring($tail.Length - 700) }
+        $tail = [regex]::Replace($tail, '[\x00-\x08\x0B\x0C\x0E-\x1F]', '?')
+        $detail = ''
+        if ($failureContext) { $detail += "failure-specific Go test context:`n$failureContext`n" }
+        else { $detail += "no Go test failure record was present`n" }
+        $detail += "bounded output tail:`n$tail"
         if ($ordinaryPassCount -ne 1 -or $ordinaryRoleCount -ne 1) { $detail += "`nexpected one test pass and one matching parent/child identity marker; got pass=$ordinaryPassCount role=$ordinaryRoleCount" }
         if (-not $validOrdinaryResult) { $detail += "`nordinary role must produce exactly one success result or a witnessed permission-denial result" }
         Write-GitHubFailure 'cn-mon native Windows command' "phase 'ordinary' failed with exit $($ordinary.ExitCode):`n$detail"

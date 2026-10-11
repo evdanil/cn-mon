@@ -299,6 +299,10 @@ The qualification matrix is the existing 26-ID M6 table plus M7's CLI-03/HIS-03/
 
 Complete both reviews and all current source/native/candidate checks before the M9 PR merges. Then build and qualify fresh archives from the exact merged main SHA containing M7, M8 and this tooling update, even if its tree matches a candidate. Authorized publication creates `v0.2.0` only after proving it absent, verifies its commit target, creates the draft with `--verify-tag`, and checks downloaded asset bytes before and after publication. Preserve the existing partial-failure policy and never rebuild/repack at publication. Record actual final run, source/tag, hashes and role evidence only after success; a later evidence-only documentation PR must not change the published source/assets. M9 implementation and every delivery gate remain pending.
 
+### Backlog — rerun a saved batch after 0.2.0
+
+For the next release after 0.2.0, design `--rerun ID` to start the same saved scan batch with its parameters, potentially allowing explicit `--every` and `--for` overrides. Resolve ID selection, which parameters history can faithfully preserve, inheritance and override rules in that later design. This request does not change the current specification, acceptance matrix or implementation scope; finish and release 0.2.0 first.
+
 ## Native validation responsibilities
 
 | Layer / first integrated milestone | Routine CI | Explicit native/controlled evidence |
