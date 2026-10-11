@@ -23,7 +23,7 @@ func TestPackRejectsInvalidRevisionBeforeFileAccess(t *testing.T) {
 		"-binary", "/does/not/exist/cn-mon",
 		"-source-root", "/does/not/exist",
 		"-out-dir", "/does/not/exist",
-		"-version", "0.2.0",
+		"-version", "0.3.0",
 		"-revision", "BAD",
 		"-commit-unix", "0",
 		"-target", "linux_amd64",
@@ -37,8 +37,8 @@ func TestPackRejectsInvalidRevisionBeforeFileAccess(t *testing.T) {
 	}
 }
 
-func TestReleaseVersionIsStrictly020(t *testing.T) {
-	for _, version := range []string{"0.1.0", "0.2.1", "v0.2.0"} {
+func TestReleaseVersionIsStrictly030(t *testing.T) {
+	for _, version := range []string{"0.1.0", "0.2.0", "0.3.1", "v0.3.0"} {
 		t.Run(version, func(t *testing.T) {
 			_, err := validateInputs(version, strings.Repeat("a", 40), "linux_amd64")
 			if err == nil {
@@ -46,7 +46,7 @@ func TestReleaseVersionIsStrictly020(t *testing.T) {
 			}
 		})
 	}
-	if _, err := validateInputs("0.2.0", strings.Repeat("a", 40), "linux_amd64"); err != nil {
+	if _, err := validateInputs("0.3.0", strings.Repeat("a", 40), "linux_amd64"); err != nil {
 		t.Fatalf("current release rejected: %v", err)
 	}
 }

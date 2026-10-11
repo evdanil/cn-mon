@@ -176,7 +176,7 @@ try {
         }
         if ($releaseQualify) {
             if ($releaseExpectedSha -notmatch '^[0-9a-f]{64}$') { throw 'release qualification requires lowercase SHA-256' }
-            if ($env:CNMON_RELEASE_VERSION -ne '0.2.0' -or $env:CNMON_RELEASE_REVISION -notmatch '^[0-9a-f]{40}$') {
+            if ($env:CNMON_RELEASE_VERSION -ne '0.3.0' -or $env:CNMON_RELEASE_REVISION -notmatch '^[0-9a-f]{40}$') {
                 throw 'release qualification version/revision inputs are invalid'
             }
             if ((Get-FileHash -LiteralPath $releaseSource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $releaseExpectedSha) {
@@ -257,7 +257,7 @@ try {
             '--- PASS: TestNativeReleaseInputFileAndStdin',
             '--- PASS: TestNativeReleaseUnreadableInputHasNoStartupEffects',
             '--- PASS: TestNativeReleaseEndedFollowAllFormats',
-            "CNMON_NATIVE_RELEASE_BINARY version=0.2.0 revision=$([regex]::Escape($env:CNMON_RELEASE_REVISION)) sha256=$releaseExpectedSha path=absolute version=exact unchanged=true",
+            "CNMON_NATIVE_RELEASE_BINARY version=0.3.0 revision=$([regex]::Escape($env:CNMON_RELEASE_REVISION)) sha256=$releaseExpectedSha path=absolute version=exact unchanged=true",
             'CNMON_NATIVE_RELEASE_REPORTS target+list+show formats=default,json,table,csv,md tcp=open history=seeded output=verified',
             'CNMON_NATIVE_RELEASE_NO_PING ipv4=',
             'CNMON_NATIVE_RELEASE_INPUT file=space-bom stdin=requested tcp=open json=pass history=finished',
