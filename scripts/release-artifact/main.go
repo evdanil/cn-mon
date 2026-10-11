@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const releaseVersion = "0.1.0"
+const releaseVersion = "0.2.0"
 
 var revisionPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -43,8 +43,8 @@ type targetSpec struct {
 }
 
 var targets = map[string]targetSpec{
-	"linux_amd64":   {name: "linux_amd64", goos: "linux", binary: "cn-mon", archive: "cn-mon_0.1.0_linux_amd64.tar.gz"},
-	"windows_amd64": {name: "windows_amd64", goos: "windows", binary: "cn-mon.exe", archive: "cn-mon_0.1.0_windows_amd64.zip", zip: true},
+	"linux_amd64":   {name: "linux_amd64", goos: "linux", binary: "cn-mon", archive: "cn-mon_0.2.0_linux_amd64.tar.gz"},
+	"windows_amd64": {name: "windows_amd64", goos: "windows", binary: "cn-mon.exe", archive: "cn-mon_0.2.0_windows_amd64.zip", zip: true},
 }
 
 type receipt struct {

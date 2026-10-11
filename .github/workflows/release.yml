@@ -9,13 +9,13 @@ on:
         required: true
         type: choice
         options:
-          - 0.1.0
+          - 0.2.0
       revision:
         description: Exact merged commit on main (40 lowercase hex characters)
         required: true
         type: string
       publish:
-        description: Publish this qualified merged revision as v0.1.0
+        description: Publish this qualified merged revision as v0.2.0
         required: true
         default: false
         type: boolean
@@ -56,13 +56,13 @@ jobs:
           if [[ $EVENT_NAME == pull_request ]]; then
             revision=$PR_REVISION
             repository=$PR_REPOSITORY
-            version=0.1.0
+            version=0.2.0
             [[ $PUBLISH != true ]] || { echo 'pull requests cannot publish' >&2; exit 1; }
           elif [[ $EVENT_NAME == workflow_dispatch ]]; then
             revision=$INPUT_REVISION
             repository=$REPOSITORY
             version=$INPUT_VERSION
-            [[ $version == 0.1.0 ]] || { echo 'unsupported release version' >&2; exit 1; }
+            [[ $version == 0.2.0 ]] || { echo 'unsupported release version' >&2; exit 1; }
             [[ $revision =~ ^[0-9a-f]{40}$ ]] || { echo 'revision must be exactly 40 lowercase hexadecimal characters' >&2; exit 1; }
             if [[ $PUBLISH == true && $WORKFLOW_REF != refs/heads/main ]]; then
               echo 'publication must be dispatched from main' >&2
@@ -195,8 +195,8 @@ jobs:
           asset_dir = pathlib.Path(os.environ['ASSET_DIR'])
           asset_dir.mkdir(parents=True, exist_ok=False)
           expected = [
-              (pathlib.Path(os.environ['LINUX_DIR']), 'linux_amd64', 'cn-mon_0.1.0_linux_amd64.tar.gz'),
-              (pathlib.Path(os.environ['WINDOWS_DIR']), 'windows_amd64', 'cn-mon_0.1.0_windows_amd64.zip'),
+              (pathlib.Path(os.environ['LINUX_DIR']), 'linux_amd64', 'cn-mon_0.2.0_linux_amd64.tar.gz'),
+              (pathlib.Path(os.environ['WINDOWS_DIR']), 'windows_amd64', 'cn-mon_0.2.0_windows_amd64.zip'),
           ]
           lines = []
           for directory, target, filename in expected:
@@ -259,7 +259,7 @@ jobs:
           import hashlib, json, os, pathlib, re
           root = pathlib.Path(os.environ['ASSET_DIR'])
           revision, version = os.environ['REVISION'], os.environ['VERSION']
-          expected = ['cn-mon_0.1.0_linux_amd64.tar.gz', 'cn-mon_0.1.0_windows_amd64.zip']
+          expected = ['cn-mon_0.2.0_linux_amd64.tar.gz', 'cn-mon_0.2.0_windows_amd64.zip']
           sums = (root / 'SHA256SUMS').read_text(encoding='ascii').splitlines()
           if len(sums) != 2 or [line.split('  ', 1)[-1] for line in sums] != expected:
               raise SystemExit('SHA256SUMS does not list exactly the two sorted expected assets')
@@ -290,7 +290,7 @@ jobs:
           WINDOWS_DIR: ${{ runner.temp }}/qualification-windows
         run: |
           set -euo pipefail
-          [[ "$VERSION" == 0.1.0 && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$VERSION" == 0.2.0 && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           tag="v$VERSION"
           set +e
           tag_lookup=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" 2>&1)
@@ -321,8 +321,8 @@ jobs:
               '',
               f"Native qualification used Go {linux['go']} on {linux['os']} and {windows['go']} on Windows runner {windows['os']} ({windows['os_image']}). Linux granted role: `{linux['linux_granted_role']}`. Linux denied role: `{linux['linux_denied_role']}`. Windows elevated role: `{windows['windows_elevated_role']}`. Windows ordinary role: `{windows['windows_ordinary_role']}`. Required command, native probe, history, report, terminal, and extracted-binary markers passed on both target operating systems. See [the complete qualification run and retained logs](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}).",
               'Online periods are sampled, not a claim of uninterrupted availability: a seen sample starts or extends a period, a completed not-seen sample closes it, and coverage gaps can split periods. The monitor reads and continues compatible Python-produced schema-1 history; custom Python process-data hooks are outside this native command scope. Approved compatibility exceptions include removal of interactive prompts, XLSX/report-file output and Python hooks, plus Linux graceful SIGTERM/SIGHUP, inherited ignored SIGHUP/SIGINT and the documented standard-Go inherited-SIGTERM exception.',
-              'This release follows the reviewed M6 specification and implementation plan. The merged source commit and qualification evidence are linked below; review approval was completed before release qualification.',
-              f"Review and source: [merged pull request]({os.environ['REVIEW_URL']}), [M6 merge commit]({os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/commit/{revision}), [application specification](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/APPLICATION_SPEC.md), and [development plan/evidence](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/DEVELOPMENT_PLAN.md).",
+              'This release delivers the reviewed M9 release candidate with history management and live display refinements. All 30 acceptance mappings are retained. The merged source commit and qualification evidence are linked below; review approval was completed before release qualification.',
+              f"Review and source: [merged pull request]({os.environ['REVIEW_URL']}), [M9 merge commit]({os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/commit/{revision}), [application specification](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/APPLICATION_SPEC.md), and [development plan/evidence](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/DEVELOPMENT_PLAN.md).",
               '',
               f"Downloads: [README and usage](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/README.md), [application specification](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/APPLICATION_SPEC.md), and [development plan/evidence](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/DEVELOPMENT_PLAN.md).",
               '',
@@ -334,7 +334,7 @@ jobs:
           tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')
           tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type')
           [[ $tag_type == commit && $tag_object == "$REVISION" ]] || { echo 'new release tag does not point directly to the qualified revision' >&2; exit 1; }
-          gh release create "$tag" "$ASSET_DIR/cn-mon_0.1.0_linux_amd64.tar.gz" "$ASSET_DIR/cn-mon_0.1.0_windows_amd64.zip" "$ASSET_DIR/SHA256SUMS" --draft --verify-tag --title "cn-mon $VERSION" --notes-file "$notes"
+          gh release create "$tag" "$ASSET_DIR/cn-mon_0.2.0_linux_amd64.tar.gz" "$ASSET_DIR/cn-mon_0.2.0_windows_amd64.zip" "$ASSET_DIR/SHA256SUMS" --draft --verify-tag --title "cn-mon $VERSION" --notes-file "$notes"
 
           tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')
           tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type')
@@ -347,7 +347,7 @@ jobs:
           python3 - "$ASSET_DIR" "$verify_dir" <<'PY'
           import hashlib, pathlib, sys
           source, remote = map(pathlib.Path, sys.argv[1:])
-          names = {'cn-mon_0.1.0_linux_amd64.tar.gz', 'cn-mon_0.1.0_windows_amd64.zip', 'SHA256SUMS'}
+          names = {'cn-mon_0.2.0_linux_amd64.tar.gz', 'cn-mon_0.2.0_windows_amd64.zip', 'SHA256SUMS'}
           if {p.name for p in remote.iterdir()} != names: raise SystemExit('draft has unexpected or missing assets')
           for name in names:
               if hashlib.sha256((source/name).read_bytes()).digest() != hashlib.sha256((remote/name).read_bytes()).digest():
@@ -364,7 +364,7 @@ jobs:
           python3 - "$ASSET_DIR" "$published_dir" <<'PY'
           import hashlib, pathlib, sys
           source, remote = map(pathlib.Path, sys.argv[1:])
-          names = {'cn-mon_0.1.0_linux_amd64.tar.gz', 'cn-mon_0.1.0_windows_amd64.zip', 'SHA256SUMS'}
+          names = {'cn-mon_0.2.0_linux_amd64.tar.gz', 'cn-mon_0.2.0_windows_amd64.zip', 'SHA256SUMS'}
           if {p.name for p in remote.iterdir()} != names: raise SystemExit('published release has unexpected or missing assets')
           for name in names:
               if hashlib.sha256((source/name).read_bytes()).digest() != hashlib.sha256((remote/name).read_bytes()).digest():

@@ -19,7 +19,7 @@ function Write-UTF8([string] $Path, [string] $Value) {
 
 $version = $env:CNMON_RELEASE_VERSION
 $revision = $env:CNMON_RELEASE_REVISION
-if ($version -cne '0.1.0') { Fail 'CNMON_RELEASE_VERSION must be 0.1.0' }
+if ($version -cne '0.2.0') { Fail 'CNMON_RELEASE_VERSION must be 0.2.0' }
 if ($revision -cnotmatch '^[0-9a-f]{40}$') { Fail 'CNMON_RELEASE_REVISION must be a full lowercase 40-hex commit' }
 $head = (& git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $head -cne $revision) { Fail 'checked out HEAD does not match CNMON_RELEASE_REVISION' }
@@ -61,7 +61,7 @@ $sourceDir = Join-Path $workDir 'source'
 $extractDir = Join-Path $workDir 'fresh extraction with spaces'
 New-Item -ItemType Directory -Path $sourceDir, $extractDir | Out-Null
 $binary = Join-Path $sourceDir 'cn-mon.exe'
-$archive = Join-Path $artifactDir 'cn-mon_0.1.0_windows_amd64.zip'
+$archive = Join-Path $artifactDir 'cn-mon_0.2.0_windows_amd64.zip'
 $commitUnix = (& git show -s --format=%ct $revision).Trim()
 if ($LASTEXITCODE -ne 0 -or $commitUnix -notmatch '^[0-9]+$') { Fail 'selected commit has invalid timestamp' }
 if ($env:CNMON_RELEASE_COMMIT_UNIX -cne $commitUnix) { Fail 'workflow commit timestamp does not match the selected checkout' }
@@ -101,7 +101,7 @@ $verifyReceipt = Join-Path $artifactDir 'verify-receipt.json'
 $verifyOutput = @(& go run ./scripts/release-artifact verify -archive $archive -sha256 $archiveSHA -source-root $repoRoot -extract-dir $extractDir -version $version -revision $revision -target windows_amd64)
 if ($LASTEXITCODE -ne 0) { Fail "release-artifact verify failed with exit $LASTEXITCODE" }
 Write-UTF8 $verifyReceipt (($verifyOutput -join "`n") + "`n")
-$extracted = Join-Path $extractDir 'cn-mon_0.1.0_windows_amd64\cn-mon.exe'
+$extracted = Join-Path $extractDir 'cn-mon_0.2.0_windows_amd64\cn-mon.exe'
 if (-not (Test-Path -LiteralPath $extracted -PathType Leaf)) { Fail 'verified extraction did not produce an executable' }
 
 $pack = Get-Content -Raw -LiteralPath $packReceipt | ConvertFrom-Json

@@ -1,31 +1,35 @@
 # cn-mon
 
-`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. It supports target runs, read-only history listing and inspection, follow mode, JSON/CSV/Markdown/table reports, and best-effort native terminal controls. See the [development plan](docs/DEVELOPMENT_PLAN.md) for implementation evidence and release qualification details.
+`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. It supports target runs, read-only history listing and inspection, follow mode, JSON/CSV/Markdown/table reports, and best-effort native terminal controls. The current source includes history management and live display refinements, with all 30 acceptance mappings retained. See the [development plan](docs/DEVELOPMENT_PLAN.md) for implementation evidence and release qualification details.
 
 ## Download a release
 
-Download [cn-mon 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0), built and qualified from source `f156255812308db7039d9721945957348ddbf8b4`. The release provides `cn-mon_0.1.0_linux_amd64.tar.gz`, `cn-mon_0.1.0_windows_amd64.zip` and `SHA256SUMS`. Verify the selected archive before extracting it.
+The published download remains [cn-mon 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0), built and qualified from source `f156255812308db7039d9721945957348ddbf8b4`. It provides `cn-mon_0.1.0_linux_amd64.tar.gz`, `cn-mon_0.1.0_windows_amd64.zip` and `SHA256SUMS`. The 0.2.0 candidate delivery is pending its merged-source qualification and publication. The installation examples below apply to qualified 0.2.0 candidate archives once available.
 
-On Linux, for example:
+### Installing a qualified 0.2.0 candidate
+
+These examples are for qualified 0.2.0 candidate archives. They do not describe the currently published 0.1.0 download above. Use them when the 0.2.0 archives and their `SHA256SUMS` are available from the qualification or release workflow.
+
+On Linux, for a cn-mon 0.2.0 archive:
 
 ```sh
-line=$(grep -F '  cn-mon_0.1.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
+line=$(grep -F '  cn-mon_0.2.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
 test "$(printf '%s\n' "$line" | wc -l)" -eq 1 || exit 1
 printf '%s\n' "$line" | sha256sum --check - || exit 1
-tar -xzf cn-mon_0.1.0_linux_amd64.tar.gz
-./cn-mon_0.1.0_linux_amd64/cn-mon --version
+tar -xzf cn-mon_0.2.0_linux_amd64.tar.gz
+./cn-mon_0.2.0_linux_amd64/cn-mon --version
 ```
 
-On Windows PowerShell:
+On Windows PowerShell, for a cn-mon 0.2.0 archive:
 
 ```powershell
-$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.1.0_windows_amd64.zip') })
+$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.2.0_windows_amd64.zip') })
 if ($lines.Count -ne 1) { throw 'Windows archive checksum is missing or duplicated' }
 $expected = ($lines[0] -split '\s+', 2)[0]
-$actual = (Get-FileHash .\cn-mon_0.1.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$actual = (Get-FileHash .\cn-mon_0.2.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -cne $expected) { throw 'Windows archive checksum mismatch' }
-Expand-Archive .\cn-mon_0.1.0_windows_amd64.zip .\cn-mon
-.\cn-mon\cn-mon_0.1.0_windows_amd64\cn-mon.exe --version
+Expand-Archive .\cn-mon_0.2.0_windows_amd64.zip .\cn-mon
+.\cn-mon\cn-mon_0.2.0_windows_amd64\cn-mon.exe --version
 ```
 
 Release binaries identify their version and full source revision with `cn-mon <version> (<revision>)`; a source build reports `cn-mon dev`. The archives include the matching README, Apache-2.0 license, and third-party notices.
@@ -53,7 +57,7 @@ go run ./cmd/cn-mon --delete-request REQUEST_ID
 go run ./cmd/cn-mon --clear-history
 ```
 
-These management commands are available in the current source; the published 0.1.0 binary predates them, and a later delivery will include them. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
+These management commands are available in the current source; the published 0.1.0 binary predates them, and the pending 0.2.0 candidate is intended to include them. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
 
 Deletion checks every affected running run before committing. It refuses the entire operation if any selected run is active or its owner cannot be verified; only a run on this host with a PID conclusively verified dead may be removed while its status is still marked running. `--delete-request` acts on the canonical request group, including all of its runs, so an active sibling prevents deleting the other runs in that group.
 

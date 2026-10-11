@@ -31,7 +31,7 @@ else
 fi
 if [[ $release_qualify == 1 ]]; then
 	[[ $expected_sha =~ ^[0-9a-f]{64}$ ]] || { echo 'release qualification requires lowercase SHA-256' >&2; exit 1; }
-	[[ ${CNMON_RELEASE_VERSION:-} == 0.1.0 && ${CNMON_RELEASE_REVISION:-} =~ ^[0-9a-f]{40}$ ]] || { echo 'release qualification version/revision inputs are invalid' >&2; exit 1; }
+	[[ ${CNMON_RELEASE_VERSION:-} == 0.2.0 && ${CNMON_RELEASE_REVISION:-} =~ ^[0-9a-f]{40}$ ]] || { echo 'release qualification version/revision inputs are invalid' >&2; exit 1; }
 	actual_sha=$(sha256sum "$command_binary" | awk '{print $1}')
 	[[ $actual_sha == "$expected_sha" ]] || { echo 'extracted command SHA-256 mismatch' >&2; exit 1; }
 fi
@@ -173,7 +173,7 @@ if [[ $release_qualify == 1 ]]; then
 		'--- PASS: TestNativeReleaseUnreadableInputHasNoStartupEffects'
 		'--- PASS: TestNativeReleaseFollowDoesNotStopWriter'
 		'--- PASS: TestNativeReleaseEndedFollowAllFormats'
-		"CNMON_NATIVE_RELEASE_BINARY version=0.1.0 revision=$CNMON_RELEASE_REVISION sha256=$expected_sha path=absolute version=exact unchanged=true"
+		"CNMON_NATIVE_RELEASE_BINARY version=0.2.0 revision=$CNMON_RELEASE_REVISION sha256=$expected_sha path=absolute version=exact unchanged=true"
 		'CNMON_NATIVE_RELEASE_REPORTS target+list+show formats=default,json,table,csv,md tcp=open history=seeded output=verified'
 		'CNMON_NATIVE_RELEASE_NO_PING ipv4='
 		'CNMON_NATIVE_RELEASE_INPUT file=space-bom stdin=requested tcp=open json=pass history=finished'
