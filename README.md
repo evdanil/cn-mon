@@ -4,11 +4,9 @@
 
 ## Download a release
 
-The published download remains [cn-mon 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0), built and qualified from source `f156255812308db7039d9721945957348ddbf8b4`. It provides `cn-mon_0.1.0_linux_amd64.tar.gz`, `cn-mon_0.1.0_windows_amd64.zip` and `SHA256SUMS`. The 0.2.0 candidate delivery is pending its merged-source qualification and publication. The installation examples below apply to qualified 0.2.0 candidate archives once available.
+Download the published [cn-mon 0.2.0 release](https://github.com/evdanil/gotest/releases/tag/v0.2.0), published 2026-10-11 from qualified source `968ea23aed5541e86860bde45743ee054ad4a4d8`. It includes [the Linux archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_linux_amd64.tar.gz), [the Windows archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_windows_amd64.zip), and [SHA256SUMS](https://github.com/evdanil/gotest/releases/download/v0.2.0/SHA256SUMS). The exact-source release workflow completed all 13 jobs in [run 38119825919](https://github.com/evdanil/gotest/actions/runs/38119825919). Linux qualification covered granted and denied ICMP permission roles; Windows covered elevated and ordinary roles. Version 0.2.0 includes history management and live display refinements, retaining all 30 acceptance mappings.
 
-### Installing a qualified 0.2.0 candidate
-
-These examples are for qualified 0.2.0 candidate archives. They do not describe the currently published 0.1.0 download above. Use them when the 0.2.0 archives and their `SHA256SUMS` are available from the qualification or release workflow.
+### Install cn-mon 0.2.0
 
 On Linux, for a cn-mon 0.2.0 archive:
 
@@ -57,7 +55,7 @@ go run ./cmd/cn-mon --delete-request REQUEST_ID
 go run ./cmd/cn-mon --clear-history
 ```
 
-These management commands are available in the current source; the published 0.1.0 binary predates them, and the pending 0.2.0 candidate is intended to include them. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
+These history-management commands are available in the 0.2.0 release. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
 
 Deletion checks every affected running run before committing. It refuses the entire operation if any selected run is active or its owner cannot be verified; only a run on this host with a PID conclusively verified dead may be removed while its status is still marked running. `--delete-request` acts on the canonical request group, including all of its runs, so an active sibling prevents deleting the other runs in that group.
 
