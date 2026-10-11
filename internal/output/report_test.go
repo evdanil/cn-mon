@@ -138,6 +138,96 @@ func TestWriteTableUsesSameDefaultWidthForTitlesAndRows(t *testing.T) {
 	}
 }
 
+func TestWideTableSharesUnusedColumnsWithLongTimestamps(t *testing.T) {
+	first := time.Date(2026, 10, 11, 4, 51, 11, 0, time.UTC)
+	last := first.Add(time.Second)
+	request := target.Request{Hosts: []string{"alpha.example"}}
+	outcome := monitor.RunOutcome{
+		Stats: monitor.Stats{Rounds: 1, Seen: 1, FirstRound: first, LastRound: last},
+		Seen: []monitor.HostSummary{{
+			Host: "alpha.example", Address: "192.0.2.1", Latest: "OK",
+			FirstSeen: first, LastSeen: last, SeenRounds: 1, Rounds: 1,
+			Periods: []monitor.Period{{From: first, To: last}},
+		}},
+	}
+	for name, write := range map[string]func(*bytes.Buffer) error{
+		"run": func(output *bytes.Buffer) error {
+			return WriteRun(output, request, outcome, nil, ReportOptions{Format: "table", Width: 180})
+		},
+		"history": func(output *bytes.Buffer) error {
+			return WriteHistory(output, monitor.ReadOutcome{Request: request, Run: outcome, Found: true}, ReportOptions{Format: "table", Width: 180})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var got bytes.Buffer
+			if err := write(&got); err != nil {
+				t.Fatal(err)
+			}
+			firstText, lastText := formatTimestamp(first), formatTimestamp(last)
+			foundRow := false
+			for _, line := range strings.Split(got.String(), "\n") {
+				if displayWidth(line) > 180 {
+					t.Errorf("table line width %d exceeds 180: %q", displayWidth(line), line)
+				}
+				if strings.Contains(line, "alpha.example") && strings.Contains(line, firstText) && strings.Contains(line, lastText) {
+					foundRow = true
+				}
+			}
+			if !foundRow {
+				t.Fatalf("first/last timestamps wrapped away from their host row: %q", got.String())
+			}
+		})
+	}
+}
+
+func TestTinyTableWrapsUnicodeWithinWidth(t *testing.T) {
+	request := target.Request{Hosts: []string{"雪雪"}}
+	first := time.Date(2026, 10, 11, 4, 51, 11, 0, time.UTC)
+	outcome := monitor.RunOutcome{Seen: []monitor.HostSummary{{
+		Host: request.Hosts[0], Address: "2001:db8::1", Latest: "NO RESPONSE",
+		FirstSeen: first, LastSeen: first, SeenRounds: 1, Rounds: 1,
+	}}}
+	var got bytes.Buffer
+	if err := WriteRun(&got, request, outcome, nil, ReportOptions{Format: "table", Width: 12}); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(got.String(), "\n") {
+		if displayWidth(line) > 12 {
+			t.Errorf("tiny table line width %d exceeds 12: %q", displayWidth(line), line)
+		}
+	}
+	if !strings.Contains(got.String(), "雪雪") {
+		t.Fatalf("tiny table lost Unicode host: %q", got.String())
+	}
+}
+
+func TestTableWaterFillBoundsUnicodeAndDistributesRemainderStably(t *testing.T) {
+	got := layoutTable(
+		[]string{"A", "B", "C"},
+		[][]string{{"雪雪雪雪", "abcdef", "xy"}},
+		17,
+	)
+	if len(got) < 3 {
+		t.Fatalf("table has %d lines, want header and wrapped Unicode row: %#v", len(got), got)
+	}
+	firstDataLine := strings.Builder{}
+	for _, part := range got[1] {
+		firstDataLine.WriteString(part.text)
+	}
+	if want := "雪雪雪  abcde  xy"; firstDataLine.String() != want {
+		t.Fatalf("first data line = %q, want stable capped allocation %q", firstDataLine.String(), want)
+	}
+	for i, line := range got {
+		text := strings.Builder{}
+		for _, part := range line {
+			text.WriteString(part.text)
+		}
+		if width := displayWidth(text.String()); width > 17 {
+			t.Errorf("line %d width %d exceeds 17: %q", i, width, text.String())
+		}
+	}
+}
+
 func TestTableOnlineColumnLimitsOnlyItsDisplayedPeriods(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	periods := make([]monitor.Period, 5)

@@ -68,7 +68,7 @@ func TestLiveFrameSubnetGridLegendAndCellStyling(t *testing.T) {
 	layout := newLiveLayout(request)
 	frame := layout.frame(update, 90, 20, false)
 	text := joinLines(frame)
-	for _, want := range []string{"10.0.0.0/30", ".0", "!. ", "replied", "silent", "1 seen of 2"} {
+	for _, want := range []string{"10.0.0.0/30", ".0", "!. ", "ICMP reply", "silent", "1 seen of 2"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("frame lacks %q: %q", want, text)
 		}
@@ -251,6 +251,93 @@ func TestLiveFrameTableRetainsRowsAndUsesFollowingFooter(t *testing.T) {
 	for _, want := range []string{"alpha.example", "beta.example", "gamma.example", "q: stop following, not the writer"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("table frame lacks %q: %q", want, text)
+		}
+	}
+}
+
+func TestLiveFrameTableShowsStateICMPAndPartialStyle(t *testing.T) {
+	request, _, err := target.Build([]string{"echo.example", "tcp.example"}, []int{22})
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := monitor.LiveUpdate{Request: request, Phase: monitor.LiveFollowing, Data: monitor.LiveData{
+		Rows: []monitor.LiveRow{
+			{Index: 0, Host: "echo.example", Latest: "OK (partial)", Cell: monitor.EchoReply, SeenRounds: 1, Rounds: 1},
+			{Index: 1, Host: "tcp.example", Latest: "NO RESPONSE", Cell: monitor.TCPSeen, SeenRounds: 1, Rounds: 1},
+		},
+		Partial: []int{0}, Cells: []byte{monitor.EchoReply, monitor.TCPSeen},
+	}}
+	frame := newLiveLayout(request).frame(update, 120, 12, true)
+	text := joinLines(frame)
+	for _, want := range []string{"State", "ICMP", "echo.example", "!", "OK (partial)", "tcp.example", "T", "NO RESPONSE", "! ICMP reply", "T TCP response (open or closed)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("table frame lacks %q: %q", want, text)
+		}
+	}
+	for _, current := range frame {
+		lineText := ""
+		for _, part := range current {
+			lineText += part.text
+		}
+		if strings.Contains(lineText, "echo.example") {
+			foundPartialState := false
+			for _, part := range current {
+				if part.text == "!" && part.style == "warning" {
+					foundPartialState = true
+				}
+			}
+			if !foundPartialState {
+				t.Errorf("partial echo state does not use warning style: %#v", current)
+			}
+		}
+		if strings.Contains(lineText, "tcp.example") {
+			foundTCPState := false
+			for _, part := range current {
+				if part.text == "T" && part.style == "info" {
+					foundTCPState = true
+				}
+			}
+			if !foundTCPState {
+				t.Errorf("TCP state does not use info style: %#v", current)
+			}
+		}
+	}
+}
+
+func TestLiveTablePartialStyleUsesSparseRowIndex(t *testing.T) {
+	update := monitor.LiveUpdate{Data: monitor.LiveData{
+		Rows: []monitor.LiveRow{
+			{Index: 2, Host: "third.example", Latest: "OK", Cell: monitor.EchoReply, SeenRounds: 1, Rounds: 1},
+			{Index: 0, Host: "first.example", Latest: "OK (partial)", Cell: monitor.EchoReply, SeenRounds: 1, Rounds: 1},
+		},
+		Partial: []int{0},
+	}}
+	lines := liveTable(update, 120, 4)
+	wantStyle := map[string]string{"third.example": "success", "first.example": "warning"}
+	for host, style := range wantStyle {
+		found := false
+		for _, current := range lines {
+			lineText := ""
+			for _, part := range current {
+				lineText += part.text
+			}
+			if !strings.Contains(lineText, host) {
+				continue
+			}
+			found = true
+			styled := false
+			for _, part := range current {
+				if part.text == "!" && part.style == style {
+					styled = true
+					break
+				}
+			}
+			if !styled {
+				t.Errorf("row %q did not style State as %q: %#v", host, style, current)
+			}
+		}
+		if !found {
+			t.Errorf("live table omitted host %q: %#v", host, lines)
 		}
 	}
 }

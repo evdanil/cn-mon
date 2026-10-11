@@ -35,16 +35,21 @@ import (
 )
 
 var (
-	nativeWriteConsoleInput = windowsKernel32.NewProc("WriteConsoleInputW")
-	nativeGetConsoleCursor  = windowsKernel32.NewProc("GetConsoleCursorInfo")
-	nativeSetConsoleCursor  = windowsKernel32.NewProc("SetConsoleCursorInfo")
-	nativeReadConsoleOutput = windowsKernel32.NewProc("ReadConsoleOutputCharacterW")
-	nativeReadConsoleAttrs  = windowsKernel32.NewProc("ReadConsoleOutputAttribute")
-	nativeSetConsoleWindow  = windowsKernel32.NewProc("SetConsoleWindowInfo")
+	nativeWriteConsoleInput   = windowsKernel32.NewProc("WriteConsoleInputW")
+	nativeGetConsoleCursor    = windowsKernel32.NewProc("GetConsoleCursorInfo")
+	nativeSetConsoleCursor    = windowsKernel32.NewProc("SetConsoleCursorInfo")
+	nativeReadConsoleOutput   = windowsKernel32.NewProc("ReadConsoleOutputCharacterW")
+	nativeReadConsoleAttrs    = windowsKernel32.NewProc("ReadConsoleOutputAttribute")
+	nativeSetConsoleWindow    = windowsKernel32.NewProc("SetConsoleWindowInfo")
+	nativeSetConsoleBuffer    = windowsKernel32.NewProc("SetConsoleScreenBufferSize")
+	nativeSetConsoleCursorPos = windowsKernel32.NewProc("SetConsoleCursorPosition")
 )
 
 const nativeWindowsEnableVT = 0x0004
+const nativeWindowsDisableNewlineAutoReturn = 0x0008
 const nativeWindowsCursorFixtureSize = 37
+const nativeWindowsEdgeFooterWidth = 33
+const nativeWindowsEdgeFooterHeight = 7
 
 type nativeConsoleCursorInfo struct {
 	Size    uint32
@@ -121,8 +126,8 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if inputMode&windows.ENABLE_PROCESSED_INPUT == 0 || inputMode&(windows.ENABLE_LINE_INPUT|windows.ENABLE_ECHO_INPUT) != 0 {
 		t.Fatalf("active input console mode %#x does not preserve processed input while disabling line/echo", inputMode)
 	}
-	if outputMode&nativeWindowsEnableVT == 0 {
-		t.Fatalf("active output console mode %#x lacks VT processing", outputMode)
+	if outputMode&(windows.ENABLE_PROCESSED_OUTPUT|nativeWindowsEnableVT|nativeWindowsDisableNewlineAutoReturn) != windows.ENABLE_PROCESSED_OUTPUT|nativeWindowsEnableVT|nativeWindowsDisableNewlineAutoReturn {
+		t.Fatalf("active output console mode %#x lacks processed output, VT, or disabled newline auto-return", outputMode)
 	}
 	if cursorVisible {
 		t.Fatalf("active live frame left cursor visible (mode %#x)", outputMode)
@@ -147,6 +152,15 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if strings.Contains(lowerState, "table_header=true") == initialTable {
 		t.Fatalf("lower-case v did not toggle table/grid view: before=%q after=%q", active, lowerState)
 	}
+	if !strings.Contains(lowerState, "state_header=true") || !strings.Contains(lowerState, "icmp_header=true") || !strings.Contains(lowerState, "state_cell=true") || !strings.Contains(lowerState, "bottom_footer=true") {
+		t.Fatalf("live table lacks visible State/ICMP cell or bottom footer: %q", lowerState)
+	}
+	initialStateRow := nativeWindowsMarkerField(lowerState, "state_row")
+	time.Sleep(1200 * time.Millisecond)
+	idleState := requestNativeWindowsConsoleState(t, control, output)
+	if !strings.Contains(idleState, "state_cell=true") || nativeWindowsMarkerField(idleState, "state_row") != initialStateRow {
+		t.Fatalf("visible table row changed during a probe-idle interval: before=%q after=%q", lowerState, idleState)
+	}
 	if _, err := io.WriteString(control, "upper-V\n"); err != nil {
 		t.Fatalf("send upper-case V key: %v", err)
 	}
@@ -169,6 +183,75 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 		t.Fatalf("restore private console dimensions: %v", err)
 	}
 	_ = readNativeWindowsMarker(t, output, "CNMON_WINDOWS_KEY_INJECTED", 5*time.Second)
+	if !strings.Contains(upperState, "table_header=true") {
+		if _, err := io.WriteString(control, "lower-v\n"); err != nil {
+			t.Fatalf("restore table view after resize: %v", err)
+		}
+		_ = readNativeWindowsMarker(t, output, "CNMON_WINDOWS_KEY_INJECTED", 5*time.Second)
+	}
+	restoredLive := requestNativeWindowsConsoleState(t, control, output)
+	if !strings.Contains(restoredLive, "table_header=true") || !strings.Contains(restoredLive, "state_cell=true") || !strings.Contains(restoredLive, "bottom_footer=true") {
+		t.Fatalf("full-size table/footer did not return after resize: %q", restoredLive)
+	}
+	if !strings.Contains(restoredLive, "size=") || strings.Contains(restoredLive, "size=3x2") {
+		t.Fatalf("private console did not restore its initial visible size: %q", restoredLive)
+	}
+	if _, err := io.WriteString(control, "edge-width\n"); err != nil {
+		t.Fatalf("resize private console so footer fills final cell: %v", err)
+	}
+	_ = readNativeWindowsMarker(t, output, "CNMON_WINDOWS_KEY_INJECTED", 5*time.Second)
+	time.Sleep(750 * time.Millisecond)
+	edge := requestNativeWindowsConsoleState(t, control, output)
+	var edgeWidth, edgeHeight, bufferWidth, bufferHeight int
+	if _, err := fmt.Sscanf(edge, "CNMON_WINDOWS_CONSOLE_STATE state_ok=true input_mode=%x output_mode=%x cursor_visible=%t fingerprint=%x size=%dx%d", new(uint32), new(uint32), new(bool), new(uint64), &edgeWidth, &edgeHeight); err != nil || edgeWidth != nativeWindowsEdgeFooterWidth || edgeHeight != nativeWindowsEdgeFooterHeight {
+		t.Fatalf("private console did not reach %dx%d width-filling edge fixture: size=%dx%d state=%q err=%v", nativeWindowsEdgeFooterWidth, nativeWindowsEdgeFooterHeight, edgeWidth, edgeHeight, edge, err)
+	}
+	if _, err := fmt.Sscanf(nativeWindowsMarkerField(edge, "buffer_size"), "%dx%d", &bufferWidth, &bufferHeight); err != nil || bufferWidth != nativeWindowsEdgeFooterWidth || bufferHeight != nativeWindowsEdgeFooterHeight {
+		t.Fatalf("console buffer=%dx%d does not match the physical edge viewport %dx%d: %q", bufferWidth, bufferHeight, nativeWindowsEdgeFooterWidth, nativeWindowsEdgeFooterHeight, edge)
+	}
+	footerRow, err := strconv.Atoi(nativeWindowsMarkerField(edge, "footer_row"))
+	if err != nil || footerRow != nativeWindowsEdgeFooterHeight-1 {
+		t.Fatalf("footer is not on the final physical console row: footer_row=%d state=%q err=%v", footerRow, edge, err)
+	}
+	if nativeWindowsMarkerField(edge, "live_header") != "true" || nativeWindowsMarkerField(edge, "live_counter") != "true" || !strings.Contains(edge, "bottom_footer=true") {
+		t.Fatalf("edge readback lost the cropped live header/counters or footer: %q", edge)
+	}
+	cursorRow, err := strconv.Atoi(nativeWindowsMarkerField(edge, "cursor_row"))
+	if err != nil || cursorRow != footerRow || nativeWindowsMarkerField(edge, "cursor_col") != "0" || nativeWindowsMarkerField(edge, "footer_last_cell") != fmt.Sprintf("%04x", 'p') {
+		t.Fatalf("width-filling footer did not leave cursor at its row start: footer_row=%d cursor_row=%d cursor_col=%q marker=%q err=%v", footerRow, cursorRow, nativeWindowsMarkerField(edge, "cursor_col"), edge, err)
+	}
+	var edgeOutputMode uint32
+	if _, err := fmt.Sscanf(edge, "CNMON_WINDOWS_CONSOLE_STATE state_ok=true input_mode=%x output_mode=%x", new(uint32), &edgeOutputMode); err != nil || edgeOutputMode&(windows.ENABLE_PROCESSED_OUTPUT|nativeWindowsEnableVT|nativeWindowsDisableNewlineAutoReturn) != windows.ENABLE_PROCESSED_OUTPUT|nativeWindowsEnableVT|nativeWindowsDisableNewlineAutoReturn {
+		t.Fatalf("width-filling edge mode %#x lacks processed output, VT, or disabled newline auto-return: state=%q err=%v", edgeOutputMode, edge, err)
+	}
+	if nativeWindowsMarkerField(edge, "window_top") != "0" || nativeWindowsMarkerField(edge, "window_left") != "0" {
+		t.Fatalf("width-filling footer scrolled the geometry-adjusted edge viewport: %q", edge)
+	}
+	edgeChanged := false
+	edgeFingerprint := nativeWindowsMarkerField(edge, "fingerprint")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		next := requestNativeWindowsConsoleState(t, control, output)
+		if nativeWindowsMarkerField(next, "size") != fmt.Sprintf("%dx%d", nativeWindowsEdgeFooterWidth, nativeWindowsEdgeFooterHeight) || nativeWindowsMarkerField(next, "buffer_size") != fmt.Sprintf("%dx%d", nativeWindowsEdgeFooterWidth, nativeWindowsEdgeFooterHeight) || nativeWindowsMarkerField(next, "window_left") != "0" || nativeWindowsMarkerField(next, "window_top") != "0" || nativeWindowsMarkerField(next, "footer_row") != strconv.Itoa(nativeWindowsEdgeFooterHeight-1) || nativeWindowsMarkerField(next, "cursor_row") != strconv.Itoa(nativeWindowsEdgeFooterHeight-1) || nativeWindowsMarkerField(next, "cursor_col") != "0" || nativeWindowsMarkerField(next, "footer_last_cell") != fmt.Sprintf("%04x", 'p') || nativeWindowsMarkerField(next, "live_header") != "true" || nativeWindowsMarkerField(next, "live_counter") != "true" || !strings.Contains(next, "bottom_footer=true") {
+			t.Fatalf("live edge patch lost full-width bottom anchoring: initial=%q next=%q", edge, next)
+		}
+		if nativeWindowsMarkerField(next, "fingerprint") != edgeFingerprint {
+			edgeChanged = true
+			break
+		}
+	}
+	if !edgeChanged {
+		t.Fatalf("live frame did not update while the footer remained on the final width-filled row: %q", edge)
+	}
+	if _, err := io.WriteString(control, "restore-edge\n"); err != nil {
+		t.Fatalf("restore private console after width-filling fixture: %v", err)
+	}
+	_ = readNativeWindowsMarker(t, output, "CNMON_WINDOWS_KEY_INJECTED", 5*time.Second)
+	restoredGeometry := requestNativeWindowsConsoleState(t, control, output)
+	if nativeWindowsMarkerField(restoredGeometry, "size") != nativeWindowsMarkerField(ready, "size") || nativeWindowsMarkerField(restoredGeometry, "buffer_size") != nativeWindowsMarkerField(ready, "buffer_size") || nativeWindowsMarkerField(restoredGeometry, "window_left") != nativeWindowsMarkerField(ready, "window_left") || nativeWindowsMarkerField(restoredGeometry, "window_top") != nativeWindowsMarkerField(ready, "window_top") {
+		t.Fatalf("private console geometry was not restored exactly: ready=%q restored=%q", ready, restoredGeometry)
+	}
 	if _, err := io.WriteString(control, "quit-q\n"); err != nil {
 		t.Fatalf("send q key: %v", err)
 	}
@@ -185,6 +268,9 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	}
 	if restoredInput != baselineInput || restoredOutput != baselineOutput || restoredCursor != baselineCursor {
 		t.Fatalf("console restoration=%q; want initial modes %#x/%#x cursor_visible=%t", after, baselineInput, baselineOutput, baselineCursor)
+	}
+	if nativeWindowsMarkerField(after, "size") != nativeWindowsMarkerField(ready, "size") || nativeWindowsMarkerField(after, "buffer_size") != nativeWindowsMarkerField(ready, "buffer_size") || nativeWindowsMarkerField(after, "window_left") != nativeWindowsMarkerField(ready, "window_left") || nativeWindowsMarkerField(after, "window_top") != nativeWindowsMarkerField(ready, "window_top") {
+		t.Fatalf("product shutdown did not preserve exact initial console geometry: ready=%q restored=%q", ready, after)
 	}
 	assertNativeWindowsCursor(t, after, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	result, err := done()
@@ -218,7 +304,7 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query private-console test role: %v", err)
 	}
-	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=%s", role.sid)
+	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete display=state-icmp idle-row=stable bottom-anchor=footer edge-row=width-filled edge-update=changed-anchored buffer=viewport=33x7 final-cell=p cursor=footer-start no-scroll=pass geometry=restored resize=tiny-restored input=restored output=restored cursor=restored history=stopped sid=%s", role.sid)
 }
 
 func TestNativeCommandWindowsPrivateConsoleQLeavesWriterActive(t *testing.T) {
@@ -1097,7 +1183,9 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 	_ = stdinFile.Close()
 	_ = stdoutFile.Close()
 	_ = stderrFile.Close()
-	fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%08x output_mode=%08x cursor_visible=%t default_attr=%04x cursor_size=%d\n", childPID, inputModeBeforeBootstrap, outputModeBeforeBootstrap, baselineCursor.Visible != 0, initialScreen.Attributes, baselineCursor.Size)
+	initialWindowWidth := int(initialScreen.Window.Right-initialScreen.Window.Left) + 1
+	initialWindowHeight := int(initialScreen.Window.Bottom-initialScreen.Window.Top) + 1
+	fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%08x output_mode=%08x cursor_visible=%t default_attr=%04x cursor_size=%d size=%dx%d buffer_size=%dx%d window_left=%d window_top=%d\n", childPID, inputModeBeforeBootstrap, outputModeBeforeBootstrap, baselineCursor.Visible != 0, initialScreen.Attributes, baselineCursor.Size, initialWindowWidth, initialWindowHeight, initialScreen.Size.X, initialScreen.Size.Y, initialScreen.Window.Left, initialScreen.Window.Top)
 	childDone := make(chan error, 1)
 	go func() { childDone <- childWait() }()
 	childFinished := false
@@ -1273,6 +1361,33 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 			case "restore-size":
 				if err := setNativeWindowsConsoleWindow(consoleOut, initialScreen.Window); err != nil {
 					t.Fatalf("restore console window dimensions: %v", err)
+				}
+			case "edge-width":
+				if err := setNativeWindowsConsoleCursorPosition(consoleOut, windows.Coord{}); err != nil {
+					t.Fatalf("move console cursor into edge buffer before resize: %v", err)
+				}
+				temporary := windows.SmallRect{Left: 0, Top: 0, Right: 0, Bottom: 0}
+				if err := setNativeWindowsConsoleWindow(consoleOut, temporary); err != nil {
+					t.Fatalf("shrink console viewport before edge-buffer resize: %v", err)
+				}
+				if err := setNativeWindowsConsoleBufferSize(consoleOut, windows.Coord{X: nativeWindowsEdgeFooterWidth, Y: nativeWindowsEdgeFooterHeight}); err != nil {
+					t.Fatalf("resize physical console buffer to edge fixture: %v", err)
+				}
+				window := windows.SmallRect{Left: 0, Top: 0, Right: nativeWindowsEdgeFooterWidth - 1, Bottom: nativeWindowsEdgeFooterHeight - 1}
+				if err := setNativeWindowsConsoleWindow(consoleOut, window); err != nil {
+					t.Fatalf("set target %dx%d edge viewport: %v", nativeWindowsEdgeFooterWidth, nativeWindowsEdgeFooterHeight, err)
+				}
+			case "restore-edge":
+				// Shrink the viewport to one cell, enlarge the buffer, then restore the exact saved viewport.
+				temporary := windows.SmallRect{Left: 0, Top: 0, Right: 0, Bottom: 0}
+				if err := setNativeWindowsConsoleWindow(consoleOut, temporary); err != nil {
+					t.Fatalf("prepare viewport for geometry restoration: %v", err)
+				}
+				if err := setNativeWindowsConsoleBufferSize(consoleOut, initialScreen.Size); err != nil {
+					t.Fatalf("restore original console buffer dimensions: %v", err)
+				}
+				if err := setNativeWindowsConsoleWindow(consoleOut, initialScreen.Window); err != nil {
+					t.Fatalf("restore original console viewport: %v", err)
 				}
 			case "quit-q":
 				if err := writeNativeWindowsConsoleKey(input, 'q', 'Q', true); err != nil {
@@ -1713,8 +1828,66 @@ func printNativeWindowsConsoleState(marker string, input, consoleOut windows.Han
 	cursorResult, _, cursorErr := nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&cursor)))
 	fingerprint, width, height, text, headerAttr, headerFound, fingerprintErr := nativeWindowsConsoleFingerprint(consoleOut)
 	valid := inputErr == nil && outputErr == nil && cursorResult != 0 && fingerprintErr == nil
-	fmt.Fprintf(os.Stdout, "%s state_ok=%t input_mode=%08x output_mode=%08x cursor_visible=%t fingerprint=%016x size=%dx%d table_header=%t stop_note=%t report_header=%t literal_escape=%t header_attr=%04x header_found=%t cursor_size=%d\n", marker, valid, inputMode, outputMode, cursor.Visible != 0, fingerprint, width, height, strings.Contains(text, "Latest"), strings.Contains(text, "stopping; preparing the final summary"), strings.Contains(text, "Host"), strings.ContainsRune(text, '\x1b'), headerAttr, headerFound, cursor.Size)
+	stateHeader := strings.Contains(text, "State")
+	icmpHeader := strings.Contains(text, "ICMP")
+	stateRow := nativeWindowsStateRow(text)
+	footer := strings.Contains(text, "Ctrl+C: stop")
+	footerRow := nativeWindowsFooterRow(text)
+	var screenInfo windows.ConsoleScreenBufferInfo
+	screenErr := windows.GetConsoleScreenBufferInfo(consoleOut, &screenInfo)
+	cursorRow, cursorCol, windowTop := -1, -1, -1
+	if screenErr == nil {
+		cursorRow = int(screenInfo.CursorPosition.Y - screenInfo.Window.Top)
+		cursorCol = int(screenInfo.CursorPosition.X - screenInfo.Window.Left)
+		windowTop = int(screenInfo.Window.Top)
+	}
+	bufferWidth, bufferHeight, windowLeft := -1, -1, -1
+	footerLastCell := uint32(0)
+	if screenErr == nil {
+		bufferWidth, bufferHeight = int(screenInfo.Size.X), int(screenInfo.Size.Y)
+		windowLeft = int(screenInfo.Window.Left)
+		lines := strings.Split(text, "\n")
+		if footerRow >= 0 && footerRow < len(lines) {
+			cells := []rune(lines[footerRow])
+			if len(cells) > 0 {
+				footerLastCell = uint32(cells[len(cells)-1])
+			}
+		}
+	}
+	fmt.Fprintf(os.Stdout, "%s state_ok=%t input_mode=%08x output_mode=%08x cursor_visible=%t fingerprint=%016x size=%dx%d table_header=%t stop_note=%t report_header=%t literal_escape=%t header_attr=%04x header_found=%t cursor_size=%d buffer_size=%dx%d state_header=%t icmp_header=%t state_cell=%t state_row=%016x bottom_footer=%t footer_last_cell=%04x cursor_col=%d cursor_row=%d footer_row=%d window_left=%d window_top=%d live_header=%t live_counter=%t\n", marker, valid, inputMode, outputMode, cursor.Visible != 0, fingerprint, width, height, strings.Contains(text, "Host") && stateHeader && icmpHeader, strings.Contains(text, "stopping; preparing the final summary"), strings.Contains(text, "Host"), strings.ContainsRune(text, '\x1b'), headerAttr, headerFound, cursor.Size, bufferWidth, bufferHeight, stateHeader, icmpHeader, stateRow != 0, stateRow, footer, footerLastCell, cursorCol, cursorRow, footerRow, windowLeft, windowTop, strings.Contains(text, "round"), strings.Contains(text, " seen of "))
 	_ = cursorErr
+}
+
+func nativeWindowsStateRow(text string) uint64 {
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		for i := 0; i+1 < len(fields); i++ {
+			if fields[i] == "127.0.0.1" && (fields[i+1] == "!" || fields[i+1] == "T") {
+				hash := fnv.New64a()
+				_, _ = hash.Write([]byte(strings.TrimSpace(line)))
+				return hash.Sum64()
+			}
+		}
+	}
+	return 0
+}
+
+func nativeWindowsFooterRow(text string) int {
+	for row, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "Ctrl+C: stop") {
+			return row
+		}
+	}
+	return -1
+}
+
+func nativeWindowsMarkerField(marker, name string) string {
+	for _, field := range strings.Fields(marker) {
+		if strings.HasPrefix(field, name+"=") {
+			return strings.TrimPrefix(field, name+"=")
+		}
+	}
+	return ""
 }
 
 func assertNativeWindowsCursor(t *testing.T, marker string, want nativeConsoleCursorInfo) {
@@ -1857,6 +2030,30 @@ func setNativeWindowsConsoleWindow(consoleOut windows.Handle, window windows.Sma
 	}
 	if callErr == syscall.Errno(0) {
 		return errors.New("SetConsoleWindowInfo failed")
+	}
+	return callErr
+}
+
+func setNativeWindowsConsoleBufferSize(consoleOut windows.Handle, size windows.Coord) error {
+	packed := uint32(uint16(size.X)) | uint32(uint16(size.Y))<<16
+	result, _, callErr := nativeSetConsoleBuffer.Call(uintptr(consoleOut), uintptr(packed))
+	if result != 0 {
+		return nil
+	}
+	if callErr == syscall.Errno(0) {
+		return errors.New("SetConsoleScreenBufferSize failed")
+	}
+	return callErr
+}
+
+func setNativeWindowsConsoleCursorPosition(consoleOut windows.Handle, position windows.Coord) error {
+	packed := uint32(uint16(position.X)) | uint32(uint16(position.Y))<<16
+	result, _, callErr := nativeSetConsoleCursorPos.Call(uintptr(consoleOut), uintptr(packed))
+	if result != 0 {
+		return nil
+	}
+	if callErr == syscall.Errno(0) {
+		return errors.New("SetConsoleCursorPosition failed")
 	}
 	return callErr
 }

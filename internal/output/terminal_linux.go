@@ -111,6 +111,8 @@ func (s *Screen) platformEnabled() bool {
 	return foreground
 }
 
+func (s *Screen) platformLineEnding() string { return "\n" }
+
 func (s *Screen) platformLost() bool {
 	p := s.platform.(*terminalPlatform)
 	return p.outFD < 0 || !term.IsTerminal(p.outFD)
@@ -258,6 +260,8 @@ func (s *Screen) handlePlatformSignals(p *terminalPlatform) bool {
 		if s.closedFlag.Load() {
 			return true
 		}
+		s.frameLost.Store(true)
+		s.invalidateFrame()
 		p.suspending.Store(true)
 		p.mu.Lock()
 		if original := p.originalMode.Load(); p.changed && original != nil && linuxForeground(p.inFD) {
@@ -267,6 +271,7 @@ func (s *Screen) handlePlatformSignals(p *terminalPlatform) bool {
 		p.mu.Unlock()
 		if s.activeFlag.Load() {
 			linuxWriteCursor(p.outFD, "\x1b[?25h")
+			s.activeFlag.Store(false)
 		}
 		signal.Stop(p.suspend)
 		signal.Reset(syscall.SIGTSTP)
@@ -284,16 +289,17 @@ func (s *Screen) handlePlatformSignals(p *terminalPlatform) bool {
 		p.suspending.Store(false)
 		if linuxForeground(p.inFD) {
 			p.ensureInputMode()
-			if s.activeFlag.Load() {
-				linuxWriteCursor(p.outFD, "\x1b[?25l")
-			}
+			s.frameLost.Store(true)
+			s.invalidateFrame()
 		}
 		return true
 	case <-p.resume:
+		s.frameLost.Store(true)
+		s.invalidateFrame()
 		if linuxForeground(p.inFD) {
 			p.ensureInputMode()
-			if s.activeFlag.Load() {
-				linuxWriteCursor(p.outFD, "\x1b[?25l")
+			if s.activeFlag.Swap(false) {
+				s.platformShowCursor()
 			}
 		}
 		return true

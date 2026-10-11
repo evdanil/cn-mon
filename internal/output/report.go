@@ -345,18 +345,18 @@ func layoutTable(headers []string, rows [][]string, width int) []line {
 		return lines
 	}
 	sep := 2 * (len(headers) - 1)
-	per := max(1, (width-sep)/len(headers))
-	widths := make([]int, len(headers))
+	natural := make([]int, len(headers))
 	for i, header := range headers {
-		widths[i] = min(per, max(1, displayWidth(terminalText(header))))
+		natural[i] = max(1, displayWidth(terminalText(header)))
 	}
 	for _, row := range rows {
 		for i := range headers {
 			if i < len(row) {
-				widths[i] = min(per, max(widths[i], displayWidth(terminalText(row[i]))))
+				natural[i] = max(natural[i], displayWidth(terminalText(row[i])))
 			}
 		}
 	}
+	widths := allocateTableWidths(natural, width-sep)
 	buildRow := func(values []string) []line {
 		parts := make([][]string, len(headers))
 		height := 1
@@ -392,6 +392,59 @@ func layoutTable(headers []string, rows [][]string, width int) []line {
 		result = append(result, buildRow(row)...)
 	}
 	return result
+}
+
+func allocateTableWidths(natural []int, budget int) []int {
+	widths := make([]int, len(natural))
+	if len(natural) == 0 {
+		return widths
+	}
+	total := 0
+	maxWidth := 0
+	for _, width := range natural {
+		total += width
+		maxWidth = max(maxWidth, width)
+	}
+	if total <= budget {
+		copy(widths, natural)
+		return widths
+	}
+	low, high := 1, maxWidth
+	for low < high {
+		middle := low + (high-low+1)/2
+		used := 0
+		for _, width := range natural {
+			used += min(width, middle)
+		}
+		if used <= budget {
+			low = middle
+		} else {
+			high = middle - 1
+		}
+	}
+	used := 0
+	for i, width := range natural {
+		widths[i] = min(width, low)
+		used += widths[i]
+	}
+	for remaining := budget - used; remaining > 0; {
+		progress := false
+		for i, width := range natural {
+			if widths[i] >= width {
+				continue
+			}
+			widths[i]++
+			remaining--
+			progress = true
+			if remaining == 0 {
+				break
+			}
+		}
+		if !progress {
+			break
+		}
+	}
+	return widths
 }
 
 func tableRole(index int) string { return tableRoles[index%len(tableRoles)] }

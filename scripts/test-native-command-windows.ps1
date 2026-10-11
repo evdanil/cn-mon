@@ -159,7 +159,7 @@ try {
         'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT live-writer=protected stale-display=lost pid=alive mixed-request=blocked-then-deleted stopped-pid=dead persisted-round=verified',
         $elevatedRoleMarker,
         "CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=elevated sid=$elevatedSid icmp=OK exit=0 tcp=open json=pass history=one-round",
-        "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=$elevatedSid",
+        "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete display=state-icmp idle-row=stable bottom-anchor=footer edge-row=width-filled edge-update=changed-anchored buffer=viewport=33x7 final-cell=p cursor=footer-start no-scroll=pass geometry=restored resize=tiny-restored input=restored output=restored cursor=restored history=stopped sid=$elevatedSid",
         "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=follower-only writer=still-running restored=true sid=$elevatedSid",
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q exit=graceful report=table-theme console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE key=Q report=NO_COLOR-empty console=rendered literal-escape=false input=restored output=restored cursor=restored history=stopped',
@@ -191,8 +191,8 @@ try {
         (Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=elevated sid=$elevatedSid icmp=OK exit=0 tcp=open json=pass history=one-round") -ne 1) {
         throw 'elevated Windows role did not emit exactly one matching identity and result marker'
     }
-    if ((Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete input=restored output=restored cursor=restored history=stopped sid=$elevatedSid") -ne 1) {
-        throw 'private-console test did not emit exactly one matching elevated-role restoration marker'
+    if ((Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete display=state-icmp idle-row=stable bottom-anchor=footer edge-row=width-filled edge-update=changed-anchored buffer=viewport=33x7 final-cell=p cursor=footer-start no-scroll=pass geometry=restored resize=tiny-restored input=restored output=restored cursor=restored history=stopped sid=$elevatedSid") -ne 1) {
+        throw 'private-console test did not prove width-filled final-row geometry and emit exactly one matching restoration marker'
     }
     if ((Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=follower-only writer=still-running restored=true sid=$elevatedSid") -ne 1) {
         throw 'private-console follower test did not prove q left its writer running'

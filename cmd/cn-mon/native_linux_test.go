@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -235,6 +236,26 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	if !terminalOutput.waitContains([]byte("Last seen"), 2*time.Second) {
 		t.Fatalf("v did not switch the live display to table view; terminal tail=%q", terminalOutput.tail(2048))
 	}
+	tableBytes := terminalOutput.bytes()
+	if !bytes.Contains(tableBytes, []byte("State")) || !bytes.Contains(tableBytes, []byte("ICMP")) {
+		t.Fatalf("live table lacks its State/ICMP labels: terminal tail=%q", terminalOutput.tail(2048))
+	}
+	plainTable := nativeLinuxStripSGR(tableBytes)
+	if !regexp.MustCompile(`127\.0\.0\.1\s+[!T]\s+`).Match(plainTable) {
+		t.Fatalf("live table does not show the loopback State glyph beside its ICMP value: terminal tail=%q", terminalOutput.tail(2048))
+	}
+	if !terminalOutput.waitQuiet(100*time.Millisecond, 2*time.Second) {
+		t.Fatalf("table frame did not settle before idle stability window: %q", terminalOutput.tail(2048))
+	}
+	idleStart := terminalOutput.length()
+	time.Sleep(1200 * time.Millisecond)
+	idleBytes := terminalOutput.bytes()[idleStart:]
+	if bytes.Contains(idleBytes, []byte("State")) || bytes.Contains(idleBytes, []byte("ICMP")) {
+		t.Fatalf("unchanged table header was emitted again during the idle window: %q", idleBytes)
+	}
+	if !bytes.Contains(idleBytes, []byte("next round in")) {
+		t.Fatalf("idle window did not include the legitimate countdown update: %q", idleBytes)
+	}
 	if err := waitLinuxPTYCommandStatus(database, request.Key, "running", 2*time.Second); err != nil {
 		t.Fatalf("Escape, arrow, or Unicode input unexpectedly stopped the run: %v", err)
 	}
@@ -255,14 +276,17 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		t.Fatalf("tiny-size frame did not drain before restoring terminal dimensions; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	beforeResize = terminalOutput.length()
-	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 80}); err != nil {
+	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 120}); err != nil {
 		t.Fatalf("restore PTY dimensions: %v", err)
 	}
-	if size, err := unix.IoctlGetWinsize(int(master.Fd()), unix.TIOCGWINSZ); err != nil || size.Row != 24 || size.Col != 80 {
+	if size, err := unix.IoctlGetWinsize(int(master.Fd()), unix.TIOCGWINSZ); err != nil || size.Row != 24 || size.Col != 120 {
 		t.Fatalf("PTY did not retain restored dimensions: size=%+v err=%v", size, err)
 	}
 	if !terminalOutput.waitContainsAfter(beforeResize, []byte("Last seen"), 3*time.Second) {
 		t.Fatalf("live screen did not restore the full table after restoring terminal dimensions; terminal tail=%q", terminalOutput.tail(2048))
+	}
+	if !terminalOutput.waitContainsAfter(beforeResize, []byte("q: stop"), 3*time.Second) {
+		t.Fatalf("wide restored frame is missing its final footer row: terminal tail=%q", terminalOutput.tail(2048))
 	}
 	if _, err := master.Write([]byte("q")); err != nil {
 		t.Fatalf("send q through PTY input: %v", err)
@@ -320,7 +344,111 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		t.Fatalf("q-stop history: %v", err)
 	}
 	stopTerminalCollector()
-	t.Logf("CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored no-color=attrs-only report=complete termios=restored cursor=visible history=finished icmp_exit=%d", code)
+	t.Logf("CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored-full-width no-color=attrs-only display=state-icmp idle-header-rewrites=0 countdown=updated footer=visible report=complete termios=restored cursor=visible history=finished icmp_exit=%d", code)
+}
+
+func TestNativeCommandLinuxPTYWideTableKeepsTimestampsOnOneRow(t *testing.T) {
+	requireNativeCommand(t)
+	binary := buildNativeCommand(t)
+	directory := t.TempDir()
+	database := filepath.Join(directory, "wide-table-history.db")
+	logPath := filepath.Join(directory, "wide-table.log")
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on loopback for wide table: %v", err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	master, slave := openNativeLinuxPTY(t)
+	defer master.Close()
+	defer slave.Close()
+	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 160}); err != nil {
+		t.Fatalf("set wide table PTY dimensions: %v", err)
+	}
+
+	output := &nativePTYOutput{}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go collectNativeLinuxPTY(master, output, stop, done)
+	stopClosed, joined := false, false
+	stopCollector := func() error {
+		if !stopClosed {
+			close(stop)
+			stopClosed = true
+		}
+		if joined {
+			return nil
+		}
+		select {
+		case <-done:
+			joined = true
+			return nil
+		case <-time.After(time.Second):
+			return errors.New("wide-table PTY collector did not stop within 1s")
+		}
+	}
+	defer func() {
+		if err := stopCollector(); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary,
+		"--format", "table", "--history-file", database, "--log-file", logPath,
+		"--tcp", fmt.Sprint(port), "127.0.0.1",
+	)
+	command.Env = nativeCommandEnv(t, directory, database, logPath)
+	var stderr bytes.Buffer
+	command.Stdout, command.Stderr = slave, &stderr
+	runErr := command.Run()
+	code := 0
+	if runErr != nil {
+		var exit *exec.ExitError
+		if !errors.As(runErr, &exit) {
+			t.Fatalf("run native table report through PTY: %v", runErr)
+		}
+		code = exit.ExitCode()
+	}
+	if code != 0 && code != 3 {
+		t.Fatalf("wide-table command exit=%d, want completed report 0 or probe error 3: stderr=%q", code, stderr.String())
+	}
+	if !output.waitContains([]byte("Started"), 2*time.Second) || !output.waitQuiet(100*time.Millisecond, 2*time.Second) {
+		t.Fatalf("wide table report did not drain through PTY: %q", output.tail(4096))
+	}
+	if err := stopCollector(); err != nil {
+		t.Fatal(err)
+	}
+
+	plain := strings.ReplaceAll(string(nativeLinuxStripSGR(output.bytes())), "\r", "")
+	var timestampRow string
+	for _, line := range strings.Split(plain, "\n") {
+		if len(nativeReportTimestamp.FindAllString(line, -1)) == 2 && strings.Contains(line, "one round") {
+			timestampRow = line
+			break
+		}
+	}
+	if timestampRow == "" {
+		t.Fatalf("wide table split its 25-character UTC timestamps across rows: %q", plain)
+	}
+	last := ""
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.TrimSpace(line) != "" {
+			last = strings.TrimSpace(line)
+		}
+	}
+	if strings.TrimSpace(timestampRow) != last {
+		t.Fatalf("wide report summary row is not the final visible PTY row: summary=%q last=%q output=%q", timestampRow, last, plain)
+	}
+	t.Log("CNMON_NATIVE_COMMAND_LINUX_PTY wide-report=25-char-timestamps-one-row width=160 summary-bottom=visible")
+}
+
+var nativeLinuxSGR = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var nativeReportTimestamp = regexp.MustCompile(`[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\+00:00`)
+
+func nativeLinuxStripSGR(value []byte) []byte {
+	return nativeLinuxSGR.ReplaceAll(value, nil)
 }
 
 func TestNativeCommandLinuxPTYKeysRemainActiveWithRedirectedStderr(t *testing.T) {

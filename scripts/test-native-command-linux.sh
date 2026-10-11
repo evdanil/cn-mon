@@ -49,7 +49,7 @@ if [[ -n "$(getcap -n "$command_binary")" || -n "$(getcap -n "$test_binary")" ]]
 fi
 
 set +e
-selector='^(TestNativeCommand(LoopbackHistoryJSON|HistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$'
+selector='^(TestNativeCommand(LoopbackHistoryJSON|HistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|LinuxPTYQuitRestoresTerminal|LinuxPTYWideTableKeepsTimestampsOnOneRow|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$'
 if [[ $release_qualify == 1 ]]; then
 	selector=${selector%$} # replace the final anchor before adding qualification cases
 	selector="${selector%)}|TestNativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|FollowDoesNotStopWriter|EndedFollowAllFormats))$"
@@ -143,7 +143,8 @@ required=(
 	'CNMON_NATIVE_COMMAND_INHERITED_TERM pre-input=runtime-default'
 	'CNMON_NATIVE_COMMAND_INHERITED_TERM active-run=graceful history=stopped'
 	'CNMON_NATIVE_COMMAND_PAUSE_RESUME paused=no-round-growth resumed=next-round'
-	'CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored no-color=attrs-only report=complete termios=restored cursor=visible history=finished'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY keys=q-v-escape-arrow-unicode resize=tiny-restored-full-width no-color=attrs-only display=state-icmp idle-header-rewrites=0 countdown=updated footer=visible report=complete termios=restored cursor=visible history=finished'
+	'CNMON_NATIVE_COMMAND_LINUX_PTY wide-report=25-char-timestamps-one-row width=160 summary-bottom=visible'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY redirected-stderr=keys-active q=graceful termios=restored'
 	'CNMON_NATIVE_COMMAND_LINUX_PTY blocked-report prefilled='
 	'CNMON_NATIVE_COMMAND_LINUX_PTY background-start=unchanged foreground-activation=pass background-owner-mode=unchanged suspend=restored resume=rearmed q=graceful cursor=restored'
