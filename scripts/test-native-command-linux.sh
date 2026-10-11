@@ -30,7 +30,21 @@ result=$?
 set -e
 cat "$main_log"
 if [[ $result -ne 0 ]]; then
-	message="native Linux command gate failed (exit $result): $(tail -c 6000 "$main_log")"
+	failure_context=$(awk '
+		/^[[:space:]]+[^[:space:]]+\.go:[0-9]+:/ { diagnostic = $0 }
+		/^--- FAIL:/ {
+			if (diagnostic != "") print diagnostic
+			print
+			diagnostic = ""
+			failures++
+			if (failures == 5) exit
+		}
+	' "$main_log" | cut -c1-1200 || true)
+	result_context=$({ grep -E '^--- (FAIL|PASS):|^FAIL |^CNMON_' "$main_log" || true; } | tail -n 60 | cut -c1-300)
+	if [[ -z $failure_context ]]; then
+		failure_context=$(tail -n 40 "$main_log" | cut -c1-300)
+	fi
+	message="native Linux command gate failed (exit $result); initiating failures: ${failure_context}; result markers: ${result_context}"
 	message=${message//'%'/'%25'}
 	message=${message//$'\r'/'%0D'}
 	message=${message//$'\n'/'%0A'}
