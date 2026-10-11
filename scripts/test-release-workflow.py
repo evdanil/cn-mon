@@ -223,13 +223,13 @@ with tempfile.TemporaryDirectory(prefix='cnmon-docbytes-') as temp:
 # The README's Linux example must stop before extraction when the checksum
 # verifier reports a mismatch.
 readme = (ROOT / 'README.md').read_text(encoding='utf-8')
-linux_example_start = readme.index('```sh\n', readme.index('On Linux, for example:')) + len('```sh\n')
+linux_example_start = readme.index('```sh\n', readme.index('On Linux, for a cn-mon 0.2.0 archive:')) + len('```sh\n')
 linux_example_end = readme.index('\n```', linux_example_start)
 linux_example = readme[linux_example_start:linux_example_end]
 with tempfile.TemporaryDirectory(prefix='cnmon-readme-checksum-') as temp:
     root = Path(temp); fake_bin = root / 'bin'; fake_bin.mkdir()
-    (root / 'SHA256SUMS').write_text('0' * 64 + '  cn-mon_0.1.0_linux_amd64.tar.gz\n', encoding='ascii')
-    (root / 'cn-mon_0.1.0_linux_amd64.tar.gz').write_bytes(b'not the expected archive')
+    (root / 'SHA256SUMS').write_text('0' * 64 + '  cn-mon_0.2.0_linux_amd64.tar.gz\n', encoding='ascii')
+    (root / 'cn-mon_0.2.0_linux_amd64.tar.gz').write_bytes(b'not the expected archive')
     invoked = root / 'sha256sum.invoked'
     sha = fake_bin / 'sha256sum'; sha.write_text(f'#!/bin/sh\nprintf called > {invoked}\ncat >/dev/null\nexit 1\n', encoding='ascii'); sha.chmod(0o755)
     extracted = root / 'extracted.marker'
@@ -238,7 +238,7 @@ with tempfile.TemporaryDirectory(prefix='cnmon-readme-checksum-') as temp:
     result = subprocess.run(['bash', '-c', linux_example], cwd=root, env=env,
                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert result.returncode != 0 and invoked.exists() and not extracted.exists(), result.stdout
-    print('README checksum instructions stop before extraction on verification failure: pass')
+    print('README 0.2.0 checksum instructions invoke verification and stop before extraction on failure: pass')
 
 # Match the PowerShell wrapper's normalized `go version -m` setting guard
 # against an actual Windows-target Go build, not hand-written example lines.

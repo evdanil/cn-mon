@@ -4,28 +4,32 @@
 
 ## Download a release
 
-The published download remains [cn-mon 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0), built and qualified from source `f156255812308db7039d9721945957348ddbf8b4`. It provides `cn-mon_0.1.0_linux_amd64.tar.gz`, `cn-mon_0.1.0_windows_amd64.zip` and `SHA256SUMS`. The 0.2.0 candidate delivery is pending its merged-source qualification and publication. Verify the selected archive before extracting it.
+The published download remains [cn-mon 0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0), built and qualified from source `f156255812308db7039d9721945957348ddbf8b4`. It provides `cn-mon_0.1.0_linux_amd64.tar.gz`, `cn-mon_0.1.0_windows_amd64.zip` and `SHA256SUMS`. The 0.2.0 candidate delivery is pending its merged-source qualification and publication. The installation examples below apply to qualified 0.2.0 candidate archives once available.
 
-On Linux, for example:
+### Installing a qualified 0.2.0 candidate
+
+These examples are for qualified 0.2.0 candidate archives. They do not describe the currently published 0.1.0 download above. Use them when the 0.2.0 archives and their `SHA256SUMS` are available from the qualification or release workflow.
+
+On Linux, for a cn-mon 0.2.0 archive:
 
 ```sh
-line=$(grep -F '  cn-mon_0.1.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
+line=$(grep -F '  cn-mon_0.2.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
 test "$(printf '%s\n' "$line" | wc -l)" -eq 1 || exit 1
 printf '%s\n' "$line" | sha256sum --check - || exit 1
-tar -xzf cn-mon_0.1.0_linux_amd64.tar.gz
-./cn-mon_0.1.0_linux_amd64/cn-mon --version
+tar -xzf cn-mon_0.2.0_linux_amd64.tar.gz
+./cn-mon_0.2.0_linux_amd64/cn-mon --version
 ```
 
-On Windows PowerShell:
+On Windows PowerShell, for a cn-mon 0.2.0 archive:
 
 ```powershell
-$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.1.0_windows_amd64.zip') })
+$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.2.0_windows_amd64.zip') })
 if ($lines.Count -ne 1) { throw 'Windows archive checksum is missing or duplicated' }
 $expected = ($lines[0] -split '\s+', 2)[0]
-$actual = (Get-FileHash .\cn-mon_0.1.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$actual = (Get-FileHash .\cn-mon_0.2.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -cne $expected) { throw 'Windows archive checksum mismatch' }
-Expand-Archive .\cn-mon_0.1.0_windows_amd64.zip .\cn-mon
-.\cn-mon\cn-mon_0.1.0_windows_amd64\cn-mon.exe --version
+Expand-Archive .\cn-mon_0.2.0_windows_amd64.zip .\cn-mon
+.\cn-mon\cn-mon_0.2.0_windows_amd64\cn-mon.exe --version
 ```
 
 Release binaries identify their version and full source revision with `cn-mon <version> (<revision>)`; a source build reports `cn-mon dev`. The archives include the matching README, Apache-2.0 license, and third-party notices.
