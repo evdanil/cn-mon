@@ -1,0 +1,6 @@
+{
+  "waiting_after_one": "round 1",
+  "resolving_before_first": "round 1: 0 of 1,024 pinged",
+  "probing_after_one": "round 2: 300 of 1,024 pinged",
+  "compact_1024": "Hosts: 1,024 ."
+}

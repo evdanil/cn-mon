@@ -103,6 +103,17 @@ func nativeCommandEnv(t *testing.T, dir, history, log string) []string {
 	return filtered
 }
 
+func replaceNativeCommandEnv(environment []string, name, value string) []string {
+	prefix := name + "="
+	result := make([]string, 0, len(environment)+1)
+	for _, item := range environment {
+		if !strings.HasPrefix(item, prefix) {
+			result = append(result, item)
+		}
+	}
+	return append(result, prefix+value)
+}
+
 func requireNativeCommand(t *testing.T) {
 	t.Helper()
 	if os.Getenv("CNMON_NATIVE_COMMAND") != "1" {

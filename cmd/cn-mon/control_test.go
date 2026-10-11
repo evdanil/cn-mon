@@ -34,6 +34,49 @@ func TestCommandControlStartupInterruptExitsImmediately(t *testing.T) {
 	}
 }
 
+func TestCommandControlStartupInterruptRestoresAfterHardCancelBeforeExit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var control *commandControl
+	order := make(chan string, 2)
+	control = newCommandControl(cancel, func(code int) {
+		if code != 130 {
+			t.Errorf("startup hard exit code=%d, want 130", code)
+		}
+		if control.InterruptCount() != 1 {
+			t.Errorf("exit callback observed interrupt count=%d, want 1", control.InterruptCount())
+		}
+		order <- "exit"
+	})
+	control.SetEmergencyRestore(func() {
+		select {
+		case <-ctx.Done():
+		default:
+			t.Error("emergency restoration ran before hard cancellation")
+		}
+		if control.InterruptCount() != 1 {
+			t.Errorf("restore callback observed interrupt count=%d, want 1", control.InterruptCount())
+		}
+		order <- "restore"
+	})
+
+	control.Interrupt()
+	if got := <-order; got != "restore" {
+		t.Fatalf("callback order first=%q, want restore", got)
+	}
+	if got := <-order; got != "exit" {
+		t.Fatalf("callback order second=%q, want exit", got)
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("startup interrupt did not cancel the hard context")
+	}
+	if got := control.InterruptCount(); got != 1 {
+		t.Fatalf("startup interrupt count=%d, want 1", got)
+	}
+}
+
 func TestCommandControlFirstInterruptStopsAndSecondHardExits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -108,6 +151,31 @@ func TestCommandControlStopRequestsPreserveFirstReasonAndAreIdempotent(t *testin
 	}
 }
 
+func TestCommandControlDefersQuitDuringInitialReadUntilFollowingTransition(t *testing.T) {
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	control := newCommandControl(cancel, func(int) { t.Error("quit must not hard-exit") })
+	// The screen key worker is active while the initial history View is held.
+	control.RequestStop("quit")
+	select {
+	case <-control.Stop():
+		t.Fatal("early q must not interrupt the initial history View")
+	default:
+	}
+	if got := control.StopReason(); got != "quit" {
+		t.Fatalf("queued stop reason=%q, want quit", got)
+	}
+	control.EnterRunning() // bound to EnterFollowing after the initial View
+	select {
+	case <-control.Stop():
+	default:
+		t.Fatal("q typed during the initial View was lost at EnterFollowing")
+	}
+	if got := control.InterruptCount(); got != 0 {
+		t.Fatalf("q incremented Ctrl+C count to %d", got)
+	}
+}
+
 func TestCommandControlIgnoresSignalsAfterFinish(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -160,5 +228,55 @@ func TestCommandControlCallbacksRunWithoutHoldingStateLock(t *testing.T) {
 	case <-completed:
 	case <-time.After(time.Second):
 		t.Fatal("control callback deadlocked while querying state")
+	}
+}
+
+func TestSecondInterruptRunsEmergencyRestoreBeforePromptExit(t *testing.T) {
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	exits := make(chan int, 1)
+	var control *commandControl
+	order := make(chan string, 2)
+	control = newCommandControl(cancel, func(code int) {
+		if control.InterruptCount() != 2 {
+			t.Errorf("exit callback observed interrupt count %d", control.InterruptCount())
+		}
+		order <- "exit"
+		exits <- code
+	})
+	control.SetEmergencyRestore(func() {
+		if control.InterruptCount() != 2 {
+			t.Errorf("restore callback observed interrupt count %d", control.InterruptCount())
+		}
+		order <- "restore"
+	})
+	control.EnterRunning()
+	control.Interrupt()
+	control.Interrupt()
+
+	if got := <-order; got != "restore" {
+		t.Fatalf("callback order first=%q, want restore", got)
+	}
+	if got := <-order; got != "exit" {
+		t.Fatalf("callback order second=%q, want exit", got)
+	}
+	if code := <-exits; code != 130 {
+		t.Fatalf("hard exit code=%d, want 130", code)
+	}
+}
+
+func TestAddedEmergencyRestoreComposesCallbacks(t *testing.T) {
+	control := newCommandControl(func() {}, func(int) {})
+	order := make(chan string, 2)
+	control.SetEmergencyRestore(func() { order <- "screen" })
+	control.AddEmergencyRestore(func() { order <- "report" })
+	control.EnterRunning()
+	control.Interrupt()
+	control.Interrupt()
+	if got := <-order; got != "screen" {
+		t.Fatalf("first restore=%q, want screen", got)
+	}
+	if got := <-order; got != "report" {
+		t.Fatalf("second restore=%q, want report", got)
 	}
 }

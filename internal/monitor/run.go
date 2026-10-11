@@ -154,7 +154,7 @@ func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, r
 					}
 					index, slot = nextIndex, nextSlot
 					if slot.After(now) {
-						stopped, waitErr := r.waitUntil(cancelWork, slot, &lastBusyHeartbeat)
+						stopped, waitErr := r.waitUntilLive(cancelWork, slot, &lastBusyHeartbeat, LiveWaiting)
 						if waitErr != nil {
 							if r.hardCtx.Err() != nil {
 								return r.finishOutcome(), r.hardCtx.Err()
@@ -208,7 +208,7 @@ func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, r
 				if finished {
 					break
 				}
-				stopped, waitErr := r.waitUntil(cancelWork, nextSlot, &lastBusyHeartbeat)
+				stopped, waitErr := r.waitUntilLive(cancelWork, nextSlot, &lastBusyHeartbeat, LiveWaiting)
 				if waitErr != nil {
 					if r.hardCtx.Err() != nil {
 						return r.finishOutcome(), r.hardCtx.Err()
@@ -245,6 +245,9 @@ func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, r
 	}
 	if err := r.endHistory(status); err != nil {
 		return r.finishUnexpected(err)
+	}
+	if r.liveDrawEnabled() {
+		r.drawLive(r.clock.Now(), LiveEnded, nil, nil, nil, r.outcome.CurrentRounds, len(r.plan.Request.Hosts), nil)
 	}
 	return r.finishOutcome(), nil
 }
@@ -333,9 +336,29 @@ type asyncResult[T any] struct {
 }
 
 func awaitWork[T any](r *runner, cancelWork context.CancelFunc, lastHeartbeat *time.Duration, work func(context.Context) (T, error)) (T, error, bool) {
+	return awaitWorkObserved(r, cancelWork, lastHeartbeat, nil, work)
+}
+
+type liveProgress struct {
+	phase       LivePhase
+	pending     map[int]byte
+	pendingRows map[int]Row
+	pendingTime map[int]time.Time
+	done, total int
+	nextSlot    *time.Time
+}
+
+func awaitWorkLive[T any](r *runner, cancelWork context.CancelFunc, lastHeartbeat *time.Duration, progress liveProgress, work func(context.Context) (T, error)) (T, error, bool) {
+	return awaitWorkObserved(r, cancelWork, lastHeartbeat, &progress, work)
+}
+
+func awaitWorkObserved[T any](r *runner, cancelWork context.CancelFunc, lastHeartbeat *time.Duration, progress *liveProgress, work func(context.Context) (T, error)) (T, error, bool) {
 	var zero T
+	var reading runReading
+	read := false
 	if lastHeartbeat != nil {
-		reading := r.clock.Now()
+		reading = r.clock.Now()
+		read = true
 		if reading.Mono-*lastHeartbeat >= 10*time.Second {
 			if err := r.heartbeat(nil, false); err != nil {
 				return zero, err, true
@@ -343,12 +366,23 @@ func awaitWork[T any](r *runner, cancelWork context.CancelFunc, lastHeartbeat *t
 			*lastHeartbeat = reading.Mono
 		}
 	}
+	if progress != nil && r.liveDrawEnabled() {
+		if !read {
+			reading = r.clock.Now()
+		}
+		r.drawLive(reading, progress.phase, progress.pending, progress.pendingRows, progress.pendingTime, progress.done, progress.total, progress.nextSlot)
+	}
 	results := make(chan asyncResult[T], 1)
 	go func() {
 		value, err := work(r.workCtx)
 		results <- asyncResult[T]{value: value, err: err}
 	}()
-	timer := r.deps.Clock.After(heartbeatDelay(r.clock.Now().Mono, lastHeartbeat))
+	timerReading := r.clock.Now()
+	delay := heartbeatDelay(timerReading.Mono, lastHeartbeat)
+	if progress != nil && r.liveDrawEnabled() {
+		delay = r.liveDelay(timerReading.Mono, lastHeartbeat)
+	}
+	timer := r.deps.Clock.After(delay)
 	for {
 		select {
 		case result := <-results:
@@ -369,7 +403,15 @@ func awaitWork[T any](r *runner, cancelWork context.CancelFunc, lastHeartbeat *t
 				}
 				*lastHeartbeat = reading.Mono
 			}
-			timer = r.deps.Clock.After(heartbeatDelay(r.clock.Now().Mono, lastHeartbeat))
+			if progress != nil && r.liveDrawEnabled() {
+				r.drawLive(reading, progress.phase, progress.pending, progress.pendingRows, progress.pendingTime, progress.done, progress.total, progress.nextSlot)
+				// Draw is synchronous and may block. Re-sample on the state owner
+				// before choosing the next wake so a due heartbeat is not deferred.
+				scheduleMono := r.clock.Now().Mono
+				timer = r.deps.Clock.After(r.liveDelay(scheduleMono, lastHeartbeat))
+			} else {
+				timer = r.deps.Clock.After(heartbeatDelay(r.clock.Now().Mono, lastHeartbeat))
+			}
 		}
 	}
 }
@@ -405,7 +447,13 @@ func (r *runner) noteSkippedSlots(skipped int64) {
 
 func (r *runner) runRoundWithHeartbeat(cancelWork context.CancelFunc, roundStart, actualStart time.Time, lastBusyHeartbeat *time.Duration) (bool, error) {
 	hosts := r.plan.Request.Hosts
-	resolved, resolveErr, canceled := awaitWork(r, cancelWork, lastBusyHeartbeat, func(ctx context.Context) ([]probe.Resolved, error) {
+	pending := make(map[int]byte)
+	pendingRows := make(map[int]Row)
+	pendingTimes := make(map[int]time.Time)
+	resolved, resolveErr, canceled := awaitWorkLive(r, cancelWork, lastBusyHeartbeat, liveProgress{
+		phase: LiveResolving, pending: pending, pendingRows: pendingRows, pendingTime: pendingTimes,
+		total: len(hosts),
+	}, func(ctx context.Context) ([]probe.Resolved, error) {
 		return r.deps.Prober.Resolve(ctx, hosts)
 	})
 	if resolveErr != nil {
@@ -425,12 +473,16 @@ func (r *runner) runRoundWithHeartbeat(cancelWork context.CancelFunc, roundStart
 	rows := make([]Row, len(hosts))
 	rowTimes := make([]time.Time, len(hosts))
 	allProbeResults := make(map[int]validatedProbeResult, len(ordered))
+	done := 0
 	for i, item := range ordered {
 		if item.LookupErr != nil {
 			if _, ever := r.resolved[item.Host]; !ever {
 				r.unresolved[item.Host] = struct{}{}
 			}
 			rows[i] = Row{Result: "no such host", TCP: map[int]string{}}
+			pending[i] = NoName
+			pendingRows[i] = rows[i]
+			done++
 			continue
 		}
 		if _, ever := r.resolved[item.Host]; !ever {
@@ -449,13 +501,19 @@ func (r *runner) runRoundWithHeartbeat(cancelWork context.CancelFunc, roundStart
 		return false, nil
 	}
 	if len(probed) == 0 {
+		if r.liveDrawEnabled() {
+			r.drawLive(r.clock.Now(), LiveProbing, pending, pendingRows, pendingTimes, done, len(hosts), nil)
+		}
 		return r.commitRound(roundStart, actualStart, rows, rowTimes, nil, lastBusyHeartbeat)
 	}
 	for offset := 0; offset < len(probed); offset += 100 {
 		end := min(offset+100, len(probed))
 		batch := probed[offset:end]
 		sampleAt := r.clock.Now().Run
-		batchResults, batchErr, wasCanceled := awaitWork(r, cancelWork, lastBusyHeartbeat, func(ctx context.Context) ([]probe.Result, error) {
+		batchResults, batchErr, wasCanceled := awaitWorkLive(r, cancelWork, lastBusyHeartbeat, liveProgress{
+			phase: LiveProbing, pending: pending, pendingRows: pendingRows, pendingTime: pendingTimes,
+			done: done, total: len(hosts),
+		}, func(ctx context.Context) ([]probe.Result, error) {
 			return r.deps.Prober.ProbeBatch(ctx, batch, r.plan.Request.Ports)
 		})
 		if batchErr != nil {
@@ -475,6 +533,13 @@ func (r *runner) runRoundWithHeartbeat(cancelWork context.CancelFunc, roundStart
 			rows[index] = row.row
 			rowTimes[index] = sampleAt
 			allProbeResults[index] = row
+			pending[index] = Observation(row.row, r.plan.Request.Ports)
+			pendingRows[index] = row.row
+			pendingTimes[index] = sampleAt
+		}
+		done += len(batch)
+		if r.liveDrawEnabled() {
+			r.drawLive(r.clock.Now(), LiveProbing, pending, pendingRows, pendingTimes, done, len(hosts), nil)
 		}
 		finalBatch := end == len(probed)
 		if wasCanceled && !finalBatch {
@@ -615,7 +680,8 @@ func (r *runner) commitRound(roundStart, actualStart time.Time, rows []Row, rowT
 	if lastBusyHeartbeat != nil {
 		*lastBusyHeartbeat = completedReading.Mono
 	}
-	if _, err := r.tracker.Add(Round{Started: roundStart, Interval: durationValue(r.plan.Interval), Observations: input.Observations, Rows: modelRows, Times: modelTimes}); err != nil {
+	changes, err := r.tracker.Add(Round{Started: roundStart, Interval: durationValue(r.plan.Interval), Observations: input.Observations, Rows: modelRows, Times: modelTimes})
+	if err != nil {
 		return false, fmt.Errorf("fold completed round: %w", err)
 	}
 	r.outcome.CurrentRounds++
@@ -629,6 +695,10 @@ func (r *runner) commitRound(roundStart, actualStart time.Time, rows []Row, rowT
 	r.withoutOwn = nil
 	if diagnostic != nil && r.deps.Note != nil {
 		r.deps.Note(formatProbeDiagnostic(*diagnostic))
+	}
+	r.liveChange(changes)
+	if r.liveDrawEnabled() {
+		r.drawLive(completedReading, LiveWaiting, nil, nil, nil, r.outcome.CurrentRounds, len(r.plan.Request.Hosts), nil)
 	}
 	return true, nil
 }
@@ -735,6 +805,17 @@ func isContextStop(err error) bool {
 }
 
 func (r *runner) waitUntil(cancelWork context.CancelFunc, slot time.Time, lastHeartbeat *time.Duration) (bool, error) {
+	return r.waitUntilPhase(cancelWork, slot, lastHeartbeat, nil)
+}
+
+func (r *runner) waitUntilLive(cancelWork context.CancelFunc, slot time.Time, lastHeartbeat *time.Duration, phase LivePhase) (bool, error) {
+	if r.deps.Live == nil || r.deps.Live.Draw == nil {
+		return r.waitUntil(cancelWork, slot, lastHeartbeat)
+	}
+	return r.waitUntilPhase(cancelWork, slot, lastHeartbeat, &phase)
+}
+
+func (r *runner) waitUntilPhase(cancelWork context.CancelFunc, slot time.Time, lastHeartbeat *time.Duration, phase *LivePhase) (bool, error) {
 	for {
 		if r.hardCtx.Err() != nil {
 			return false, r.hardCtx.Err()
@@ -743,6 +824,25 @@ func (r *runner) waitUntil(cancelWork context.CancelFunc, slot time.Time, lastHe
 			return true, nil
 		}
 		reading := r.clock.Now()
+		live := phase != nil && r.liveDrawEnabled()
+		if live {
+			r.drawLive(reading, *phase, nil, nil, nil, r.outcome.CurrentRounds, len(r.plan.Request.Hosts), &slot)
+			reading = r.clock.Now()
+			if r.hardCtx.Err() != nil {
+				return false, r.hardCtx.Err()
+			}
+			if r.workCtx.Err() != nil {
+				return true, nil
+			}
+			if lastHeartbeat != nil && reading.Mono-*lastHeartbeat >= 10*time.Second {
+				if err := r.heartbeat(nil, false); err != nil {
+					cancelWork()
+					return false, err
+				}
+				*lastHeartbeat = reading.Mono
+				reading = r.clock.Now()
+			}
+		}
 		if r.until != nil && !reading.Run.Before(*r.until) {
 			return false, nil
 		}

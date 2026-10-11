@@ -10,7 +10,20 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/evdanil/gotest/internal/output"
 )
+
+func TestCommandNoteFallsBackWhenScreenCannotDraw(t *testing.T) {
+	screen := output.OpenScreen(nil, nil, "default", true, output.KeyHandlers{})
+	defer screen.Close()
+	state := &commandScreenState{screen: screen}
+	var stderr bytes.Buffer
+	commandNote(state, &stderr, "visible diagnostic")
+	if got := stderr.String(); got != "cn-mon: visible diagnostic\n" {
+		t.Fatalf("fallback diagnostic=%q, want ordinary stderr output", got)
+	}
+}
 
 func TestParseCLIOptionsAndAliases(t *testing.T) {
 	got, err := parseCLI([]string{
@@ -95,10 +108,9 @@ func TestCLIProcessExitCodesAndNoStartupSideEffects(t *testing.T) {
 		{name: "invalid", args: []string{"--history-file", "", "127.0.0.1"}, code: 2, wantOut: "", wantErr: "--history-file must not be empty"},
 		{name: "empty theme", args: []string{"--theme", "", "127.0.0.1"}, code: 2, wantOut: "", wantErr: "invalid theme"},
 		{name: "empty log level", args: []string{"--log-level", "", "127.0.0.1"}, code: 2, wantOut: "", wantErr: "invalid log level"},
-		{name: "default table remains unavailable before startup", args: []string{"127.0.0.1"}, code: 3, wantOut: "", wantErr: "not implemented"},
+		{name: "default table input error precedes startup", args: []string{"--file", "missing-targets.txt"}, code: 2, wantOut: "", wantErr: "read target file"},
 		{name: "JSON input error precedes startup", args: []string{"--format", "json", "--file", "missing-targets.txt"}, code: 2, wantOut: "", wantErr: "read target file"},
-		{name: "human format remains unavailable before input", args: []string{"--format", "csv", "--file", "missing-targets.txt"}, code: 3, wantOut: "", wantErr: "not implemented"},
-		{name: "reader pending", args: []string{"--list"}, code: 3, wantOut: "", wantErr: "not implemented"},
+		{name: "CSV input error precedes startup", args: []string{"--format", "csv", "--file", "missing-targets.txt"}, code: 2, wantOut: "", wantErr: "read target file"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

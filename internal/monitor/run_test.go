@@ -11,8 +11,10 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,6 +237,290 @@ func TestRunOneShotCommitsAndFoldsCompletedProbe(t *testing.T) {
 	}
 	if code := RunExitCode(outcome, false); code != 0 {
 		t.Fatalf("RunExitCode = %d, want 0", code)
+	}
+}
+
+func TestRunLivePublishesWholeBatchThenCommittedChangesAfterDiagnostic(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	clock := &engineTestClock{now: start}
+	hosts := make([]string, 101)
+	resolved := make([]probe.Resolved, len(hosts))
+	results := make([]probe.Result, len(hosts))
+	for index := range hosts {
+		hosts[index] = fmt.Sprintf("192.0.2.%d", index+1)
+		address := netip.MustParseAddr(hosts[index])
+		resolved[index] = probe.Resolved{Index: index, Host: hosts[index], Address: address}
+		results[index] = probe.Result{Target: resolved[index], ICMP: probe.ICMPResult{State: "OK", Sent: 1, Received: 1}}
+	}
+	results[0].ICMP.Err = errors.New("permission denied") // masked execution failure still diagnoses.
+	request := target.Request{Hosts: hosts, Key: "live-test"}
+	store := &engineTestHistory{}
+	prober := &engineTestProber{
+		resolved: resolved,
+		probeFn: func(_ context.Context, batch []probe.Resolved, _ []int) ([]probe.Result, error) {
+			batchResults := make([]probe.Result, len(batch))
+			for i, item := range batch {
+				batchResults[i] = results[item.Index]
+			}
+			return batchResults, nil
+		},
+	}
+	var events []string
+	var partial *LiveUpdate
+	plan := RunPlan{Request: request, OwnRunOnly: true, HistoryFile: "history.db", HistoryDays: big.NewInt(30), RunID: "live-run"}
+	outcome, err := Run(context.Background(), plan, RunDeps{
+		Clock: clock, Prober: prober,
+		OpenHistory: func(context.Context, string) (History, error) { return store, nil },
+		Note: func(string) {
+			if len(store.rounds) != 1 {
+				t.Errorf("diagnostic published before completed round persistence: %d rounds", len(store.rounds))
+			}
+			events = append(events, "note")
+		},
+		Live: &LiveHooks{
+			Enabled: func() bool { return true },
+			Draw: func(update LiveUpdate) {
+				if update.Phase == LiveProbing && update.Done == 100 {
+					copyUpdate := update
+					partial = &copyUpdate
+				}
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if outcome.CurrentRounds != 1 {
+		t.Fatalf("outcome rounds=%d", outcome.CurrentRounds)
+	}
+	if partial == nil {
+		t.Fatal("no whole-batch pending draw after the first completed batch")
+	}
+	if partial.Total != 101 || partial.Done != 100 || len(partial.Data.Cells) != 101 || partial.Data.Cells[0] != EchoReply {
+		t.Fatalf("first batch live update = %+v", *partial)
+	}
+	if len(events) != 1 || events[0] != "note" {
+		t.Fatalf("diagnostic publication = %v", events)
+	}
+}
+
+func TestCommitRoundPublishesChangeAfterDiagnosticAndCompletedState(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	clock := &engineTestClock{now: start}
+	request := target.Request{Hosts: []string{"192.0.2.1"}, Key: "live-change"}
+	store := &engineTestHistory{}
+	tracker := NewTracker(request.Hosts, nil, 0)
+	if _, err := tracker.Add(Round{Started: start.Add(-time.Second), Observations: "!", Rows: map[string]Row{"192.0.2.1": {Address: "192.0.2.1", Result: "OK"}}}); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	var r *runner
+	r = &runner{
+		plan: RunPlan{Request: request, RunID: "live-run"},
+		deps: RunDeps{
+			Clock: clock,
+			Note:  func(string) { events = append(events, "note") },
+			Live: &LiveHooks{Enabled: func() bool { return true }, Change: func(Change) {
+				if len(store.rounds) != 1 || r.outcome.CurrentRounds != 1 {
+					t.Errorf("Change before persistence/count publication: rounds=%d outcome=%d", len(store.rounds), r.outcome.CurrentRounds)
+				}
+				events = append(events, "change")
+			}},
+		},
+		hardCtx: context.Background(), workCtx: context.Background(),
+		clock: newRunClock(clock), store: store, runRecorded: false,
+		tracker: tracker, resolved: map[string]struct{}{}, unresolved: map[string]struct{}{},
+	}
+	row := Row{Result: "ERROR: permission denied", TCP: map[int]string{}}
+	result := probe.Result{Target: probe.Resolved{Index: 0, Host: request.Hosts[0], Address: netip.MustParseAddr(request.Hosts[0])}, ICMP: probe.ICMPResult{State: "ERROR: permission denied", Err: errors.New("permission denied")}}
+	completed, err := r.commitRound(start, start, []Row{row}, []time.Time{time.Time{}}, map[int]validatedProbeResult{0: {row: row, result: result, index: 0}}, nil)
+	if err != nil || !completed {
+		t.Fatalf("commitRound = (%t,%v)", completed, err)
+	}
+	if len(events) != 2 || events[0] != "note" || events[1] != "change" {
+		t.Fatalf("diagnostic/change order = %v", events)
+	}
+}
+
+func TestMakeLiveDataOverlaysPendingWithoutMutatingTracker(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	hosts := []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"}
+	tracker := NewTracker(hosts, nil, 0)
+	if _, err := tracker.Add(Round{
+		Started: start, Observations: "!..",
+		Rows:  map[string]Row{hosts[0]: {Address: hosts[0], Result: "OK"}},
+		Times: map[string]time.Time{hosts[0]: start.Add(time.Second)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	beforeStats := tracker.Stats()
+	beforeCells := tracker.Cells(nil)
+	data := makeLiveData(tracker, hosts, nil,
+		map[int]byte{0: NoResponse, 1: EchoReply, 2: NoResponse},
+		map[int]Row{0: {Result: "TIMEOUT"}, 1: {Result: "OK"}, 2: {Result: "TIMEOUT"}},
+		map[int]time.Time{0: start.Add(8 * time.Second), 1: start.Add(5 * time.Second)},
+	)
+	if data.Stats != beforeStats || data.Seen != 2 || string(data.Cells) != "x!." {
+		t.Fatalf("live data summary stats=%+v seen=%d cells=%q", data.Stats, data.Seen, data.Cells)
+	}
+	if len(data.Rows) != 2 {
+		t.Fatalf("live rows = %+v", data.Rows)
+	}
+	if first := data.Rows[0]; first.Index != 0 || first.Latest != "TIMEOUT" || first.Cell != Gone || first.LastSeen != start.Add(time.Second) || first.SeenRounds != 1 || first.Rounds != 2 {
+		t.Fatalf("pending-silence row = %+v", first)
+	}
+	if second := data.Rows[1]; second.Index != 1 || second.Latest != "OK" || second.Cell != EchoReply || second.LastSeen != start.Add(5*time.Second) || second.SeenRounds != 1 || second.Rounds != 2 {
+		t.Fatalf("newly-seen row = %+v", second)
+	}
+	data.Cells[0] = EchoReply
+	data.Rows[0].Latest = "mutated"
+	if tracker.Stats() != beforeStats || !reflect.DeepEqual(tracker.Cells(nil), beforeCells) {
+		t.Fatal("live display values mutated tracker state")
+	}
+}
+
+func TestLiveDrawTimeDoesNotDeferDueHeartbeat(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	clock := &engineTestClock{now: start, added: make(chan time.Duration, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	draws := 0
+	r := &runner{
+		plan: RunPlan{Request: target.Request{Hosts: []string{"192.0.2.1"}}},
+		deps: RunDeps{Clock: clock, Live: &LiveHooks{Draw: func(LiveUpdate) {
+			draws++
+			if draws == 2 {
+				clock.Advance(10 * time.Second)
+			}
+		}}},
+		hardCtx: ctx, workCtx: ctx, clock: newRunClock(clock), tracker: NewTracker([]string{"192.0.2.1"}, nil, 0),
+	}
+	lastHeartbeat := time.Duration(0)
+	finished := make(chan struct{})
+	go func() {
+		_, _, _ = awaitWorkLive(r, cancel, &lastHeartbeat, liveProgress{phase: LiveResolving, total: 1}, func(ctx context.Context) (int, error) {
+			<-ctx.Done()
+			return 0, ctx.Err()
+		})
+		close(finished)
+	}()
+	select {
+	case delay := <-clock.added:
+		if delay != liveRedrawPeriod {
+			t.Fatalf("initial redraw delay=%s, want %s", delay, liveRedrawPeriod)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial redraw timer was not registered")
+	}
+	clock.Advance(liveRedrawPeriod)
+	select {
+	case delay := <-clock.added:
+		if delay != time.Nanosecond {
+			t.Fatalf("after Draw advanced elapsed to 10.5s, next timer=%s, want due-heartbeat 1ns", delay)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timer after slow Draw was not registered")
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("awaitWork did not join after cancellation")
+	}
+}
+
+func TestLiveWaitingDrawServicesDueHeartbeatImmediately(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	clock := &engineTestClock{now: start, added: make(chan time.Duration, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	busy := make(chan struct{}, 1)
+	store := &engineTestHistory{heartbeatFn: func(_ context.Context, _ time.Time, elapsed *time.Duration) error {
+		if elapsed == nil {
+			busy <- struct{}{}
+		}
+		return nil
+	}}
+	draws := 0
+	r := &runner{
+		plan: RunPlan{Request: target.Request{Hosts: []string{"192.0.2.1"}}},
+		deps: RunDeps{Clock: clock, Live: &LiveHooks{Draw: func(LiveUpdate) {
+			draws++
+			if draws == 2 {
+				clock.Advance(10 * time.Second)
+			}
+		}}},
+		hardCtx: ctx, workCtx: ctx, clock: newRunClock(clock), tracker: NewTracker([]string{"192.0.2.1"}, nil, 0),
+		store: store, runRecorded: true,
+	}
+	lastHeartbeat := time.Duration(0)
+	finished := make(chan struct{})
+	go func() {
+		_, _ = r.waitUntilLive(cancel, start.Add(30*time.Second), &lastHeartbeat, LiveWaiting)
+		close(finished)
+	}()
+	select {
+	case <-clock.added:
+	case <-time.After(time.Second):
+		t.Fatal("initial wait timer was not registered")
+	}
+	clock.Advance(liveRedrawPeriod)
+	select {
+	case <-busy:
+	case <-time.After(time.Second):
+		t.Fatal("wait redraw crossed the 10s heartbeat deadline without a busy heartbeat")
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("wait did not stop after cancellation")
+	}
+}
+
+func TestLiveWaitingDrawActivatesAfterForegroundEligibilityReturns(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	clock := &engineTestClock{now: start, added: make(chan time.Duration, 8)}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var enabled atomic.Bool
+	draws := make(chan LiveUpdate, 1)
+	r := &runner{
+		plan: RunPlan{Request: target.Request{Hosts: []string{"192.0.2.1"}}},
+		deps: RunDeps{Clock: clock, Live: &LiveHooks{
+			Enabled: func() bool { return enabled.Load() },
+			Draw:    func(update LiveUpdate) { draws <- update },
+		}},
+		hardCtx: ctx, workCtx: ctx, clock: newRunClock(clock), tracker: NewTracker([]string{"192.0.2.1"}, nil, 0),
+	}
+	finished := make(chan struct{})
+	go func() {
+		_, _ = r.waitUntilLive(cancel, start.Add(5*time.Second), nil, LiveWaiting)
+		close(finished)
+	}()
+	select {
+	case delay := <-clock.added:
+		if delay > liveRedrawPeriod {
+			t.Fatalf("disabled live wait timer=%s, want bounded eligibility poll <=%s", delay, liveRedrawPeriod)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial disabled live wait timer was not registered")
+	}
+	enabled.Store(true)
+	clock.Advance(liveRedrawPeriod)
+	select {
+	case update := <-draws:
+		if update.Phase != LiveWaiting {
+			t.Fatalf("reactivated live phase=%v, want waiting", update.Phase)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live drawing did not resume after foreground eligibility returned")
+	}
+	cancel()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("live wait did not stop after cancellation")
 	}
 }
 

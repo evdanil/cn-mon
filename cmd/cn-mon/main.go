@@ -34,6 +34,10 @@ type commandRuntime struct {
 	stdin          io.Reader
 	environment    func() (configEnvironment, error)
 	runDeps        monitor.RunDeps
+	readDeps       monitor.ReadDeps
+	isTerminal     func(io.Writer) bool
+	reportOptions  func(io.Writer, string, string) output.ReportOptions
+	screenState    *commandScreenState
 	installSignals bool
 	exit           func(int)
 }
@@ -42,7 +46,7 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	startUTC := time.Now().UTC()
 	opts, err := parseCLI(args, startUTC)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: %v\n", err)
 		return 2
 	}
 	switch opts.Mode {
@@ -53,19 +57,18 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		fmt.Fprintf(stdout, "cn-mon %s\n", version)
 		return 0
 	}
-	if opts.Mode != modeRun || opts.Format != "json" {
-		fmt.Fprintln(stderr, "cn-mon: this command mode is not implemented yet")
-		return 3
-	}
-
 	if stdin == nil {
 		stdin = runtime.stdin
 	}
 	if stdin == nil {
 		stdin = os.Stdin
 	}
+	runtime.stdin = stdin
 	if runtime.exit == nil {
 		runtime.exit = os.Exit
+	}
+	if runtime.screenState == nil {
+		runtime.screenState = &commandScreenState{}
 	}
 	hardCtx, hardCancel := context.WithCancel(context.Background())
 	defer hardCancel()
@@ -76,14 +79,17 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		defer signals.Close()
 	}
 
-	objects, err := target.ReadObjects(opts.Objects, opts.File, stdin)
-	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: %v\n", err)
-		return 2
-	}
-	if len(objects) == 0 {
-		fmt.Fprintln(stderr, "cn-mon: no target objects were provided")
-		return 2
+	var objects []string
+	if opts.Mode == modeRun {
+		objects, err = target.ReadObjects(opts.Objects, opts.File, stdin)
+		if err != nil {
+			writeCommandDiagnostic(stderr, "cn-mon: %v\n", err)
+			return 2
+		}
+		if len(objects) == 0 {
+			writeCommandDiagnostic(stderr, "cn-mon: no target objects were provided\n")
+			return 2
+		}
 	}
 
 	env := runtime.environment
@@ -92,33 +98,43 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	}
 	configEnv, err := env()
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot resolve configuration paths: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot resolve configuration paths: %v\n", err)
 		return 2
 	}
 	cfg, warnings, err := loadSettings(configEnv, opts.Overrides)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot resolve configuration: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot resolve configuration: %v\n", err)
 		return 2
 	}
 	logger, err := openLogger(cfg, configEnv.HomeDir)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot initialize logging: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot initialize logging: %v\n", err)
 		return 3
 	}
 	logFailure := func(err error) {
 		if err != nil {
-			fmt.Fprintf(stderr, "cn-mon: logging write failed: %v\n", err)
+			commandNote(runtime.screenState, stderr, "logging write failed: "+err.Error())
+		}
+	}
+	if opts.Mode == modeRun {
+		if screen := openCommandScreen(runtime.screenState, control, cfg.Theme, stdin, stderr); screen != nil {
+			defer screen.Close()
 		}
 	}
 	for _, warning := range warnings {
-		fmt.Fprintf(stderr, "cn-mon: warning: %s\n", warning)
+		commandNote(runtime.screenState, stderr, "warning: "+warning)
 		logFailure(logger.Log("WARNING", warning))
 	}
-	logFailure(logger.Log("INFO", "starting target run"))
+	if opts.Mode == modeRun {
+		logFailure(logger.Log("INFO", "starting target run"))
+	} else {
+		logFailure(logger.Log("INFO", "starting "+readerModeName(opts.Mode)+" operation"))
+		return runReaderCLI(opts, stdout, stderr, cfg, logger, logFailure, hardCtx, control, signals, runtime)
+	}
 
 	request, rejected, err := target.Build(objects, opts.Ports)
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: invalid target request: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: invalid target request: %v\n", err)
 		logFailure(logger.Close())
 		return 2
 	}
@@ -129,7 +145,11 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 			Latest:     []monitor.LatestRow{},
 			Unresolved: []string{},
 		}
-		err = output.WriteRunJSON(stdout, request, outcome, rejected)
+		closeCommandScreen(runtime.screenState)
+		reportOptions := commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme)
+		err = writeCommandReport(control, stdout, reportOptions, func() error {
+			return output.WriteRun(stdout, request, outcome, rejected, reportOptions)
+		})
 		code := reportExitCode(2, err, stdout, stderr)
 		logFailure(logger.Close())
 		return code
@@ -143,13 +163,13 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	}
 	requestID, err := uuid.NewRandom()
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot generate run ID: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot generate run ID: %v\n", err)
 		logFailure(logger.Close())
 		return 3
 	}
 	hostname, err := os.Hostname()
 	if err != nil {
-		fmt.Fprintf(stderr, "cn-mon: cannot resolve host name: %v\n", err)
+		writeCommandDiagnostic(stderr, "cn-mon: cannot resolve host name: %v\n", err)
 		logFailure(logger.Close())
 		return 3
 	}
@@ -186,9 +206,12 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	deps.Stop = control.Stop()
 	if deps.Note == nil {
 		deps.Note = func(message string) {
-			fmt.Fprintf(stderr, "cn-mon: %s\n", message)
+			commandNote(runtime.screenState, stderr, message)
 			logFailure(logger.Log("INFO", message))
 		}
+	}
+	if screen := screenFromState(runtime.screenState); screen != nil {
+		deps.Live = withScreenLiveHooks(deps.Live, screen)
 	}
 	outcome, runErr := monitor.Run(hardCtx, plan, deps)
 	code := monitor.RunExitCode(outcome, invalid)
@@ -197,17 +220,21 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	}
 	if runErr != nil {
 		logFailure(logger.Log("ERROR", "target run failed"))
-		fmt.Fprintf(stderr, "cn-mon: run failed: %v\n", runErr)
+		commandNote(runtime.screenState, stderr, "run failed: "+runErr.Error())
 		code = 3
 	} else if outcome.HistoryError != nil {
 		logFailure(logger.Log("ERROR", "history operation failed"))
 	} else if outcome.ProbeFailed {
 		logFailure(logger.Log("ERROR", "target probe failed"))
 	}
-	if err := output.WriteRunJSON(stdout, request, outcome, rejected); err != nil {
+	closeCommandScreen(runtime.screenState)
+	reportOptions := commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme)
+	if err := writeCommandReport(control, stdout, reportOptions, func() error {
+		return output.WriteRun(stdout, request, outcome, rejected, reportOptions)
+	}); err != nil {
 		if !isClosedOutputPipe(err, stdout) {
 			logFailure(logger.Log("ERROR", "report write failed"))
-			fmt.Fprintf(stderr, "cn-mon: write report: %v\n", err)
+			commandNote(runtime.screenState, stderr, "write report: "+err.Error())
 			code = 3
 		}
 	}
@@ -246,8 +273,15 @@ func reportExitCode(ordinary int, err error, stdout, stderr io.Writer) int {
 	if err == nil || isClosedOutputPipe(err, stdout) {
 		return ordinary
 	}
-	fmt.Fprintf(stderr, "cn-mon: write report: %v\n", err)
+	writeCommandDiagnostic(stderr, "cn-mon: write report: %v\n", err)
 	return 3
+}
+
+func writeCommandDiagnostic(stderr io.Writer, format string, args ...any) {
+	if !output.DiagnosticWriteAllowed(stderr) {
+		return
+	}
+	fmt.Fprintf(stderr, format, args...)
 }
 
 const usageText = `Usage:
@@ -275,20 +309,20 @@ Run options:
       --since WHEN        Include history since an age or ISO date/time
       --history-file PATH Override the history database path
       --history-days DAYS Override history retention for a target run
-      --format FORMAT     json enables target runs in this milestone; table is the final default
+      --format FORMAT     table, json, csv, or md (default: table)
 
 History options:
-      --list              List stored requests (available in M5)
-      --show ID            Show one request (available in M5)
-      --follow ID          Follow a running request (available in M5)
+      --list              List stored requests
+      --show ID           Show one request by ID or unique prefix
+      --follow ID         Follow a running request in the terminal; q stops following
 
 TARGET is an IP address, CIDR, or ASCII DNS name. Options may appear before or after
 targets; use -- to end option parsing. Without targets or an input file, use '-' for
-stdin. No arguments prints a usage diagnostic and exits 2. During M4, specify
---format json for target runs; human reports and history reader commands remain
-unavailable until M5.
+stdin. No arguments prints a usage diagnostic and exits 2. Follow requires a terminal
+on stderr. With terminal input, q stops a run or follow and v switches the run display
+to table view; structured reports go to stdout and live display/status to stderr.
 
-This build includes configuration/logging, target input, native probing, history
-storage, and JSON target-run foundations. Supported release targets: Linux and Windows
-x86-64.
+This build includes configuration and logging, target probing and history, list/show/
+follow readers, table/JSON/CSV/Markdown reports, and a best-effort live terminal screen.
+Supported release targets: Linux and Windows x86-64.
 `

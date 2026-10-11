@@ -1,0 +1,86 @@
+{
+  "roles": [
+    "header",
+    "sn",
+    "pid",
+    "date",
+    "code",
+    "license_full",
+    "reserved",
+    "auth_type",
+    "start_date",
+    "term_count",
+    "tag",
+    "feature"
+  ],
+  "themes": {
+    "default": {
+      "title": "#FF69B4",
+      "roles": [
+        "bold #00CED1",
+        "#32CD32",
+        "#FFD700",
+        "#40E0D0",
+        "#3CB371",
+        "#00FFFF",
+        "#DDA0DD",
+        "#2E8B57",
+        "#5F9EA0",
+        "#BA55D3",
+        "#DAA520",
+        "#48D1CC"
+      ]
+    },
+    "monochrome": {
+      "title": "#FFFFFF",
+      "roles": [
+        "bold #E0E0E0",
+        "#C0C0C0",
+        "#DCDCDC",
+        "#E8E8E8",
+        "#D9D9D9",
+        "#EBEBEB",
+        "#DBDBDB",
+        "#DEDEDE",
+        "#F0F0F0",
+        "#E6E6E6",
+        "#CCCCCC",
+        "#FAFAFA"
+      ]
+    },
+    "pastel": {
+      "title": "#87CEFA",
+      "roles": [
+        "bold #98FB98",
+        "#90EE90",
+        "#F0E68C",
+        "#FFB6C1",
+        "#98FB98",
+        "#E0FFFF",
+        "#D8BFD8",
+        "#90EE90",
+        "#AFEEEE",
+        "#DDA0DD",
+        "#F0E68C",
+        "#E0FFFF"
+      ]
+    },
+    "dark": {
+      "title": "#E0FFFF",
+      "roles": [
+        "bold #00CED1",
+        "#32CD32",
+        "#DAA520",
+        "#40E0D0",
+        "#2E8B57",
+        "#008B8B",
+        "#8A2BE2",
+        "#006400",
+        "#008080",
+        "#9932CC",
+        "#B8860B",
+        "#20B2AA"
+      ]
+    }
+  }
+}

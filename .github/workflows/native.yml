@@ -68,13 +68,18 @@ jobs:
           set +e
           ./dist/cn-mon --unknown > /tmp/cn-mon-out 2>/tmp/cn-mon-err
           code=$?
-          ./dist/cn-mon 127.0.0.1 > /tmp/cn-mon-pending-out 2>/tmp/cn-mon-pending-err
-          pending_code=$?
           set -e
           test "$code" -eq 2
           grep -q 'unknown option' /tmp/cn-mon-err
-          test "$pending_code" -eq 3
-          grep -q 'not implemented' /tmp/cn-mon-pending-err
+          smoke_dir=$(mktemp -d)
+          trap 'rm -rf "$smoke_dir"' EXIT
+          set +e
+          ./dist/cn-mon --list --history-file "$smoke_dir/missing.db" --log-file "$smoke_dir/cn.log" > "$smoke_dir/list.out" 2> "$smoke_dir/list.err"
+          list_code=$?
+          set -e
+          test "$list_code" -eq 1
+          test ! -s "$smoke_dir/list.out"
+          test ! -e "$smoke_dir/missing.db"
 
   windows:
     runs-on: windows-latest
@@ -171,8 +176,17 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $version -ne 'cn-mon dev') { throw 'version failed' }
           & .\dist\cn-mon.exe --unknown *> $null
           if ($LASTEXITCODE -ne 2) { throw 'invalid CLI did not exit 2' }
-          & .\dist\cn-mon.exe 127.0.0.1 *> $null
-          if ($LASTEXITCODE -ne 3) { throw 'pending target mode did not exit 3' }
+          $smokeDir = Join-Path $env:RUNNER_TEMP ("cn-mon-smoke-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $smokeDir | Out-Null
+          try {
+            $listOutput = & .\dist\cn-mon.exe --list --history-file (Join-Path $smokeDir 'missing.db') --log-file (Join-Path $smokeDir 'cn.log') 2> (Join-Path $smokeDir 'list.err')
+            $listExit = $LASTEXITCODE
+            if ($listExit -ne 1) { throw "default table list smoke exited $listExit, want 1" }
+            if ($listOutput) { throw 'empty missing-history list produced unexpected stdout' }
+            if (Test-Path (Join-Path $smokeDir 'missing.db')) { throw 'read-only list created a history database' }
+          } finally {
+            Remove-Item -LiteralPath $smokeDir -Recurse -Force
+          }
           exit 0
 
   native-linux-probe:
