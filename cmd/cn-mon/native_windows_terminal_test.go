@@ -44,6 +44,7 @@ var (
 )
 
 const nativeWindowsEnableVT = 0x0004
+const nativeWindowsCursorFixtureSize = 37
 
 type nativeConsoleCursorInfo struct {
 	Size    uint32
@@ -86,10 +87,11 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	}
 	control, output, done := startNativeWindowsConsoleBootstrap(t, directory, database, logPath,
 		map[string]string{
-			"CNMON_WINDOWS_CONSOLE_BOOTSTRAP": "1",
-			"CNMON_WINDOWS_PRODUCT_BINARY":    binary,
-			"CNMON_WINDOWS_PRODUCT_ARGS":      string(encodedArgs),
-			"CNMON_WINDOWS_PRODUCT_STDOUT":    stdoutPath,
+			"CNMON_WINDOWS_CONSOLE_BOOTSTRAP":      "1",
+			"CNMON_WINDOWS_PRODUCT_BINARY":         binary,
+			"CNMON_WINDOWS_PRODUCT_ARGS":           string(encodedArgs),
+			"CNMON_WINDOWS_PRODUCT_STDOUT":         stdoutPath,
+			"CNMON_WINDOWS_CONSOLE_CURSOR_FIXTURE": "hidden-custom",
 		})
 	defer control.Close()
 
@@ -101,9 +103,10 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
 		t.Fatalf("parse bootstrap readiness %q: pid=%d err=%v", ready, childPID, err)
 	}
-	if !baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
-		t.Fatalf("fresh private console baseline is cursor_visible=%t output_mode=%#x; want visible cursor and VT disabled", baselineCursor, baselineOutput)
+	if baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
+		t.Fatalf("custom private console baseline is cursor_visible=%t output_mode=%#x; want hidden cursor and VT disabled", baselineCursor, baselineOutput)
 	}
+	assertNativeWindowsCursor(t, ready, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool {
 		return run.Status == "running" && run.Rounds >= 1
 	}); err != nil {
@@ -183,6 +186,7 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if restoredInput != baselineInput || restoredOutput != baselineOutput || restoredCursor != baselineCursor {
 		t.Fatalf("console restoration=%q; want initial modes %#x/%#x cursor_visible=%t", after, baselineInput, baselineOutput, baselineCursor)
 	}
+	assertNativeWindowsCursor(t, after, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	result, err := done()
 	if err != nil {
 		t.Fatalf("private-console bootstrap: %v; output=%s", err, result)
@@ -318,10 +322,11 @@ func TestNativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole(t *testin
 		t.Fatal(err)
 	}
 	control, output, done := startNativeWindowsConsoleBootstrap(t, directory, database, logPath, map[string]string{
-		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP": "1",
-		"CNMON_WINDOWS_PRODUCT_BINARY":    binary,
-		"CNMON_WINDOWS_PRODUCT_ARGS":      string(encodedArgs),
-		"CNMON_WINDOWS_PRODUCT_STDOUT":    stdoutPath,
+		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP":      "1",
+		"CNMON_WINDOWS_PRODUCT_BINARY":         binary,
+		"CNMON_WINDOWS_PRODUCT_ARGS":           string(encodedArgs),
+		"CNMON_WINDOWS_PRODUCT_STDOUT":         stdoutPath,
+		"CNMON_WINDOWS_CONSOLE_CURSOR_FIXTURE": "hidden-custom",
 	})
 	defer control.Close()
 	ready := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_READY", 20*time.Second)
@@ -332,6 +337,7 @@ func TestNativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole(t *testin
 	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
 		t.Fatalf("parse bootstrap readiness %q: pid=%d err=%v", ready, childPID, err)
 	}
+	assertNativeWindowsCursor(t, ready, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	finished := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CHILD_DONE", 30*time.Second)
 	if !strings.Contains(finished, "exit=3") {
 		t.Fatalf("history-error product exit marker=%q, want 3", finished)
@@ -345,6 +351,7 @@ func TestNativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole(t *testin
 	if inputMode != baselineInput || outputMode != baselineOutput || cursor != baselineCursor {
 		t.Fatalf("history-error restoration=%q; want baseline modes/cursor", restored)
 	}
+	assertNativeWindowsCursor(t, restored, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	if _, err := done(); err != nil {
 		t.Fatalf("history-error bootstrap: %v", err)
 	}
@@ -382,10 +389,11 @@ func TestNativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole(t *testing.
 		t.Fatal(err)
 	}
 	control, output, done := startNativeWindowsConsoleBootstrap(t, directory, database, logPath, map[string]string{
-		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP": "1",
-		"CNMON_WINDOWS_PRODUCT_BINARY":    binary,
-		"CNMON_WINDOWS_PRODUCT_ARGS":      string(encodedArgs),
-		"CNMON_WINDOWS_PRODUCT_STDOUT":    stdoutPath,
+		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP":      "1",
+		"CNMON_WINDOWS_PRODUCT_BINARY":         binary,
+		"CNMON_WINDOWS_PRODUCT_ARGS":           string(encodedArgs),
+		"CNMON_WINDOWS_PRODUCT_STDOUT":         stdoutPath,
+		"CNMON_WINDOWS_CONSOLE_CURSOR_FIXTURE": "hidden-custom",
 	})
 	defer control.Close()
 	ready := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_READY", 20*time.Second)
@@ -396,6 +404,7 @@ func TestNativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole(t *testing.
 	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
 		t.Fatalf("parse bootstrap readiness %q: pid=%d err=%v", ready, childPID, err)
 	}
+	assertNativeWindowsCursor(t, ready, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds > 0 }); err != nil {
 		t.Fatalf("wait for active round before first Ctrl+C: %v", err)
 	}
@@ -415,6 +424,7 @@ func TestNativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole(t *testing.
 	if inputMode != baselineInput || outputMode != baselineOutput || cursor != baselineCursor {
 		t.Fatalf("first Ctrl+C restoration=%q; want baseline modes/cursor", restored)
 	}
+	assertNativeWindowsCursor(t, restored, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	if _, err := done(); err != nil {
 		t.Fatalf("first-Ctrl+C bootstrap: %v", err)
 	}
@@ -708,10 +718,11 @@ func TestNativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked(t *tes
 		t.Fatal(err)
 	}
 	control, output, done := startNativeWindowsConsoleBootstrap(t, directory, database, logPath, map[string]string{
-		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP": "1",
-		"CNMON_WINDOWS_PRODUCT_BINARY":    binary,
-		"CNMON_WINDOWS_PRODUCT_ARGS":      string(encodedArgs),
-		"CNMON_WINDOWS_PRODUCT_STDOUT":    stdoutPath,
+		"CNMON_WINDOWS_CONSOLE_BOOTSTRAP":      "1",
+		"CNMON_WINDOWS_PRODUCT_BINARY":         binary,
+		"CNMON_WINDOWS_PRODUCT_ARGS":           string(encodedArgs),
+		"CNMON_WINDOWS_PRODUCT_STDOUT":         stdoutPath,
+		"CNMON_WINDOWS_CONSOLE_CURSOR_FIXTURE": "hidden-custom",
 	})
 	defer control.Close()
 	ready := readNativeWindowsMarker(t, output, "CNMON_WINDOWS_CONSOLE_READY", 20*time.Second)
@@ -722,9 +733,10 @@ func TestNativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked(t *tes
 	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
 		t.Fatalf("parse blocked-display readiness %q: pid=%d err=%v", ready, childPID, err)
 	}
-	if !baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
-		t.Fatalf("blocked-display baseline cursor_visible=%t output_mode=%#x; want visible cursor and VT disabled", baselineCursor, baselineOutput)
+	if baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
+		t.Fatalf("blocked-display baseline cursor_visible=%t output_mode=%#x; want hidden cursor and VT disabled", baselineCursor, baselineOutput)
 	}
+	assertNativeWindowsCursor(t, ready, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	if _, err := waitWindowsRun(t, database, request.Key, func(run history.RunInfo) bool { return run.Status == "running" && run.Rounds > 0 }); err != nil {
 		t.Fatalf("wait for completed round before blocked display: %v", err)
 	}
@@ -807,6 +819,7 @@ func TestNativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked(t *tes
 	if restoredInput != baselineInput || restoredOutput != baselineOutput || restoredCursor != baselineCursor {
 		t.Fatalf("blocked-display emergency restore=%q, want baseline modes/cursor", restored)
 	}
+	assertNativeWindowsCursor(t, restored, nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0})
 	if _, err := done(); err != nil {
 		t.Fatalf("blocked-display bootstrap: %v", err)
 	}
@@ -951,7 +964,17 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 		}
 		t.Fatalf("read private console cursor baseline: %v", cursorErr)
 	}
-	if baselineCursor.Visible == 0 {
+	customHiddenCursor := os.Getenv("CNMON_WINDOWS_CONSOLE_CURSOR_FIXTURE") == "hidden-custom"
+	if customHiddenCursor {
+		baselineCursor = nativeConsoleCursorInfo{Size: nativeWindowsCursorFixtureSize, Visible: 0}
+		cursorResult, _, cursorErr = nativeSetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&baselineCursor)))
+		if cursorResult == 0 {
+			if cursorErr == syscall.Errno(0) {
+				cursorErr = errors.New("SetConsoleCursorInfo failed")
+			}
+			t.Fatalf("set hidden custom-size private console cursor fixture: %v", cursorErr)
+		}
+	} else if baselineCursor.Visible == 0 {
 		baselineCursor.Visible = 1
 		cursorResult, _, cursorErr = nativeSetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&baselineCursor)))
 		if cursorResult == 0 {
@@ -961,10 +984,10 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 			t.Fatalf("normalize private console cursor baseline: %v", cursorErr)
 		}
 	}
-	baselineCursor = nativeConsoleCursorInfo{}
-	cursorResult, _, cursorErr = nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&baselineCursor)))
-	if cursorResult == 0 || baselineCursor.Visible == 0 {
-		t.Fatalf("private console fixture does not have a visible cursor: cursor=%+v error=%v", baselineCursor, cursorErr)
+	var observedCursor nativeConsoleCursorInfo
+	cursorResult, _, cursorErr = nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&observedCursor)))
+	if cursorResult == 0 || observedCursor != baselineCursor {
+		t.Fatalf("private console cursor fixture=%+v, want %+v: %v", observedCursor, baselineCursor, cursorErr)
 	}
 	var initialScreen windows.ConsoleScreenBufferInfo
 	if err := windows.GetConsoleScreenBufferInfo(consoleOut, &initialScreen); err != nil {
@@ -1074,7 +1097,7 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 	_ = stdinFile.Close()
 	_ = stdoutFile.Close()
 	_ = stderrFile.Close()
-	fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%08x output_mode=%08x cursor_visible=%t default_attr=%04x\n", childPID, inputModeBeforeBootstrap, outputModeBeforeBootstrap, baselineCursor.Visible != 0, initialScreen.Attributes)
+	fmt.Fprintf(os.Stdout, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%08x output_mode=%08x cursor_visible=%t default_attr=%04x cursor_size=%d\n", childPID, inputModeBeforeBootstrap, outputModeBeforeBootstrap, baselineCursor.Visible != 0, initialScreen.Attributes, baselineCursor.Size)
 	childDone := make(chan error, 1)
 	go func() { childDone <- childWait() }()
 	childFinished := false
@@ -1690,8 +1713,31 @@ func printNativeWindowsConsoleState(marker string, input, consoleOut windows.Han
 	cursorResult, _, cursorErr := nativeGetConsoleCursor.Call(uintptr(consoleOut), uintptr(unsafe.Pointer(&cursor)))
 	fingerprint, width, height, text, headerAttr, headerFound, fingerprintErr := nativeWindowsConsoleFingerprint(consoleOut)
 	valid := inputErr == nil && outputErr == nil && cursorResult != 0 && fingerprintErr == nil
-	fmt.Fprintf(os.Stdout, "%s state_ok=%t input_mode=%08x output_mode=%08x cursor_visible=%t fingerprint=%016x size=%dx%d table_header=%t stop_note=%t report_header=%t literal_escape=%t header_attr=%04x header_found=%t\n", marker, valid, inputMode, outputMode, cursor.Visible != 0, fingerprint, width, height, strings.Contains(text, "Latest"), strings.Contains(text, "stopping; preparing the final summary"), strings.Contains(text, "Host"), strings.ContainsRune(text, '\x1b'), headerAttr, headerFound)
+	fmt.Fprintf(os.Stdout, "%s state_ok=%t input_mode=%08x output_mode=%08x cursor_visible=%t fingerprint=%016x size=%dx%d table_header=%t stop_note=%t report_header=%t literal_escape=%t header_attr=%04x header_found=%t cursor_size=%d\n", marker, valid, inputMode, outputMode, cursor.Visible != 0, fingerprint, width, height, strings.Contains(text, "Latest"), strings.Contains(text, "stopping; preparing the final summary"), strings.Contains(text, "Host"), strings.ContainsRune(text, '\x1b'), headerAttr, headerFound, cursor.Size)
 	_ = cursorErr
+}
+
+func assertNativeWindowsCursor(t *testing.T, marker string, want nativeConsoleCursorInfo) {
+	t.Helper()
+	if !strings.Contains(marker, fmt.Sprintf("cursor_visible=%t", want.Visible != 0)) {
+		t.Fatalf("cursor visibility in %q does not match want %+v", marker, want)
+	}
+	var size uint32
+	found := false
+	for _, field := range strings.Fields(marker) {
+		if strings.HasPrefix(field, "cursor_size=") {
+			parsed, err := strconv.ParseUint(strings.TrimPrefix(field, "cursor_size="), 10, 32)
+			if err != nil {
+				t.Fatalf("parse cursor size field %q: %v", field, err)
+			}
+			size = uint32(parsed)
+			found = true
+			break
+		}
+	}
+	if !found || size != want.Size {
+		t.Fatalf("cursor metadata in %q has size=%d found=%t, want %+v", marker, size, found, want)
+	}
 }
 
 func writeNativeWindowsConsoleKey(input windows.Handle, char rune, virtualKey uint16, keyDown bool) error {
