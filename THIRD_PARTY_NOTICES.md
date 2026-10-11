@@ -145,8 +145,9 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-The golang.org/x modules above carry identical BSD-3-Clause license text. This
-text follows.
+The BSD-3-Clause text below covers the listed golang.org/x modules and the Go
+runtime and standard library distributed in the cn-mon binaries. The same Go
+license text applies to all of them; it is included once here.
 
 ```text
 Copyright 2009 The Go Authors.
