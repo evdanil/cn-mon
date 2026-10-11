@@ -53,6 +53,32 @@ chmod 755 "$artifact_dir/probe-native.test"
 go -C third_party/pro-bing test -mod=readonly -c -tags=native -o "$artifact_dir/pro-bing-native.test" .
 chmod 755 "$artifact_dir/pro-bing-native.test"
 
+release_command_test="$artifact_dir/cn-mon-release-command.test"
+release_qualify=${CNMON_RELEASE_QUALIFY:-}
+release_command_binary=${CNMON_NATIVE_COMMAND_BINARY:-}
+release_expected_sha=${CNMON_RELEASE_EXPECTED_SHA256:-}
+if [[ $release_qualify == 1 ]]; then
+	[[ $release_command_binary == /* && -f $release_command_binary && -x $release_command_binary && ! -L $release_command_binary ]] || {
+		echo 'release namespace qualification requires an absolute regular extracted command binary' >&2
+		exit 1
+	}
+	[[ ${CNMON_RELEASE_VERSION:-} == 0.1.0 && ${CNMON_RELEASE_REVISION:-} =~ ^[0-9a-f]{40}$ ]] || {
+		echo 'release namespace qualification version/revision inputs are invalid' >&2
+		exit 1
+	}
+	[[ $release_expected_sha =~ ^[0-9a-f]{64}$ ]] || {
+		echo 'release namespace qualification requires a lowercase SHA-256' >&2
+		exit 1
+	}
+	actual_release_sha=$(sha256sum "$release_command_binary" | awk '{print $1}')
+	[[ $actual_release_sha == "$release_expected_sha" ]] || {
+		echo 'extracted command SHA-256 does not match release qualification input' >&2
+		exit 1
+	}
+	CGO_ENABLED=0 go test -c -tags=native -o "$release_command_test" ./cmd/cn-mon
+	chmod 755 "$release_command_test"
+fi
+
 ip_cmd netns add "$ns_probe"
 ip_cmd netns add "$ns_router"
 ip_cmd netns add "$ns_target"
@@ -161,6 +187,48 @@ run_native() {
 		printf '::error title=cn-mon native Linux::%s\n' "$message" >&2
 		return 1
 	fi
+	if [[ $release_qualify == 1 && $privilege == root && ( $phase == echo || $phase == target-error || $phase == intermediate-error ) ]]; then
+		run_release_command_namespace "$phase"
+	fi
+}
+
+run_release_command_namespace() {
+	local phase=$1 log="$artifact_dir/linux-release-command-${1}.log" result actual_sha marker
+	actual_sha=$(sha256sum "$release_command_binary" | awk '{print $1}')
+	[[ $actual_sha == "$release_expected_sha" ]] || {
+		echo 'extracted command changed before namespace role execution' >&2
+		return 1
+	}
+	set +e
+	sudo ip netns exec "$ns_probe" env \
+		CGO_ENABLED=0 CNMON_NATIVE=1 CNMON_NATIVE_COMMAND=1 \
+		CNMON_NATIVE_PHASE="$phase" \
+		CNMON_NATIVE_IPV4_TARGET=198.18.0.6 CNMON_NATIVE_IPV4_ROUTER=198.18.0.2 \
+		CNMON_NATIVE_IPV6_TARGET=fd42:636e:2::6 CNMON_NATIVE_IPV6_ROUTER=fd42:636e:1::2 \
+		CNMON_RELEASE_QUALIFY=1 CNMON_RELEASE_VERSION="$CNMON_RELEASE_VERSION" \
+		CNMON_RELEASE_REVISION="$CNMON_RELEASE_REVISION" \
+		CNMON_RELEASE_EXPECTED_SHA256="$release_expected_sha" \
+		CNMON_NATIVE_COMMAND_BINARY="$release_command_binary" \
+		"$release_command_test" -test.v -test.run '^TestNativeReleaseLinuxNamespaceCommand$' -test.count=1 -test.timeout=90s >"$log" 2>&1
+	result=$?
+	set -e
+	cat "$log"
+	case $phase in
+		echo) marker='CNMON_NATIVE_RELEASE_NAMESPACE phase=echo role=root ipv4=echo ipv6=echo tcp4=open tcp6=open history=finished path=empty' ;;
+		target-error) marker='CNMON_NATIVE_RELEASE_NAMESPACE phase=target-error role=root ipv4=REJECTED ipv6=REJECTED tcp4=open tcp6=open history=finished path=empty' ;;
+		intermediate-error) marker='CNMON_NATIVE_RELEASE_NAMESPACE phase=intermediate-error role=root ipv4=UNREACHABLE ipv6=UNREACHABLE tcp4=open tcp6=open history=finished path=empty' ;;
+		*) echo "unsupported release namespace phase: $phase" >&2; return 1 ;;
+	esac
+	if [[ $result -ne 0 ]] || ! grep -Fq -- '--- PASS: TestNativeReleaseLinuxNamespaceCommand' "$log" || ! grep -Fq -- "$marker" "$log"; then
+		printf 'native extracted release command qualification failed: phase=%s exit=%s required=%s\n' "$phase" "$result" "$marker" >&2
+		tail -n 80 "$log" >&2
+		return 1
+	fi
+	actual_sha=$(sha256sum "$release_command_binary" | awk '{print $1}')
+	[[ $actual_sha == "$release_expected_sha" ]] || {
+		echo 'extracted command changed after namespace role execution' >&2
+		return 1
+	}
 }
 
 run_nested_native
