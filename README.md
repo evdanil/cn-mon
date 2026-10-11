@@ -47,6 +47,8 @@ Help and version exit successfully without reading configuration or opening log,
 go run ./cmd/cn-mon --tcp 443 example.com
 go run ./cmd/cn-mon --format json --tcp 443 example.com
 go run ./cmd/cn-mon --list
+go run ./cmd/cn-mon --rerun REQUEST_ID
+go run ./cmd/cn-mon --rerun REQUEST_ID --every 30s --for 5m
 go run ./cmd/cn-mon --show REQUEST_ID --format md
 go run ./cmd/cn-mon --follow REQUEST_ID
 go run ./cmd/cn-mon --list-runs REQUEST_ID --format table
@@ -56,6 +58,8 @@ go run ./cmd/cn-mon --clear-history
 ```
 
 These history-management commands are available in the 0.2.0 release. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
+
+`--rerun` is part of the next source milestone and is not included in the published 0.2.0 binaries. It accepts the request ID or unique hexadecimal prefix shown by `--list`, then repeats the newest saved run using its stored targets, hosts, ports, interval, and configured duration. `--every` and `--for` replace only the corresponding saved setting; these values start from a fresh run time. The current invocation supplies output, logging, history, retention, and `--since` settings. Rerunning does not read the original input file or stdin, so the saved batch remains usable after that file is removed. Delivery in a future 0.3.0 release remains pending separate qualification.
 
 Deletion checks every affected running run before committing. It refuses the entire operation if any selected run is active or its owner cannot be verified; only a run on this host with a PID conclusively verified dead may be removed while its status is still marked running. `--delete-request` acts on the canonical request group, including all of its runs, so an active sibling prevents deleting the other runs in that group.
 

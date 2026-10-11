@@ -49,7 +49,7 @@ if [[ -n "$(getcap -n "$command_binary")" || -n "$(getcap -n "$test_binary")" ]]
 fi
 
 set +e
-selector='^(TestNativeCommand(LoopbackHistoryJSON|HistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|LinuxPTYQuitRestoresTerminal|LinuxPTYWideTableKeepsTimestampsOnOneRow|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$'
+selector='^(TestNativeCommand(LoopbackHistoryJSON|HistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|LinuxPTYQuitRestoresTerminal|LinuxPTYWideTableKeepsTimestampsOnOneRow|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|RerunSavedBatch|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$'
 if [[ $release_qualify == 1 ]]; then
 	selector=${selector%$} # replace the final anchor before adding qualification cases
 	selector="${selector%)}|TestNativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|FollowDoesNotStopWriter|EndedFollowAllFormats))$"
@@ -118,6 +118,7 @@ required=(
 	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/hard/tostop=false'
 	'--- PASS: TestNativeCommandLinuxPTYBackgroundCleanup/hard/tostop=true'
 	'--- PASS: TestNativeCommandINIHistoryRetention'
+	'--- PASS: TestNativeCommandRerunSavedBatch'
 	'--- PASS: TestNativeCommandPreInputInterrupt'
 	'--- PASS: TestNativeCommandRunSignalsAndSecondInterrupt'
 	'--- PASS: TestNativeCommandPreRunTerminationAndInheritedIgnores'
@@ -125,6 +126,7 @@ required=(
 	'--- PASS: TestNativeCommandClosedStdoutPipeIsQuiet'
 	'CNMON_NATIVE_COMMAND_RESULT'
 	'CNMON_NATIVE_COMMAND_CONFIG ini90=retained cli30=pruned-old-seed recent-round-retained history-path=ini log-path=ini'
+	'CNMON_NATIVE_COMMAND_RERUN actual-command-seed=list-discovery=pass removed-input=replayed tcp=open overrides=10s,10s json-history=agree source-results=preserved invalid-selection=exit2-no-write'
 	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT formats=json,table,csv,md exact-utf8-id=pass request-prefix=pass delete-cascade=pass clear=pass live-owner=protected dead-local-owner=deletable'
 	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT postcommit-report-error=committed-diagnostic=pass exit=3 closed-pipe=quiet missing-clear=no-create'
 	'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT selection=zero-run-success ambiguous-prefix=exit2-no-mutation'

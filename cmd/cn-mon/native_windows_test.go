@@ -396,6 +396,13 @@ func TestNativeCommandWindowsProbePermissionRole(t *testing.T) {
 	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=%s sid=%s icmp=%s exit=%d tcp=open json=pass history=one-round", role, expectedSID, icmpState, wantCode)
 }
 
+func verifyNativeRerunProbeOutcome(t *testing.T, code int, icmpState, stderr string) {
+	t.Helper()
+	if code != 0 || icmpState != "OK" {
+		t.Fatalf("elevated native Windows rerun permission result ICMP=%q exit=%d stderr=%q", icmpState, code, stderr)
+	}
+}
+
 // TestNativePrivateConsoleCtrlCSender is invoked only as a separate helper
 // process. That process detaches from any inherited console before attaching
 // to the one private console identified by the test target PID.

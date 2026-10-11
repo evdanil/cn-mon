@@ -125,6 +125,7 @@ func newLiveLayout(request target.Request) *liveLayout {
 	request.Ports = append([]int(nil), request.Ports...)
 	request.Hosts = append([]string(nil), request.Hosts...)
 	layout := &liveLayout{request: request, index: make(map[string]int, len(request.Hosts))}
+	represented := make([]bool, len(request.Hosts))
 	for i, host := range request.Hosts {
 		layout.index[host] = i
 	}
@@ -134,8 +135,9 @@ func newLiveLayout(request target.Request) *liveLayout {
 			prefix := input.Network.Masked()
 			block := liveBlock{title: prefix.String(), prefix: prefix, count: prefixAddressCount(prefix)}
 			for i, host := range request.Hosts {
-				if address, err := netip.ParseAddr(host); err == nil && prefix.Contains(address) {
+				if address, err := netip.ParseAddr(host); err == nil && prefix.Contains(address) && address.String() == host {
 					block.members = append(block.members, i)
+					represented[i] = true
 				}
 			}
 			layout.blocks = append(layout.blocks, block)
@@ -144,7 +146,13 @@ func newLiveLayout(request target.Request) *liveLayout {
 		for _, host := range input.Hosts {
 			if index, ok := layout.index[host]; ok {
 				hostLabels = append(hostLabels, hostName{text: host, index: index})
+				represented[index] = true
 			}
+		}
+	}
+	for i, host := range request.Hosts {
+		if !represented[i] {
+			hostLabels = append(hostLabels, hostName{text: host, index: i})
 		}
 	}
 	if len(hostLabels) > 0 {

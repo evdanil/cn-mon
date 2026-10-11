@@ -19,6 +19,7 @@ const (
 	modeList
 	modeShow
 	modeFollow
+	modeRerun
 	modeListRuns
 	modeDeleteRun
 	modeDeleteRequest
@@ -237,7 +238,7 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 				modeConflict = true
 			}
 			selectedMode, opts.Mode = modeClearHistory, modeClearHistory
-		case "--show", "--follow":
+		case "--show", "--follow", "--rerun":
 			v, next, err := value(i, inline, hasInline, name)
 			if err != nil {
 				return opts, err
@@ -246,6 +247,8 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 			selected := modeShow
 			if name == "--follow" {
 				selected = modeFollow
+			} else if name == "--rerun" {
+				selected = modeRerun
 			}
 			if selectedMode != 0 && selectedMode != selected {
 				modeConflict = true
@@ -267,7 +270,11 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 		return opts, fmt.Errorf("history modes are mutually exclusive")
 	}
 	if opts.Mode != modeRun {
-		if len(opts.Objects) != 0 || opts.File != nil || len(opts.Ports) != 0 || opts.Every != nil || opts.For != nil {
+		if opts.Mode == modeRerun {
+			if len(opts.Objects) != 0 || opts.File != nil || len(opts.Ports) != 0 {
+				return opts, fmt.Errorf("--rerun does not accept targets, --file, or --tcp")
+			}
+		} else if len(opts.Objects) != 0 || opts.File != nil || len(opts.Ports) != 0 || opts.Every != nil || opts.For != nil {
 			return opts, fmt.Errorf("history modes do not accept targets, --file, --tcp, --every, or --for")
 		}
 		if opts.Mode == modeList && opts.Since != nil {
@@ -276,7 +283,7 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 		if isHistoryManagementMode(opts.Mode) && opts.Since != nil {
 			return opts, fmt.Errorf("history management modes do not accept --since")
 		}
-		if opts.Overrides.HistoryDays != nil {
+		if opts.Overrides.HistoryDays != nil && opts.Mode != modeRerun {
 			return opts, fmt.Errorf("--history-days applies to target runs only")
 		}
 	} else if len(opts.Objects) == 0 && opts.File == nil {
@@ -284,6 +291,9 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 	}
 	if (opts.Mode == modeShow || opts.Mode == modeFollow) && !validRequestID(opts.ID) {
 		return opts, fmt.Errorf("%s requires a 4–64 character hexadecimal request ID", map[commandMode]string{modeShow: "--show", modeFollow: "--follow"}[opts.Mode])
+	}
+	if opts.Mode == modeRerun && !validRequestID(opts.ID) {
+		return opts, fmt.Errorf("--rerun requires a 4–64 character hexadecimal request ID")
 	}
 	if (opts.Mode == modeListRuns || opts.Mode == modeDeleteRequest) && !validRequestID(opts.ID) {
 		name := map[commandMode]string{modeListRuns: "--list-runs", modeDeleteRequest: "--delete-request"}[opts.Mode]

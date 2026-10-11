@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -111,6 +112,21 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		writeCommandDiagnostic(stderr, "cn-mon: cannot resolve configuration: %v\n", err)
 		return 2
 	}
+	var rerun *rerunSelection
+	if opts.Mode == modeRerun {
+		selected, err := selectRerun(hardCtx, cfg.HistoryFile, opts.ID, opts.Every, opts.For, runtime.readDeps)
+		if err != nil {
+			var selectionFailure *rerunSelectionFailure
+			if errors.As(err, &selectionFailure) {
+				writeCommandDiagnostic(stderr, "cn-mon: %s\n", selectionFailure.message)
+				return 2
+			}
+			writeCommandDiagnostic(stderr, "cn-mon: cannot restore saved request: %v\n", err)
+			return 3
+		}
+		rerun = &selected
+		opts.Mode = modeRun
+	}
 	logger, err := openLogger(cfg, configEnv.HomeDir)
 	if err != nil {
 		writeCommandDiagnostic(stderr, "cn-mon: cannot initialize logging: %v\n", err)
@@ -140,11 +156,17 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		return runReaderCLI(opts, stdout, stderr, cfg, logger, logFailure, hardCtx, control, signals, runtime)
 	}
 
-	request, rejected, err := target.Build(objects, opts.Ports)
-	if err != nil {
-		writeCommandDiagnostic(stderr, "cn-mon: invalid target request: %v\n", err)
-		logFailure(logger.Close())
-		return 2
+	var request target.Request
+	var rejected []target.Rejection
+	if rerun != nil {
+		request = rerun.request
+	} else {
+		request, rejected, err = target.Build(objects, opts.Ports)
+		if err != nil {
+			writeCommandDiagnostic(stderr, "cn-mon: invalid target request: %v\n", err)
+			logFailure(logger.Close())
+			return 2
+		}
 	}
 	invalid := len(rejected) != 0
 	if len(request.Hosts) == 0 {
@@ -164,10 +186,16 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	}
 
 	interval := effectiveInterval(opts)
+	duration := opts.For
 	var source *string
 	if opts.File != nil && *opts.File != "-" {
 		base := filepath.Base(*opts.File)
 		source = &base
+	}
+	if rerun != nil {
+		interval = rerun.interval
+		duration = rerun.duration
+		source = cloneString(rerun.source)
 	}
 	requestID, err := uuid.NewRandom()
 	if err != nil {
@@ -184,7 +212,7 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 	plan := monitor.RunPlan{
 		Request:     request,
 		Interval:    interval,
-		Duration:    opts.For,
+		Duration:    duration,
 		Since:       opts.Since,
 		OwnRunOnly:  opts.OwnRunOnly,
 		Source:      source,
@@ -299,6 +327,8 @@ const usageText = `Usage:
   cn-mon --list-runs REQUEST_ID [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --show ID [--since WHEN] [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --follow ID [--since WHEN] [--history-file PATH] [--format FORMAT] [COMMON]
+  cn-mon --rerun REQUEST_ID [--every INTERVAL] [--for DURATION] [--since WHEN]
+         [--history-file PATH] [--history-days DAYS] [--format FORMAT] [COMMON]
   cn-mon --delete-run RUN_ID [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --delete-request REQUEST_ID [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --clear-history [--history-file PATH] [--format FORMAT] [COMMON]
@@ -322,6 +352,7 @@ Run options:
       --history-file PATH Override the history database path
       --history-days DAYS Override history retention for a target run
       --format FORMAT     table, json, csv, or md (default: table)
+      --rerun ID          Repeat the newest saved run for a request ID or unique prefix
 
 History options:
       --list              List stored requests
@@ -339,6 +370,6 @@ on stderr. With terminal input, q stops a run or follow and v switches the run d
 to table view; structured reports go to stdout and live display/status to stderr.
 
 This build includes configuration and logging, target probing and history, list/show/
-follow readers, table/JSON/CSV/Markdown reports, and a best-effort live terminal screen.
+follow readers, saved-batch reruns, table/JSON/CSV/Markdown reports, and a best-effort live terminal screen.
 Supported release targets: Linux and Windows x86-64.
 `

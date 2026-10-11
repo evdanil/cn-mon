@@ -115,6 +115,38 @@ func TestRetainedShortOptionAliases(t *testing.T) {
 	}
 }
 
+func TestParseCLIRerunSelectionAndOverrides(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	got, err := parseCLI([]string{"--rerun", "AbCd1234", "--every", "20s", "--for", "1m", "--since", "0m", "--format", "json"}, start)
+	if err != nil {
+		t.Fatalf("parse rerun: %v", err)
+	}
+	if got.Mode != modeRerun || got.ID != "AbCd1234" || got.Every == nil || *got.Every != 20*time.Second || got.For == nil || *got.For != time.Minute || got.Since == nil || !got.OwnRunOnly || got.Format != "json" {
+		t.Fatalf("rerun options = %#v", got)
+	}
+	got, err = parseCLI([]string{"--rerun", "abcd1234", "--rerun", "FEDC9876"}, start)
+	if err != nil || got.Mode != modeRerun || got.ID != "FEDC9876" {
+		t.Fatalf("repeated rerun should use last value: options=%#v err=%v", got, err)
+	}
+}
+
+func TestParseCLIRerunRejectsInvalidSelectionAndConflicts(t *testing.T) {
+	for _, args := range [][]string{
+		{"--rerun", "abc"},
+		{"--rerun", "xyz12345"},
+		{"--rerun", "abcd1234", "10.0.0.1"},
+		{"--rerun", "abcd1234", "-"},
+		{"--rerun", "abcd1234", "--file", "targets.txt"},
+		{"--rerun", "abcd1234", "--tcp", "443"},
+		{"--rerun", "abcd1234", "--show", "abcd1234"},
+		{"--rerun", "abcd1234", "--list"},
+	} {
+		if _, err := parseCLI(args, time.Now().UTC()); err == nil {
+			t.Errorf("parseCLI(%q) unexpectedly succeeded", args)
+		}
+	}
+}
+
 func TestCLIProcessHelper(t *testing.T) {
 	encoded := os.Getenv("CNMON_TEST_ARGS")
 	if encoded == "" {
