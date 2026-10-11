@@ -4,11 +4,13 @@
 
 ## Download a release
 
-The currently published release is [cn-mon 0.2.0](https://github.com/evdanil/gotest/releases/tag/v0.2.0), published 2026-10-11 from qualified source `968ea23aed5541e86860bde45743ee054ad4a4d8`. It includes [the Linux archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_linux_amd64.tar.gz), [the Windows archive](https://github.com/evdanil/gotest/releases/download/v0.2.0/cn-mon_0.2.0_windows_amd64.zip), and [SHA256SUMS](https://github.com/evdanil/gotest/releases/download/v0.2.0/SHA256SUMS). Its exact-source workflow completed all 13 jobs in [run 38119825919](https://github.com/evdanil/gotest/actions/runs/38119825919). Linux qualification covered granted and denied ICMP permission roles; Windows covered elevated and ordinary roles. Version 0.2.0 includes history management and live display refinements, retains all 30 acceptance mappings, and does not include rerun. Version 0.3.0 is being prepared with rerun and remains pending its separate qualification and publication.
+Download [cn-mon 0.3.0](https://github.com/evdanil/gotest/releases/tag/v0.3.0), published 2026-10-11 from qualified source `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed`: [Linux archive](https://github.com/evdanil/gotest/releases/download/v0.3.0/cn-mon_0.3.0_linux_amd64.tar.gz), [Windows archive](https://github.com/evdanil/gotest/releases/download/v0.3.0/cn-mon_0.3.0_windows_amd64.zip), and [SHA256SUMS](https://github.com/evdanil/gotest/releases/download/v0.3.0/SHA256SUMS). All 13 jobs in [final run 38124176778](https://github.com/evdanil/gotest/actions/runs/38124176778) passed, including native qualification on both platforms and verification of the public tag and asset bytes. Version 0.3.0 includes saved-batch rerun, history management and live display refinements, with all 31 acceptance mappings retained.
+
+Earlier [0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0) and [0.2.0](https://github.com/evdanil/gotest/releases/tag/v0.2.0) sources, tags and assets remain unchanged. Their qualification evidence and the 0.3.0 public hashes are recorded in the [development plan](docs/DEVELOPMENT_PLAN.md).
 
 ### Install cn-mon 0.3.0
 
-After 0.3.0 is published, use its archive and verify the checksum before extracting.
+Download the archive for your platform and verify its checksum before extracting.
 On Linux:
 
 ```sh
@@ -58,9 +60,9 @@ go run ./cmd/cn-mon --delete-request REQUEST_ID
 go run ./cmd/cn-mon --clear-history
 ```
 
-These history-management commands are available in the 0.2.0 release. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
+These history-management commands have been available since 0.2.0. `--list-runs` accepts a request ID or unique hexadecimal prefix and lists its runs. `--delete-run` requires the exact case-sensitive run ID; `--delete-request` accepts a unique request ID prefix. `--clear-history` removes all stored requests and runs. These history-management commands do not probe targets. A missing history file is left unchanged by `--clear-history`; listing a missing request returns exit 1. Deletion reports identify whether the change committed and include the number of deleted requests, runs, rounds, and results.
 
-`--rerun` is merged source functionality intended for 0.3.0 and is not included in the published 0.2.0 binaries. It accepts the request ID or unique hexadecimal prefix shown by `--list`, then repeats the newest saved run using its stored targets, hosts, ports, interval, and configured duration. `--every` and `--for` replace only the corresponding saved setting; these values start from a fresh run time. The current invocation supplies output, logging, history, retention, and `--since` settings. Rerunning does not read the original input file or stdin, so the saved batch remains usable after that file is removed. Version 0.3.0 remains pending separate qualification and publication.
+`--rerun` is available in 0.3.0. It accepts the request ID or unique hexadecimal prefix shown by `--list`, then repeats the newest saved run using its stored targets, hosts, ports, interval, and configured duration. `--every` and `--for` replace only the corresponding saved setting; these values start from a fresh run time. The current invocation supplies output, logging, history, retention, and `--since` settings. Rerunning does not read the original input file or stdin, so the saved batch remains usable after that file is removed.
 
 Deletion checks every affected running run before committing. It refuses the entire operation if any selected run is active or its owner cannot be verified; only a run on this host with a PID conclusively verified dead may be removed while its status is still marked running. `--delete-request` acts on the canonical request group, including all of its runs, so an active sibling prevents deleting the other runs in that group.
 
