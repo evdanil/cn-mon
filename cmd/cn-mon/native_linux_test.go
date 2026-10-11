@@ -248,6 +248,9 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	if err := waitLinuxPTYCommandStatus(database, request.Key, "running", 2*time.Second); err != nil {
 		t.Fatalf("Escape, arrow, or Unicode input unexpectedly stopped the run: %v", err)
 	}
+	if !terminalOutput.waitQuiet(100*time.Millisecond, 2*time.Second) {
+		t.Fatalf("PTY output did not drain before the tiny resize; terminal tail=%q", terminalOutput.tail(2048))
+	}
 	beforeResize := terminalOutput.length()
 	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 2, Col: 3}); err != nil {
 		t.Fatalf("resize PTY to tiny dimensions: %v", err)
@@ -257,6 +260,9 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 	}
 	if !terminalOutput.waitContainsAfter(beforeResize, []byte("…"), 3*time.Second) {
 		t.Fatalf("live screen did not render a cropped frame after resize to a tiny terminal; terminal tail=%q", terminalOutput.tail(2048))
+	}
+	if !terminalOutput.waitQuiet(100*time.Millisecond, 2*time.Second) {
+		t.Fatalf("tiny-size frame did not drain before restoring terminal dimensions; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	beforeResize = terminalOutput.length()
 	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 80}); err != nil {
