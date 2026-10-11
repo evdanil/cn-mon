@@ -189,9 +189,24 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 		}
 		_ = readNativeWindowsMarker(t, output, "CNMON_WINDOWS_KEY_INJECTED", 5*time.Second)
 	}
-	restoredLive := requestNativeWindowsConsoleState(t, control, output)
-	if !strings.Contains(restoredLive, "table_header=true") || !strings.Contains(restoredLive, "state_cell=true") || !strings.Contains(restoredLive, "bottom_footer=true") {
-		t.Fatalf("full-size table/footer did not return after resize: %q", restoredLive)
+	var restoredLive string
+	restoredLiveDeadline := time.Now().Add(5 * time.Second)
+	for {
+		restoredLive = requestNativeWindowsConsoleState(t, control, output)
+		geometryRestored := nativeWindowsMarkerField(restoredLive, "size") == nativeWindowsMarkerField(ready, "size") &&
+			nativeWindowsMarkerField(restoredLive, "buffer_size") == nativeWindowsMarkerField(ready, "buffer_size") &&
+			nativeWindowsMarkerField(restoredLive, "window_left") == nativeWindowsMarkerField(ready, "window_left") &&
+			nativeWindowsMarkerField(restoredLive, "window_top") == nativeWindowsMarkerField(ready, "window_top")
+		liveRestored := strings.Contains(restoredLive, "table_header=true") &&
+			strings.Contains(restoredLive, "state_cell=true") &&
+			strings.Contains(restoredLive, "bottom_footer=true")
+		if geometryRestored && liveRestored {
+			break
+		}
+		if !time.Now().Before(restoredLiveDeadline) {
+			t.Fatalf("full-size table/footer did not return after resize: %q", restoredLive)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if !strings.Contains(restoredLive, "size=") || strings.Contains(restoredLive, "size=3x2") {
 		t.Fatalf("private console did not restore its initial visible size: %q", restoredLive)
