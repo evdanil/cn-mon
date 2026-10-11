@@ -249,18 +249,24 @@ func TestNativeCommandLinuxPTYQuitRestoresTerminal(t *testing.T) {
 		t.Fatalf("Escape, arrow, or Unicode input unexpectedly stopped the run: %v", err)
 	}
 	beforeResize := terminalOutput.length()
-	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 2, Col: 3}); err != nil {
+	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 2, Col: 3}); err != nil {
 		t.Fatalf("resize PTY to tiny dimensions: %v", err)
 	}
-	if !terminalOutput.waitGrowth(beforeResize, 3*time.Second) {
-		t.Fatalf("live screen did not redraw after resize to a tiny terminal; terminal tail=%q", terminalOutput.tail(2048))
+	if size, err := unix.IoctlGetWinsize(int(master.Fd()), unix.TIOCGWINSZ); err != nil || size.Row != 2 || size.Col != 3 {
+		t.Fatalf("PTY did not retain tiny dimensions: size=%+v err=%v", size, err)
+	}
+	if !terminalOutput.waitContainsAfter(beforeResize, []byte("…"), 3*time.Second) {
+		t.Fatalf("live screen did not render a cropped frame after resize to a tiny terminal; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	beforeResize = terminalOutput.length()
-	if err := unix.IoctlSetWinsize(int(slave.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 80}); err != nil {
+	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 80}); err != nil {
 		t.Fatalf("restore PTY dimensions: %v", err)
 	}
-	if !terminalOutput.waitGrowth(beforeResize, 3*time.Second) {
-		t.Fatalf("live screen did not redraw after restoring terminal dimensions; terminal tail=%q", terminalOutput.tail(2048))
+	if size, err := unix.IoctlGetWinsize(int(master.Fd()), unix.TIOCGWINSZ); err != nil || size.Row != 24 || size.Col != 80 {
+		t.Fatalf("PTY did not retain restored dimensions: size=%+v err=%v", size, err)
+	}
+	if !terminalOutput.waitContainsAfter(beforeResize, []byte("Last seen"), 3*time.Second) {
+		t.Fatalf("live screen did not restore the full table after restoring terminal dimensions; terminal tail=%q", terminalOutput.tail(2048))
 	}
 	if _, err := master.Write([]byte("q")); err != nil {
 		t.Fatalf("send q through PTY input: %v", err)
@@ -674,6 +680,26 @@ func (out *nativePTYOutput) waitContains(want []byte, timeout time.Duration) boo
 		time.Sleep(10 * time.Millisecond)
 	}
 	return out.contains(want)
+}
+
+func (out *nativePTYOutput) containsAfter(after int, want []byte) bool {
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if after < 0 || after > len(out.data) {
+		return false
+	}
+	return bytes.Contains(out.data[after:], want)
+}
+
+func (out *nativePTYOutput) waitContainsAfter(after int, want []byte, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if out.containsAfter(after, want) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return out.containsAfter(after, want)
 }
 
 func openNativeLinuxPTY(t *testing.T) (*os.File, *os.File) {
