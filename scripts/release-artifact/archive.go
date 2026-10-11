@@ -109,8 +109,21 @@ func writeArchive(filename string, members []artifactMember, spec targetSpec, mo
 		return fmt.Errorf("create archive: %w", err)
 	}
 	defer file.Close()
+	if err := writeArchiveTo(file, members, spec, modTime); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync archive: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close archive: %w", err)
+	}
+	return nil
+}
+
+func writeArchiveTo(output io.Writer, members []artifactMember, spec targetSpec, modTime time.Time) error {
 	if spec.zip {
-		writer := zip.NewWriter(file)
+		writer := zip.NewWriter(output)
 		if err := writeZIP(writer, members, modTime); err != nil {
 			_ = writer.Close()
 			return err
@@ -119,7 +132,7 @@ func writeArchive(filename string, members []artifactMember, spec targetSpec, mo
 			return fmt.Errorf("finish zip: %w", err)
 		}
 	} else {
-		gzipWriter := gzip.NewWriter(file)
+		gzipWriter := gzip.NewWriter(output)
 		gzipWriter.Name = ""
 		gzipWriter.Comment = ""
 		gzipWriter.ModTime = time.Time{}
@@ -136,12 +149,6 @@ func writeArchive(filename string, members []artifactMember, spec targetSpec, mo
 		if err := gzipWriter.Close(); err != nil {
 			return fmt.Errorf("finish gzip: %w", err)
 		}
-	}
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync archive: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close archive: %w", err)
 	}
 	return nil
 }
@@ -176,10 +183,21 @@ func writeZIP(writer *zip.Writer, members []artifactMember, modTime time.Time) e
 }
 
 func readArchive(filename string, spec targetSpec) (map[string]artifactMember, time.Time, error) {
+	var members map[string]artifactMember
+	var modTime time.Time
+	var err error
 	if spec.zip {
-		return readZIP(filename, spec)
+		members, modTime, err = readZIP(filename, spec)
+	} else {
+		members, modTime, err = readTARGZ(filename, spec)
 	}
-	return readTARGZ(filename, spec)
+	if err != nil {
+		return nil, time.Time{}, err
+	}
+	if err := validateCanonicalArchive(filename, members, spec, modTime); err != nil {
+		return nil, time.Time{}, err
+	}
+	return members, modTime, nil
 }
 
 func readZIP(filename string, spec targetSpec) (map[string]artifactMember, time.Time, error) {
@@ -246,6 +264,21 @@ func readZIP(filename string, spec targetSpec) (map[string]artifactMember, time.
 		return nil, time.Time{}, err
 	}
 	return result, archiveTime, nil
+}
+
+func validateCanonicalArchive(filename string, members map[string]artifactMember, spec targetSpec, modTime time.Time) error {
+	var canonical bytes.Buffer
+	if err := writeArchiveTo(&canonical, mapToMembers(members), spec, modTime); err != nil {
+		return fmt.Errorf("encode canonical archive: %w", err)
+	}
+	actual, err := os.ReadFile(filename)
+	if err != nil {
+		return fmt.Errorf("read archive for canonical comparison: %w", err)
+	}
+	if !bytes.Equal(actual, canonical.Bytes()) {
+		return errors.New("archive bytes do not match normalized canonical encoding")
+	}
+	return nil
 }
 
 func canonicalZipTimeExtra(modified time.Time) []byte {

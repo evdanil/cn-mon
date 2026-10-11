@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -269,6 +270,112 @@ func TestReadTARGZRejectsSecondGZIPMember(t *testing.T) {
 	}
 }
 
+func TestReadZIPRejectsPrefixedArchive(t *testing.T) {
+	spec := targets["windows_amd64"]
+	canonical := filepath.Join(t.TempDir(), spec.archive)
+	members := fixtureMembers(spec, map[string][]byte{
+		"README.md":              []byte("readme"),
+		"LICENSE":                []byte("license"),
+		"THIRD_PARTY_NOTICES.md": []byte("notices"),
+	})
+	if err := writeArchive(canonical, members, spec, time.Date(2026, 10, 11, 1, 7, 26, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	canonicalBytes, err := os.ReadFile(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, container := range map[string]struct{ prefix, suffix []byte }{
+		"plain prefix":            {prefix: []byte("self-extracting prefix")},
+		"zip-signature-shaped":    {prefix: append([]byte("PK\x03\x04"), make([]byte, 26)...)},
+		"trailing container junk": {suffix: []byte("trailing data")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			filename := filepath.Join(t.TempDir(), spec.archive)
+			containerBytes := append(append([]byte(nil), container.prefix...), canonicalBytes...)
+			containerBytes = append(containerBytes, container.suffix...)
+			if err := os.WriteFile(filename, containerBytes, 0644); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := readArchive(filename, spec); err == nil {
+				t.Fatal("ZIP archive with a prefix was accepted")
+			}
+		})
+	}
+}
+
+func TestReadTARGZRejectsNoncanonicalEncoding(t *testing.T) {
+	spec := targets["linux_amd64"]
+	top := archiveTopDir(spec)
+	base := []rawArchiveMember{
+		{name: top + "/LICENSE", mode: 0644, data: []byte("license")},
+		{name: top + "/README.md", mode: 0644, data: []byte("readme")},
+		{name: top + "/THIRD_PARTY_NOTICES.md", mode: 0644, data: []byte("notices")},
+		{name: top + "/" + spec.binary, mode: 0755, data: []byte("binary")},
+	}
+	for _, test := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{name: "nonzero gzip XFL", mutate: func(t *testing.T, filename string) {
+			data, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data[8] = 2
+			if err := os.WriteFile(filename, data, 0644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "regular member linkname", mutate: func(t *testing.T, filename string) {
+			entries := append([]rawArchiveMember(nil), base...)
+			entries[0].linkname = "unexpected-target"
+			writeRawTARGZ(t, filename, entries)
+		}},
+		{name: "nonzero intermember padding", mutate: func(t *testing.T, filename string) {
+			compressed, err := os.ReadFile(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, err := gzip.NewReader(bytes.NewReader(compressed))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tarBytes, err := io.ReadAll(reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := reader.Close(); err != nil {
+				t.Fatal(err)
+			}
+			paddingOffset := 512 + len(base[0].data)
+			tarBytes[paddingOffset] = 1
+			var mutated bytes.Buffer
+			writer := gzip.NewWriter(&mutated)
+			writer.ModTime = time.Time{}
+			writer.OS = 255
+			if _, err := writer.Write(tarBytes); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filename, mutated.Bytes(), 0644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			filename := filepath.Join(t.TempDir(), spec.archive)
+			writeRawTARGZ(t, filename, base)
+			test.mutate(t, filename)
+			if _, _, err := readArchive(filename, spec); err == nil {
+				t.Fatal("noncanonical tar.gz encoding was accepted")
+			}
+		})
+	}
+}
+
 func fixtureMembers(spec targetSpec, docs map[string][]byte) []artifactMember {
 	return []artifactMember{
 		{name: archiveTopDir(spec) + "/" + spec.binary, data: []byte("fixture binary bytes"), mode: binaryMode(spec)},
@@ -289,10 +396,11 @@ func writeFixture(t *testing.T, filename string, data []byte) {
 }
 
 type rawArchiveMember struct {
-	name  string
-	mode  os.FileMode
-	data  []byte
-	extra []byte
+	name     string
+	mode     os.FileMode
+	data     []byte
+	extra    []byte
+	linkname string
 }
 
 func writeRawZIP(t *testing.T, filename string, entries []rawArchiveMember) {
@@ -342,7 +450,7 @@ func writeRawTARGZWithTrailing(t *testing.T, filename string, entries []rawArchi
 		if entry.mode&os.ModeSymlink != 0 {
 			typeflag = tar.TypeSymlink
 		}
-		header := &tar.Header{Name: entry.name, Mode: int64(entry.mode.Perm()), Size: int64(len(entry.data)), ModTime: time.Date(2026, 10, 11, 1, 7, 26, 0, time.UTC), Typeflag: typeflag, Format: tar.FormatUSTAR, Uid: 0, Gid: 0}
+		header := &tar.Header{Name: entry.name, Linkname: entry.linkname, Mode: int64(entry.mode.Perm()), Size: int64(len(entry.data)), ModTime: time.Date(2026, 10, 11, 1, 7, 26, 0, time.UTC), Typeflag: typeflag, Format: tar.FormatUSTAR, Uid: 0, Gid: 0}
 		if typeflag == tar.TypeSymlink {
 			header.Linkname = "target"
 			header.Size = 0
