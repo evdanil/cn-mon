@@ -4,7 +4,7 @@
 
 ## Download a release
 
-Published releases are available from the [GitHub releases page](https://github.com/evdanil/gotest/releases). Each version provides `cn-mon_<version>_linux_amd64.tar.gz` and `cn-mon_<version>_windows_amd64.zip`, plus `SHA256SUMS`. Verify the selected archive before extracting it.
+The [GitHub releases page](https://github.com/evdanil/gotest/releases) is the download location for published versions. Each release provides `cn-mon_<version>_linux_amd64.tar.gz` and `cn-mon_<version>_windows_amd64.zip`, plus `SHA256SUMS`. Verify the selected archive before extracting it.
 
 On Linux, for example:
 

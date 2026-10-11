@@ -1702,15 +1702,16 @@ func runForwardWaitScenario(t *testing.T, duration, initialWork, noteAdvance, ju
 			mono := clock.mono
 			clock.mu.Unlock()
 			if !jumped && mono < jumpAt {
+				if mono+delay == jumpAt {
+					// Set fake time through the jump before publishing the due
+					// timer, so the waiter cannot observe the intermediate slot.
+					clock.Advance(delay + jumpBy)
+					jumped = true
+					waitSteps++
+					continue
+				}
 				clock.Advance(delay)
 				waitSteps++
-				clock.mu.Lock()
-				mono = clock.mono
-				clock.mu.Unlock()
-				if mono == jumpAt {
-					clock.Advance(jumpBy)
-					jumped = true
-				}
 			} else if mono < advanceUntil {
 				clock.Advance(delay)
 				waitSteps++
