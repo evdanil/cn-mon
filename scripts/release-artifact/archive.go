@@ -6,6 +6,7 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -262,10 +263,12 @@ func readTARGZ(filename string, spec targetSpec) (map[string]artifactMember, tim
 		return nil, time.Time{}, fmt.Errorf("open tar.gz: %w", err)
 	}
 	defer file.Close()
-	gzipReader, err := gzip.NewReader(file)
+	compressedReader := bufio.NewReader(file)
+	gzipReader, err := gzip.NewReader(compressedReader)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("read gzip header: %w", err)
 	}
+	gzipReader.Multistream(false)
 	if gzipReader.Name != "" || gzipReader.Comment != "" || !gzipReader.ModTime.IsZero() || gzipReader.OS != 255 || len(gzipReader.Extra) != 0 {
 		_ = gzipReader.Close()
 		return nil, time.Time{}, errors.New("gzip metadata is not normalized")
@@ -277,6 +280,11 @@ func readTARGZ(filename string, spec targetSpec) (map[string]artifactMember, tim
 	}
 	if closeErr != nil {
 		return nil, time.Time{}, fmt.Errorf("finish gzip stream: %w", closeErr)
+	}
+	if _, err := compressedReader.Peek(1); err == nil {
+		return nil, time.Time{}, errors.New("gzip stream has trailing compressed data")
+	} else if !errors.Is(err, io.EOF) {
+		return nil, time.Time{}, fmt.Errorf("check gzip stream boundary: %w", err)
 	}
 	archiveReader := tar.NewReader(bytes.NewReader(decompressed))
 	result := make(map[string]artifactMember, 4)

@@ -237,6 +237,38 @@ func TestReadTARGZRejectsPayloadAfterEndMarker(t *testing.T) {
 	}
 }
 
+func TestReadTARGZRejectsSecondGZIPMember(t *testing.T) {
+	spec := targets["linux_amd64"]
+	top := archiveTopDir(spec)
+	entries := []rawArchiveMember{
+		{name: top + "/LICENSE", mode: 0644, data: []byte("license")},
+		{name: top + "/README.md", mode: 0644, data: []byte("readme")},
+		{name: top + "/THIRD_PARTY_NOTICES.md", mode: 0644, data: []byte("notices")},
+		{name: top + "/" + spec.binary, mode: 0755, data: []byte("binary")},
+	}
+	filename := filepath.Join(t.TempDir(), spec.archive)
+	writeRawTARGZ(t, filename, entries)
+
+	var emptyMember bytes.Buffer
+	emptyWriter := gzip.NewWriter(&emptyMember)
+	if err := emptyWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(emptyMember.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readArchive(filename, spec); err == nil {
+		t.Fatal("tar.gz with a second gzip member was accepted")
+	}
+}
+
 func fixtureMembers(spec targetSpec, docs map[string][]byte) []artifactMember {
 	return []artifactMember{
 		{name: archiveTopDir(spec) + "/" + spec.binary, data: []byte("fixture binary bytes"), mode: binaryMode(spec)},
