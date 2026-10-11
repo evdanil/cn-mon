@@ -46,6 +46,7 @@ var (
 	windowsKernel32      = windows.NewLazySystemDLL("kernel32.dll")
 	procPeekConsoleInput = windowsKernel32.NewProc("PeekConsoleInputW")
 	procReadConsoleInput = windowsKernel32.NewProc("ReadConsoleInputW")
+	procGetCursorInfo    = windowsKernel32.NewProc("GetConsoleCursorInfo")
 	procSetCursorInfo    = windowsKernel32.NewProc("SetConsoleCursorInfo")
 )
 
@@ -65,6 +66,7 @@ type terminalPlatform struct {
 	outputModeSaved bool
 	inputMode       uint32
 	outputMode      uint32
+	originalCursor  *windowsCursorInfo
 }
 
 func (s *Screen) initPlatform() {
@@ -76,6 +78,14 @@ func (s *Screen) initPlatform() {
 	if s.out != nil {
 		p.outHandle = windows.Handle(s.out.Fd())
 		p.outputTTY = term.IsTerminal(int(p.outHandle))
+	}
+	// Capture all cursor metadata before changing either console mode. If the
+	// cursor cannot be queried, output drawing stays disabled so the VT hide
+	// sequence cannot leave the user's cursor in an unrestorable state.
+	if p.outputTTY {
+		if cursor, err := windowsGetConsoleCursorInfo(p.outHandle); err == nil {
+			p.originalCursor = &cursor
+		}
 	}
 	if p.inputTTY {
 		if err := windows.GetConsoleMode(p.inHandle, &p.inputMode); err == nil {
@@ -110,7 +120,7 @@ func (s *Screen) platformInputEnabled() bool {
 
 func (s *Screen) platformEnabled() bool {
 	p := s.platform.(*terminalPlatform)
-	return p.outputTTY && p.outputChanged
+	return p.outputTTY && p.outputChanged && p.originalCursor != nil
 }
 
 func (s *Screen) platformLost() bool {
@@ -213,11 +223,24 @@ func (s *Screen) platformEmergency() {
 
 func (s *Screen) platformShowCursor() {
 	p := s.platform.(*terminalPlatform)
-	if !p.outputModeSaved || p.outHandle == windows.InvalidHandle {
+	original := p.originalCursor
+	if original == nil || p.outHandle == windows.InvalidHandle {
 		return
 	}
-	cursor := windowsCursorInfo{Size: 25, Visible: 1}
+	cursor := *original
 	_, _, _ = procSetCursorInfo.Call(uintptr(p.outHandle), uintptr(unsafe.Pointer(&cursor)))
+}
+
+func windowsGetConsoleCursorInfo(handle windows.Handle) (windowsCursorInfo, error) {
+	var cursor windowsCursorInfo
+	result, _, callErr := procGetCursorInfo.Call(uintptr(handle), uintptr(unsafe.Pointer(&cursor)))
+	if result == 0 {
+		if callErr == syscall.Errno(0) {
+			callErr = syscall.EINVAL
+		}
+		return windowsCursorInfo{}, callErr
+	}
+	return cursor, nil
 }
 
 // Windows console writes do not use Unix terminal job-control semantics.
