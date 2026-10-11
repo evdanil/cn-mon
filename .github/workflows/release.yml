@@ -1,0 +1,373 @@
+name: release qualification
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        type: choice
+        options:
+          - 0.1.0
+      revision:
+        description: Exact merged commit on main (40 lowercase hex characters)
+        required: true
+        type: string
+      publish:
+        description: Publish this qualified merged revision as v0.1.0
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  select-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      repository: ${{ steps.select.outputs.repository }}
+      revision: ${{ steps.select.outputs.revision }}
+      version: ${{ steps.select.outputs.version }}
+      commit_unix: ${{ steps.select.outputs.commit_unix }}
+    steps:
+      - name: Check out the candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || inputs.revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: select
+        name: Validate exact source and release inputs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_REVISION: ${{ github.event.pull_request.head.sha }}
+          PR_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          INPUT_REVISION: ${{ inputs.revision }}
+          INPUT_VERSION: ${{ inputs.version }}
+          PUBLISH: ${{ inputs.publish }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ $EVENT_NAME == pull_request ]]; then
+            revision=$PR_REVISION
+            repository=$PR_REPOSITORY
+            version=0.1.0
+            [[ $PUBLISH != true ]] || { echo 'pull requests cannot publish' >&2; exit 1; }
+          elif [[ $EVENT_NAME == workflow_dispatch ]]; then
+            revision=$INPUT_REVISION
+            repository=$REPOSITORY
+            version=$INPUT_VERSION
+            [[ $version == 0.1.0 ]] || { echo 'unsupported release version' >&2; exit 1; }
+            [[ $revision =~ ^[0-9a-f]{40}$ ]] || { echo 'revision must be exactly 40 lowercase hexadecimal characters' >&2; exit 1; }
+            if [[ $PUBLISH == true && $WORKFLOW_REF != refs/heads/main ]]; then
+              echo 'publication must be dispatched from main' >&2
+              exit 1
+            fi
+            git show-ref --verify --quiet refs/remotes/origin/main || { echo 'checkout did not fetch origin/main' >&2; exit 1; }
+            git cat-file -e "$revision^{commit}"
+            git merge-base --is-ancestor "$revision" origin/main || { echo 'revision is not committed on main' >&2; exit 1; }
+          else
+            echo "unsupported trigger: $EVENT_NAME" >&2
+            exit 1
+          fi
+          [[ $revision =~ ^[0-9a-f]{40}$ ]] || { echo 'selected revision is not a full lowercase commit SHA' >&2; exit 1; }
+          [[ -n $repository ]] || { echo 'selected source repository is unavailable' >&2; exit 1; }
+          [[ $(git rev-parse HEAD) == "$revision" ]] || { echo 'checkout does not match selected revision' >&2; exit 1; }
+          [[ -z $(git status --porcelain --untracked-files=all) ]] || { echo 'selected checkout is not clean' >&2; exit 1; }
+          commit_unix=$(git show -s --format=%ct "$revision")
+          [[ $commit_unix =~ ^[0-9]+$ ]] || { echo 'selected commit has no valid timestamp' >&2; exit 1; }
+          {
+            echo "repository=$repository"
+            echo "revision=$revision"
+            echo "version=$version"
+            echo "commit_unix=$commit_unix"
+          } >> "$GITHUB_OUTPUT"
+          echo "selected source: $repository@$revision"
+
+  native-source:
+    needs: select-source
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/native.yml
+    with:
+      source_ref: ${{ needs.select-source.outputs.revision }}
+      source_repository: ${{ needs.select-source.outputs.repository }}
+    permissions:
+      contents: read
+
+  qualify-linux:
+    needs: [select-source, native-source]
+    if: ${{ always() && needs.select-source.result == 'success' && (github.event_name == 'pull_request' || needs.native-source.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ needs.select-source.outputs.repository }}
+          ref: ${{ needs.select-source.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Install isolated native test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes iproute2 iptables util-linux libcap2-bin
+      - name: Build, package, extract, and qualify the exact Linux binary
+        env:
+          CNMON_RELEASE_VERSION: ${{ needs.select-source.outputs.version }}
+          CNMON_RELEASE_REVISION: ${{ needs.select-source.outputs.revision }}
+          CNMON_RELEASE_COMMIT_UNIX: ${{ needs.select-source.outputs.commit_unix }}
+          CNMON_RELEASE_ARTIFACT_DIR: ${{ runner.temp }}/cn-mon-release-linux
+        run: scripts/qualify-release-linux.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-release-linux-${{ needs.select-source.outputs.revision }}
+          path: ${{ runner.temp }}/cn-mon-release-linux
+          if-no-files-found: error
+          retention-days: 30
+
+  qualify-windows:
+    needs: [select-source, native-source]
+    if: ${{ always() && needs.select-source.result == 'success' && (github.event_name == 'pull_request' || needs.native-source.result == 'success') }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ needs.select-source.outputs.repository }}
+          ref: ${{ needs.select-source.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Build, package, extract, and qualify the exact Windows binary
+        shell: pwsh
+        env:
+          CNMON_RELEASE_VERSION: ${{ needs.select-source.outputs.version }}
+          CNMON_RELEASE_REVISION: ${{ needs.select-source.outputs.revision }}
+          CNMON_RELEASE_COMMIT_UNIX: ${{ needs.select-source.outputs.commit_unix }}
+          CNMON_RELEASE_ARTIFACT_DIR: ${{ runner.temp }}\cn-mon-release-windows
+        run: ./scripts/qualify-release-windows.ps1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cn-mon-release-windows-${{ needs.select-source.outputs.revision }}
+          path: ${{ runner.temp }}\cn-mon-release-windows
+          if-no-files-found: error
+          retention-days: 30
+
+  assemble-assets:
+    needs: [select-source, native-source, qualify-linux, qualify-windows]
+    if: ${{ always() && needs.select-source.result == 'success' && needs.qualify-linux.result == 'success' && needs.qualify-windows.result == 'success' && (github.event_name == 'pull_request' || needs.native-source.result == 'success') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cn-mon-release-linux-${{ needs.select-source.outputs.revision }}
+          path: ${{ runner.temp }}/qualification-linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cn-mon-release-windows-${{ needs.select-source.outputs.revision }}
+          path: ${{ runner.temp }}/qualification-windows
+      - name: Verify both native receipts and assemble the exact three assets
+        env:
+          REVISION: ${{ needs.select-source.outputs.revision }}
+          VERSION: ${{ needs.select-source.outputs.version }}
+          LINUX_DIR: ${{ runner.temp }}/qualification-linux
+          WINDOWS_DIR: ${{ runner.temp }}/qualification-windows
+          ASSET_DIR: ${{ runner.temp }}/release-assets
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re
+          revision, version = os.environ['REVISION'], os.environ['VERSION']
+          asset_dir = pathlib.Path(os.environ['ASSET_DIR'])
+          asset_dir.mkdir(parents=True, exist_ok=False)
+          expected = [
+              (pathlib.Path(os.environ['LINUX_DIR']), 'linux_amd64', 'cn-mon_0.1.0_linux_amd64.tar.gz'),
+              (pathlib.Path(os.environ['WINDOWS_DIR']), 'windows_amd64', 'cn-mon_0.1.0_windows_amd64.zip'),
+          ]
+          lines = []
+          for directory, target, filename in expected:
+              archive = directory / filename
+              receipt_path = directory / 'qualification.json'
+              if not archive.is_file() or not receipt_path.is_file():
+                  raise SystemExit(f'missing required {target} archive or qualification receipt')
+              receipt = json.loads(receipt_path.read_text())
+              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+              if (receipt.get('version'), receipt.get('revision'), receipt.get('target'), receipt.get('archive'), receipt.get('archive_sha256')) != (version, revision, target, filename, digest):
+                  raise SystemExit(f'{target} qualification receipt does not match its exact archive/source')
+              (asset_dir / filename).write_bytes(archive.read_bytes())
+              lines.append(f'{digest}  {filename}')
+          lines.sort(key=lambda line: line.split('  ', 1)[1])
+          if len(lines) != 2 or any(not re.fullmatch(r'[0-9a-f]{64}  [A-Za-z0-9_.-]+', line) for line in lines):
+              raise SystemExit('asset set is not exactly two lowercase digest/filename entries')
+          (asset_dir / 'SHA256SUMS').write_text('\n'.join(lines) + '\n', encoding='ascii', newline='\n')
+          if sorted(p.name for p in asset_dir.iterdir()) != sorted(['SHA256SUMS', *(line.split('  ', 1)[1] for line in lines)]):
+              raise SystemExit('assembled publication asset directory has an unexpected file')
+          print('CNMON_RELEASE_ASSETS archives=2 checksums=2 sorted=pass receipt=pass')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish == true && needs.native-source.result == 'success' && needs.qualify-linux.result == 'success' && needs.qualify-windows.result == 'success' && needs.assemble-assets.result == 'success' }}
+    needs: [select-source, native-source, qualify-linux, qualify-windows, assemble-assets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cn-mon-release-assets-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-assets
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cn-mon-release-linux-${{ needs.select-source.outputs.revision }}
+          path: ${{ runner.temp }}/qualification-linux
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cn-mon-release-windows-${{ needs.select-source.outputs.revision }}
+          path: ${{ runner.temp }}/qualification-windows
+      - name: Revalidate receipts and asset bytes
+        env:
+          REVISION: ${{ needs.select-source.outputs.revision }}
+          VERSION: ${{ needs.select-source.outputs.version }}
+          ASSET_DIR: ${{ runner.temp }}/release-assets
+          LINUX_DIR: ${{ runner.temp }}/qualification-linux
+          WINDOWS_DIR: ${{ runner.temp }}/qualification-windows
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re
+          root = pathlib.Path(os.environ['ASSET_DIR'])
+          revision, version = os.environ['REVISION'], os.environ['VERSION']
+          expected = ['cn-mon_0.1.0_linux_amd64.tar.gz', 'cn-mon_0.1.0_windows_amd64.zip']
+          sums = (root / 'SHA256SUMS').read_text(encoding='ascii').splitlines()
+          if len(sums) != 2 or [line.split('  ', 1)[-1] for line in sums] != expected:
+              raise SystemExit('SHA256SUMS does not list exactly the two sorted expected assets')
+          for directory, target, filename, line in [
+              (pathlib.Path(os.environ['LINUX_DIR']), 'linux_amd64', expected[0], sums[0]),
+              (pathlib.Path(os.environ['WINDOWS_DIR']), 'windows_amd64', expected[1], sums[1]),
+          ]:
+              archive = root / filename
+              receipt = json.loads((directory / 'qualification.json').read_text())
+              digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+              if line != f'{digest}  {filename}' or not re.fullmatch(r'[0-9a-f]{64}', digest):
+                  raise SystemExit(f'asset digest mismatch: {filename}')
+              if (receipt.get('version'), receipt.get('revision'), receipt.get('target'), receipt.get('archive'), receipt.get('archive_sha256')) != (version, revision, target, filename, digest):
+                  raise SystemExit(f'qualification receipt mismatch: {target}')
+          allowed = set(expected + ['SHA256SUMS'])
+          if {path.name for path in root.iterdir()} != allowed:
+              raise SystemExit('publication artifact contains files outside the exact three-asset contract')
+          print('CNMON_RELEASE_PUBLICATION_INPUTS revision=pass receipts=2 hashes=pass asset_count=3')
+          PY
+      - name: Create and verify draft, then publish exact qualified bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REVISION: ${{ needs.select-source.outputs.revision }}
+          VERSION: ${{ needs.select-source.outputs.version }}
+          ASSET_DIR: ${{ runner.temp }}/release-assets
+          LINUX_DIR: ${{ runner.temp }}/qualification-linux
+          WINDOWS_DIR: ${{ runner.temp }}/qualification-windows
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" == 0.1.0 && "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          tag="v$VERSION"
+          set +e
+          tag_lookup=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" 2>&1)
+          lookup_status=$?
+          set -e
+          if [[ $lookup_status -eq 0 ]]; then
+            echo "tag $tag already exists; release tags are never moved or overwritten" >&2
+            exit 1
+          fi
+          if [[ $tag_lookup != *'HTTP 404'* ]]; then
+            echo "could not prove that tag $tag is absent: $tag_lookup" >&2
+            exit 1
+          fi
+          review_url=$(gh api "repos/$GITHUB_REPOSITORY/commits/$REVISION/pulls" --jq "map(select(.merged_at != null and .base.ref == \"main\" and .merge_commit_sha == \"$REVISION\")) | first | .html_url // empty")
+          [[ -n $review_url ]] || { echo 'could not identify the merged pull request for the qualified revision' >&2; exit 1; }
+          notes="$RUNNER_TEMP/release-notes.md"
+          REVIEW_URL="$review_url" python3 - "$notes" <<'PY'
+          import json, os, pathlib, sys
+          linux = json.loads(pathlib.Path(os.environ['LINUX_DIR'], 'qualification.json').read_text())
+          windows = json.loads(pathlib.Path(os.environ['WINDOWS_DIR'], 'qualification.json').read_text())
+          revision, version = os.environ['REVISION'], os.environ['VERSION']
+          if linux.get('revision') != revision or windows.get('revision') != revision:
+              raise SystemExit('release-note receipts do not match selected source')
+          content = '\n'.join([
+              f'# cn-mon {version}',
+              '',
+              f'Qualified source revision: `{revision}`.',
+              '',
+              f"Native qualification used Go {linux['go']} on {linux['os']} and {windows['go']} on Windows runner {windows['os']} ({windows['os_image']}). Linux granted role: `{linux['linux_granted_role']}`. Linux denied role: `{linux['linux_denied_role']}`. Windows elevated role: `{windows['windows_elevated_role']}`. Windows ordinary role: `{windows['windows_ordinary_role']}`. Required command, native probe, history, report, terminal, and extracted-binary markers passed on both target operating systems. See [the complete qualification run and retained logs](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}).",
+              'Online periods are sampled, not a claim of uninterrupted availability: a seen sample starts or extends a period, a completed not-seen sample closes it, and coverage gaps can split periods. The monitor reads and continues compatible Python-produced schema-1 history; custom Python process-data hooks are outside this native command scope. Approved compatibility exceptions include removal of interactive prompts, XLSX/report-file output and Python hooks, plus Linux graceful SIGTERM/SIGHUP, inherited ignored SIGHUP/SIGINT and the documented standard-Go inherited-SIGTERM exception.',
+              'This release follows the reviewed M6 specification and implementation plan. The merged source commit and qualification evidence are linked below; review approval was completed before release qualification.',
+              f"Review and source: [merged pull request]({os.environ['REVIEW_URL']}), [M6 merge commit]({os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/commit/{revision}), [application specification](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/APPLICATION_SPEC.md), and [development plan/evidence](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/DEVELOPMENT_PLAN.md).",
+              '',
+              f"Downloads: [README and usage](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/README.md), [application specification](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/APPLICATION_SPEC.md), and [development plan/evidence](https://github.com/{os.environ['GITHUB_REPOSITORY']}/blob/{revision}/docs/DEVELOPMENT_PLAN.md).",
+              '',
+              'Verify downloaded archives with `sha256sum --check SHA256SUMS` (or compare each Windows archive SHA-256 with `Get-FileHash`).',
+          ]) + '\n'
+          pathlib.Path(sys.argv[1]).write_text(content, encoding='utf-8', newline='\n')
+          PY
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$tag" -f "sha=$REVISION" >/dev/null
+          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')
+          tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type')
+          [[ $tag_type == commit && $tag_object == "$REVISION" ]] || { echo 'new release tag does not point directly to the qualified revision' >&2; exit 1; }
+          gh release create "$tag" "$ASSET_DIR/cn-mon_0.1.0_linux_amd64.tar.gz" "$ASSET_DIR/cn-mon_0.1.0_windows_amd64.zip" "$ASSET_DIR/SHA256SUMS" --draft --verify-tag --title "cn-mon $VERSION" --notes-file "$notes"
+
+          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')
+          tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type')
+          if [[ $tag_type == tag ]]; then tag_target=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.object.sha'); else tag_target=$tag_object; fi
+          [[ $tag_target == "$REVISION" ]] || { echo 'draft tag target differs from qualified revision' >&2; exit 1; }
+
+          verify_dir="$RUNNER_TEMP/remote-draft-assets"
+          mkdir -p "$verify_dir"
+          gh release download "$tag" --dir "$verify_dir"
+          python3 - "$ASSET_DIR" "$verify_dir" <<'PY'
+          import hashlib, pathlib, sys
+          source, remote = map(pathlib.Path, sys.argv[1:])
+          names = {'cn-mon_0.1.0_linux_amd64.tar.gz', 'cn-mon_0.1.0_windows_amd64.zip', 'SHA256SUMS'}
+          if {p.name for p in remote.iterdir()} != names: raise SystemExit('draft has unexpected or missing assets')
+          for name in names:
+              if hashlib.sha256((source/name).read_bytes()).digest() != hashlib.sha256((remote/name).read_bytes()).digest():
+                  raise SystemExit(f'draft asset differs from qualified bytes: {name}')
+          PY
+          gh release edit "$tag" --draft=false
+          tag_object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')
+          tag_type=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.type')
+          if [[ $tag_type == tag ]]; then tag_target=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object" --jq '.object.sha'); else tag_target=$tag_object; fi
+          [[ $tag_target == "$REVISION" ]] || { echo 'published tag target differs from qualified revision' >&2; exit 1; }
+          published_dir="$RUNNER_TEMP/published-assets"
+          mkdir -p "$published_dir"
+          gh release download "$tag" --dir "$published_dir"
+          python3 - "$ASSET_DIR" "$published_dir" <<'PY'
+          import hashlib, pathlib, sys
+          source, remote = map(pathlib.Path, sys.argv[1:])
+          names = {'cn-mon_0.1.0_linux_amd64.tar.gz', 'cn-mon_0.1.0_windows_amd64.zip', 'SHA256SUMS'}
+          if {p.name for p in remote.iterdir()} != names: raise SystemExit('published release has unexpected or missing assets')
+          for name in names:
+              if hashlib.sha256((source/name).read_bytes()).digest() != hashlib.sha256((remote/name).read_bytes()).digest():
+                  raise SystemExit(f'published asset differs from qualified bytes: {name}')
+          PY
+          gh release view "$tag" --json url --jq .url

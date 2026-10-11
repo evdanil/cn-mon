@@ -17,6 +17,7 @@ import (
 )
 
 var version = "dev"
+var revision = ""
 
 func main() {
 	ignoreStdoutSIGPIPE()
@@ -54,7 +55,11 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		fmt.Fprint(stdout, usageText)
 		return 0
 	case modeVersion:
-		fmt.Fprintf(stdout, "cn-mon %s\n", version)
+		if revision == "" {
+			fmt.Fprintf(stdout, "cn-mon %s\n", version)
+		} else {
+			fmt.Fprintf(stdout, "cn-mon %s (%s)\n", version, revision)
+		}
 		return 0
 	}
 	if stdin == nil {

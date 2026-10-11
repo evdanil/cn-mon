@@ -1,6 +1,34 @@
 # cn-mon
 
-`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. M1–M3 are merged; M3 merged in [PR 10](https://github.com/evdanil/gotest/pull/10) after all 12 checks passed and external review reported no remaining findings. M4 is merged in [PR 11](https://github.com/evdanil/gotest/pull/11) at `e54f4266177eb1319d9216c79809ced7e05f078d`; [all 16 checks passed](https://github.com/evdanil/gotest/actions/runs/38089907904), and [external review found no remaining issues](https://github.com/evdanil/gotest/pull/11#issuecomment-6102685974). M4 initially enabled target runs only with explicit `--format json`. Open [PR 12](https://github.com/evdanil/gotest/pull/12) implements table/JSON/CSV/Markdown reports, list/show/follow readers and best-effort live terminal controls. The complete expanded native suites passed at `704a787`, but a later [PR run](https://github.com/evdanil/gotest/actions/runs/38098979185) failed a Linux background-cleanup capture assertion. The test-only collector correction has independent approval and native regression evidence. Current-revision native checks, the latest external review and M5 merge remain pending. Exact evidence and remaining limitations are recorded in the [development plan](docs/DEVELOPMENT_PLAN.md).
+`cn-mon` is a native Go network monitor for Linux x86-64 and Windows x86-64. It supports target runs, read-only history listing and inspection, follow mode, JSON/CSV/Markdown/table reports, and best-effort native terminal controls. See the [development plan](docs/DEVELOPMENT_PLAN.md) for implementation evidence and release qualification details.
+
+## Download a release
+
+The [GitHub releases page](https://github.com/evdanil/gotest/releases) is the download location for published versions. Each release provides `cn-mon_<version>_linux_amd64.tar.gz` and `cn-mon_<version>_windows_amd64.zip`, plus `SHA256SUMS`. Verify the selected archive before extracting it.
+
+On Linux, for example:
+
+```sh
+line=$(grep -F '  cn-mon_0.1.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
+test "$(printf '%s\n' "$line" | wc -l)" -eq 1 || exit 1
+printf '%s\n' "$line" | sha256sum --check - || exit 1
+tar -xzf cn-mon_0.1.0_linux_amd64.tar.gz
+./cn-mon_0.1.0_linux_amd64/cn-mon --version
+```
+
+On Windows PowerShell:
+
+```powershell
+$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.1.0_windows_amd64.zip') })
+if ($lines.Count -ne 1) { throw 'Windows archive checksum is missing or duplicated' }
+$expected = ($lines[0] -split '\s+', 2)[0]
+$actual = (Get-FileHash .\cn-mon_0.1.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($actual -cne $expected) { throw 'Windows archive checksum mismatch' }
+Expand-Archive .\cn-mon_0.1.0_windows_amd64.zip .\cn-mon
+.\cn-mon\cn-mon_0.1.0_windows_amd64\cn-mon.exe --version
+```
+
+Release binaries identify their version and full source revision with `cn-mon <version> (<revision>)`; a source build reports `cn-mon dev`. The archives include the matching README, Apache-2.0 license, and third-party notices.
 
 ## Current CLI
 
@@ -25,7 +53,7 @@ Target runs collect input, resolve configuration and logging, probe targets, wri
 
 Live terminal setup is best-effort: a setup or drawing failure does not prevent useful reports or history following. The program restores terminal modes and cursor state on normal completion, graceful stop, and Linux job-control suspension; it rearms input after returning to the foreground. Windows restoration preserves the original cursor visibility and size. If that state cannot be captured, live drawing stays disabled while eligible keys and reports remain available. On Linux, an ordinary diagnostic is omitted when its destination is the controlling terminal, the process is in the background, and that terminal has `TOSTOP` enabled; uncertain terminal job-control state also makes that physical write best-effort silent. Redirected diagnostics, file logging, report generation, and exit status remain available.
 
-For scheduled runs resuming after system suspension, M4 retains the selected slot through ordinary timer jitter, then reselects the first aligned slot at or after the corrected run time once the following slot has arrived. It skips expired slots rather than replaying them. This is an explicit native correction to the pinned Python implementation's overdue-wait behavior, not a claim of Python parity.
+Scheduled runs remain anchored to their start time. After system suspension, ordinary timer jitter retains the selected slot; once a later slot has arrived, the next run uses the first aligned slot at or after the corrected time and skips expired slots instead of replaying them.
 
 ## Build and test
 
@@ -63,63 +91,30 @@ Pop-Location
 
 Race tests require a CGO-capable C compiler; the CI race checks run on Linux.
 The adapted core has its own module files, so vet and test it separately as
-shown above. Run its race test on Linux with CGO enabled. The native ICMP gate
-must also be run on the target operating system; cross-compilation alone does
-not establish runtime support:
+shown above.
 
-```bash
-# Linux: run from the repository root on a disposable host with sudo access.
+Native integration must run on the target operating system; cross-compilation
+alone does not establish runtime support. The Linux harness exercises network
+namespaces and raw-socket permission roles and requires `sudo`, `ip`,
+`iptables`, `ip6tables`, and `setpriv`:
+
+```sh
 scripts/test-native-linux.sh
 ```
 
-The Linux harness requires `sudo`, `ip`, `iptables`, `ip6tables`, and
-`setpriv`; it creates disposable network namespaces and exercises both
-privileged and denied raw-socket phases. On Windows, use an elevated PowerShell
-session on a disposable test machine:
+The Windows harness requires elevated PowerShell on a disposable test machine;
+it creates scoped loopback aliases, firewall rules, and a temporary ordinary
+user account:
 
 ```powershell
 ./scripts/test-native-windows.ps1
 ```
 
-The Windows harness requires administrator rights to add and remove scoped
-loopback aliases and firewall rules, and to create and remove a temporary
-unprivileged test account. Both scripts log phase evidence and clean up their
-temporary network state. The native Linux gate passed its echo, target-error,
-intermediate-error, and raw-socket permission phases. The Windows native gate
-also passed its required probe and permission phases. Both results, along with
-the ordinary Linux and Windows validation jobs, are recorded in [CI run
-38037349729](https://github.com/evdanil/gotest/actions/runs/38037349729):
-[Linux native](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451322),
-[Windows native](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451856),
-[Linux checks](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451464),
-and [Windows checks](https://github.com/evdanil/gotest/actions/runs/38037349729/job/114170451412).
-The job artifacts contain the native phase logs and platform details. Package
-tests and cross-compilation alone do not establish native network support or
-raw ICMP permission behavior. See [third-party notices](THIRD_PARTY_NOTICES.md)
-for source provenance and license details.
-CI also runs `govulncheck` v1.8.0 against the Linux and Windows production
-package imports using the official Go vulnerability database.
-
-The M4 built-command checks exercise the compiled CLI and are separate from the
-probe-package gates above. In [PR run 38089907904](https://github.com/evdanil/gotest/actions/runs/38089907904), the hosted Linux command gate passed [job 114324033360](https://github.com/evdanil/gotest/actions/runs/38089907904/job/114324033360) with granted and capability-denied ICMP roles, and the hosted Windows command gate passed [job 114324033125](https://github.com/evdanil/gotest/actions/runs/38089907904/job/114324033125) with elevated and ordinary roles. The strict gates preserve real JSON, TCP, completed history, cancellation, and closed-pipe behavior. Windows verifies the expected SID, elevation, and enabled Administrators membership in both the test process and its actual child; ordinary ICMP may succeed or return structurally verified permission denial.
-On Linux, the standard Go runtime resets an inherited ignored `SIGTERM` before
-`main`; the command therefore keeps default pre-run `SIGTERM` behavior while
-handling `SIGTERM` gracefully during a run. Inherited ignored `SIGHUP` and
-`SIGINT` remain honored.
-Run them only on disposable target-OS machines with the required privileges:
-
-```sh
-# Linux: sudo, setpriv, and getcap must be available.
-scripts/test-native-command-linux.sh
-```
-
-```powershell
-# Windows: elevated PowerShell on a disposable machine.
-./scripts/test-native-command-windows.ps1
-```
-
-M4 native command gates passed at the merged code head. Cross-compilation and
-component tests alone do not replace those runtime gates.
+Both harnesses retain phase logs and clean up their temporary network state.
+The [development plan](docs/DEVELOPMENT_PLAN.md) links the milestone evidence,
+review history, and current release-qualification status. See
+[third-party notices](THIRD_PARTY_NOTICES.md) for source provenance and license
+details.
 
 ## History foundation
 
@@ -193,6 +188,6 @@ Configuration layers, from lower to higher precedence, are built-in defaults, `.
 
 ## Compatibility and license
 
-The planned utility retains cn-tool's built-in monitor behavior and compatible `.cn` settings for history, theme, and logging. It excludes the interactive menu, XLSX reports, Python runtime, `process_data` hooks, and custom Python plugins. The planned monitor uses native Go ICMP support and will not call a system `ping` command.
+The utility retains cn-tool's built-in monitor behavior and compatible `.cn` settings for history, theme, and logging. It excludes the interactive menu, XLSX reports, Python runtime, `process_data` hooks, and custom Python plugins. It uses native Go ICMP support and does not call a system `ping` command.
 
 New utility code is licensed under Apache-2.0. Its behavior is characterized against cn-tool commit [`2e2f3c40ef6718486f1ca4477f9145029ec495fa`](https://github.com/evdanil/cn-tool/tree/2e2f3c40ef6718486f1ca4477f9145029ec495fa); provenance notes describe the adapted behavior, and no Python implementation code is copied. See [LICENSE](LICENSE), the [application specification](docs/APPLICATION_SPEC.md), and the [development plan](docs/DEVELOPMENT_PLAN.md).

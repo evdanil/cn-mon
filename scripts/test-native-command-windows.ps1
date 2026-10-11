@@ -16,6 +16,9 @@ $testExe = Join-Path $artifactDir 'cn-mon-command.test.exe'
 $commandExe = Join-Path $artifactDir 'cn-mon.exe'
 $createdUser = $null
 $exitCode = 0
+$releaseQualify = $env:CNMON_RELEASE_QUALIFY -eq '1'
+$releaseSource = $env:CNMON_NATIVE_COMMAND_BINARY
+$releaseExpectedSha = $env:CNMON_RELEASE_EXPECTED_SHA256
 
 function Write-Log([string] $Text) {
     $line = "$(Get-Date -Format o) $Text"
@@ -84,14 +87,44 @@ try {
     if (-not $admin) { throw 'native Windows command gate requires the hosted elevated runner' }
 
     $env:CGO_ENABLED = '0'
-    & go build -o $commandExe ./cmd/cn-mon
-    if ($LASTEXITCODE -ne 0) { throw "native cn-mon build failed with exit $LASTEXITCODE" }
+    if ($releaseSource) {
+        if (-not [IO.Path]::IsPathRooted($releaseSource)) { throw 'CNMON_NATIVE_COMMAND_BINARY must be absolute' }
+        $releaseSource = [IO.Path]::GetFullPath($releaseSource)
+        if (-not [IO.Path]::IsPathRooted($releaseSource) -or -not (Test-Path -LiteralPath $releaseSource -PathType Leaf)) {
+            throw 'CNMON_NATIVE_COMMAND_BINARY must name an existing absolute extracted executable'
+        }
+        if ((Get-Item -LiteralPath $releaseSource).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'CNMON_NATIVE_COMMAND_BINARY must not be a reparse point'
+        }
+        if ($releaseQualify) {
+            if ($releaseExpectedSha -notmatch '^[0-9a-f]{64}$') { throw 'release qualification requires lowercase SHA-256' }
+            if ($env:CNMON_RELEASE_VERSION -ne '0.1.0' -or $env:CNMON_RELEASE_REVISION -notmatch '^[0-9a-f]{40}$') {
+                throw 'release qualification version/revision inputs are invalid'
+            }
+            if ((Get-FileHash -LiteralPath $releaseSource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $releaseExpectedSha) {
+                throw 'extracted command SHA-256 does not match release qualification input'
+            }
+        }
+        if ([IO.Path]::GetFullPath($releaseSource) -ne [IO.Path]::GetFullPath($commandExe)) {
+            Copy-Item -LiteralPath $releaseSource -Destination $commandExe -Force
+        }
+        $sourceSha = (Get-FileHash -LiteralPath $releaseSource -Algorithm SHA256).Hash.ToLowerInvariant()
+        $stagedSha = (Get-FileHash -LiteralPath $commandExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($sourceSha -ne $stagedSha) { throw 'staged Windows role command differs from extracted source binary' }
+    } elseif ($releaseQualify) {
+        throw 'release qualification requires explicit CNMON_NATIVE_COMMAND_BINARY; refusing to build a substitute'
+    } else {
+        & go build -o $commandExe ./cmd/cn-mon
+        if ($LASTEXITCODE -ne 0) { throw "native cn-mon build failed with exit $LASTEXITCODE" }
+        $sourceSha = (Get-FileHash -LiteralPath $commandExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        $releaseSource = $commandExe
+    }
     & go test -c -tags native -o $testExe ./cmd/cn-mon
     if ($LASTEXITCODE -ne 0) { throw "native command test-binary build failed with exit $LASTEXITCODE" }
 
     $adminArgs = @(
         '-test.v',
-        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ|NoColorQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun|NativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization)$',
+        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ|NoColorQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun|NativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization|NativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|EndedFollowAllFormats))$',
         '-test.count=1',
         '-test.timeout=8m'
     )
@@ -126,6 +159,24 @@ try {
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful exit=0 history=stopped input=restored output=restored cursor=restored',
         'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE ctrlc=first-graceful second=hard-blocked-finalization=pass input=restored output=restored cursor=restored'
     )
+    if ($releaseQualify) {
+        $requiredRelease = @(
+            '--- PASS: TestNativeReleaseBinaryQualification',
+            '--- PASS: TestNativeReleaseExtractedReportsAllFormats',
+            '--- PASS: TestNativeReleaseProbeWithoutPingPath',
+            '--- PASS: TestNativeReleaseInputFileAndStdin',
+            '--- PASS: TestNativeReleaseUnreadableInputHasNoStartupEffects',
+            '--- PASS: TestNativeReleaseEndedFollowAllFormats',
+            "CNMON_NATIVE_RELEASE_BINARY version=0.1.0 revision=$([regex]::Escape($env:CNMON_RELEASE_REVISION)) sha256=$releaseExpectedSha path=absolute version=exact unchanged=true",
+            'CNMON_NATIVE_RELEASE_REPORTS target+list+show formats=default,json,table,csv,md tcp=open history=seeded output=verified',
+            'CNMON_NATIVE_RELEASE_NO_PING ipv4=',
+            'CNMON_NATIVE_RELEASE_INPUT file=space-bom stdin=requested tcp=open json=pass history=finished',
+            'CNMON_NATIVE_RELEASE_INPUT missing-file exit=2 stdout=empty startup=none',
+            'CNMON_NATIVE_RELEASE_FOLLOW ended=read-only formats=json,table,csv,md exit=0 history=unchanged private-console=restored'
+        )
+        $missingRelease = @($requiredRelease | Where-Object { $elevated.Output -notmatch [regex]::Escape($_) })
+        if ($missingRelease.Count -gt 0) { throw "release qualification omitted markers: $($missingRelease -join ', ')" }
+    }
     if ((Count-MatchingLines $elevated.Output $elevatedRoleMarker) -ne 1 -or
         (Count-MatchingLines $elevated.Output "CNMON_NATIVE_COMMAND_WINDOWS_RESULT role=elevated sid=$elevatedSid icmp=OK exit=0 tcp=open json=pass history=one-round") -ne 1) {
         throw 'elevated Windows role did not emit exactly one matching identity and result marker'
@@ -189,6 +240,12 @@ try {
         if (-not $validOrdinaryResult) { $detail += "`nordinary role must produce exactly one success result or a witnessed permission-denial result" }
         Write-GitHubFailure 'cn-mon native Windows command' "phase 'ordinary' failed with exit $($ordinary.ExitCode):`n$detail"
         throw 'required Windows ordinary-user command phase failed'
+    }
+
+    $finalSourceSha = (Get-FileHash -LiteralPath $releaseSource -Algorithm SHA256).Hash.ToLowerInvariant()
+    $finalStagedSha = (Get-FileHash -LiteralPath $commandExe -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($finalSourceSha -ne $sourceSha -or $finalStagedSha -ne $sourceSha -or ($releaseQualify -and $finalSourceSha -ne $releaseExpectedSha)) {
+        throw 'selected or staged Windows command changed during native roles'
     }
 
     Write-Log 'CNMON_NATIVE_WINDOWS_COMMAND_RESULT elevated=pass ordinary=pass private-console=pass'

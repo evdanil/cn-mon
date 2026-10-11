@@ -14,9 +14,34 @@ for tool in go sudo setpriv getcap; do
 	command -v "$tool" >/dev/null || { echo "required native command test tool missing: $tool" >&2; exit 1; }
 done
 
-CGO_ENABLED=0 go build -o "$command_binary" ./cmd/cn-mon
+release_qualify=${CNMON_RELEASE_QUALIFY:-}
+selected_binary=${CNMON_NATIVE_COMMAND_BINARY:-}
+expected_sha=${CNMON_RELEASE_EXPECTED_SHA256:-}
+if [[ -n $selected_binary ]]; then
+	[[ $selected_binary == /* && -f $selected_binary && -x $selected_binary && ! -L $selected_binary ]] || {
+		echo 'CNMON_NATIVE_COMMAND_BINARY must name an absolute regular file' >&2
+		exit 1
+	}
+	command_binary=$(cd "$(dirname "$selected_binary")" && pwd)/$(basename "$selected_binary")
+elif [[ $release_qualify == 1 ]]; then
+	echo 'release qualification requires explicit CNMON_NATIVE_COMMAND_BINARY; refusing to build a substitute' >&2
+	exit 1
+else
+	CGO_ENABLED=0 go build -o "$command_binary" ./cmd/cn-mon
+fi
+if [[ $release_qualify == 1 ]]; then
+	[[ $expected_sha =~ ^[0-9a-f]{64}$ ]] || { echo 'release qualification requires lowercase SHA-256' >&2; exit 1; }
+	[[ ${CNMON_RELEASE_VERSION:-} == 0.1.0 && ${CNMON_RELEASE_REVISION:-} =~ ^[0-9a-f]{40}$ ]] || { echo 'release qualification version/revision inputs are invalid' >&2; exit 1; }
+	actual_sha=$(sha256sum "$command_binary" | awk '{print $1}')
+	[[ $actual_sha == "$expected_sha" ]] || { echo 'extracted command SHA-256 mismatch' >&2; exit 1; }
+fi
+source_sha=$(sha256sum "$command_binary" | awk '{print $1}')
+if [[ $release_qualify == 1 && $source_sha != "$expected_sha" ]]; then
+	echo 'extracted command changed before native command suite' >&2
+	exit 1
+fi
 CGO_ENABLED=0 go test -c -o "$test_binary" ./cmd/cn-mon
-chmod 755 "$command_binary" "$test_binary"
+chmod 755 "$test_binary"
 if [[ -n "$(getcap -n "$command_binary")" || -n "$(getcap -n "$test_binary")" ]]; then
 	message='fresh native command test executables unexpectedly carry file capabilities'
 	echo "::error title=cn-mon Linux permission setup::$message" >&2
@@ -24,11 +49,20 @@ if [[ -n "$(getcap -n "$command_binary")" || -n "$(getcap -n "$test_binary")" ]]
 fi
 
 set +e
+selector='^(TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$'
+if [[ $release_qualify == 1 ]]; then
+	selector=${selector%$} # replace the final anchor before adding qualification cases
+	selector="${selector%)}|TestNativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|FollowDoesNotStopWriter|EndedFollowAllFormats))$"
+fi
 CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 CNMON_NATIVE_COMMAND_BINARY="$command_binary" \
-	go test -tags native -v -timeout=10m -run '^(TestNativeCommand(LoopbackHistoryJSON|LinuxPTYQuitRestoresTerminal|LinuxPTYKeysRemainActiveWithRedirectedStderr|LinuxRestoresScreenBeforeBlockedFinalReport|LinuxPTYForegroundSuspendLifecycle|LinuxPTYLossWithInheritedHangupIgnored|LinuxPTYHardInterruptRestoresWhileUIWritesBlocked|LinuxPTYBackgroundCleanup|INIHistoryRetention|PreInputInterrupt|RunSignalsAndSecondInterrupt|PreRunTerminationAndInheritedIgnores|PauseResume|ClosedStdoutPipeIsQuiet)|TestNativePTYCollector(DrainsQueuedBytesWithHangup|RetriesInterruptedPoll))$' ./cmd/cn-mon >"$main_log" 2>&1
+	go test -tags native -v -timeout=10m -run "$selector" ./cmd/cn-mon >"$main_log" 2>&1
 result=$?
 set -e
 cat "$main_log"
+if [[ $(sha256sum "$command_binary" | awk '{print $1}') != "$source_sha" ]]; then
+	echo 'selected command changed during native command suite' >&2
+	exit 1
+fi
 if [[ $result -ne 0 ]]; then
 	failure_context=$(awk '
 		/^=== RUN[[:space:]]+/ { current_test = $3 }
@@ -119,6 +153,24 @@ required=(
 	'CNMON_NATIVE_COMMAND_LINUX_PTY background-exit=hard tostop=true owner-mode=unchanged frame=none cursor-show=0'
 	'CNMON_NATIVE_COMMAND_CLOSED_STDOUT'
 )
+if [[ $release_qualify == 1 ]]; then
+	required+=(
+		'--- PASS: TestNativeReleaseBinaryQualification'
+		'--- PASS: TestNativeReleaseExtractedReportsAllFormats'
+		'--- PASS: TestNativeReleaseProbeWithoutPingPath'
+		'--- PASS: TestNativeReleaseInputFileAndStdin'
+		'--- PASS: TestNativeReleaseUnreadableInputHasNoStartupEffects'
+		'--- PASS: TestNativeReleaseFollowDoesNotStopWriter'
+		'--- PASS: TestNativeReleaseEndedFollowAllFormats'
+		"CNMON_NATIVE_RELEASE_BINARY version=0.1.0 revision=$CNMON_RELEASE_REVISION sha256=$expected_sha path=absolute version=exact unchanged=true"
+		'CNMON_NATIVE_RELEASE_REPORTS target+list+show formats=default,json,table,csv,md tcp=open history=seeded output=verified'
+		'CNMON_NATIVE_RELEASE_NO_PING ipv4='
+		'CNMON_NATIVE_RELEASE_INPUT file=space-bom stdin=requested tcp=open json=pass history=finished'
+		'CNMON_NATIVE_RELEASE_INPUT missing-file exit=2 stdout=empty startup=none'
+		'CNMON_NATIVE_RELEASE_FOLLOW new-round=committed final-report=json q=follower-only writer=active tcp=open history=verified terminal=restored'
+		'CNMON_NATIVE_RELEASE_FOLLOW ended=read-only formats=json,table,csv,md exit=0 history=unchanged terminal=restored'
+	)
+fi
 for marker in "${required[@]}"; do
 	if ! grep -Fq -- "$marker" "$main_log"; then
 		message="native Linux command gate omitted required result: $marker"
@@ -160,6 +212,11 @@ trap 'rm -rf -- "$permission_dir"' EXIT
 chmod 755 "$permission_dir"
 install -m 755 "$command_binary" "$permission_dir/cn-mon"
 install -m 755 "$test_binary" "$permission_dir/cn-mon-command.test"
+staged_sha=$(sha256sum "$permission_dir/cn-mon" | awk '{print $1}')
+if [[ $staged_sha != "$source_sha" ]]; then
+	echo 'staged Linux role command differs from selected source binary' >&2
+	exit 1
+fi
 if [[ -n "$(getcap -n "$permission_dir/cn-mon" "$permission_dir/cn-mon-command.test")" ]]; then
 	message='staged native command role executables unexpectedly carry file capabilities'
 	echo "::error title=cn-mon Linux permission setup::$message" >&2
@@ -177,4 +234,13 @@ run_permission_role granted sudo -n env CGO_ENABLED=0 CNMON_NATIVE_COMMAND=1 \
 		CNMON_NATIVE_COMMAND_BINARY="$permission_dir/cn-mon" "$permission_dir/cn-mon-command.test"
 )
 
-echo '::notice title=cn-mon native Linux command::linux/amd64 CGO=0 built-command history/JSON, INI/CLI retention, signals/private processes, pause/resume, closed stdout, and explicit CAP_NET_RAW granted/denied ICMP roles passed'
+if [[ $(sha256sum "$command_binary" | awk '{print $1}') != "$source_sha" || $(sha256sum "$permission_dir/cn-mon" | awk '{print $1}') != "$source_sha" ]]; then
+	echo 'selected or staged Linux command changed during native roles' >&2
+	exit 1
+fi
+
+if [[ $release_qualify == 1 ]]; then
+	echo "::notice title=cn-mon native Linux release::linux/amd64 extracted release command sha256=$expected_sha passed report/input/follow and explicit granted/denied native gates"
+else
+	echo '::notice title=cn-mon native Linux command::linux/amd64 CGO=0 built-command history/JSON, INI/CLI retention, signals/private processes, pause/resume, closed stdout, and explicit CAP_NET_RAW granted/denied ICMP roles passed'
+fi
