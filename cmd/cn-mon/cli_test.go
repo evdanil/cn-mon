@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,14 +15,52 @@ import (
 	"github.com/evdanil/gotest/internal/output"
 )
 
-func TestCommandNoteFallsBackWhenScreenCannotDraw(t *testing.T) {
+func TestCommandNoteFallsBackWhenScreenUnavailable(t *testing.T) {
+	var stderr bytes.Buffer
+	commandNote(nil, &stderr, "visible diagnostic")
+	if got := stderr.String(); got != "cn-mon: visible diagnostic\n" {
+		t.Fatalf("diagnostic without screen=%q, want ordinary stderr output", got)
+	}
+}
+
+func TestCommandNoteFallsBackWhenScreenHasNoOutput(t *testing.T) {
 	screen := output.OpenScreen(nil, nil, "default", true, output.KeyHandlers{})
 	defer screen.Close()
 	state := &commandScreenState{screen: screen}
 	var stderr bytes.Buffer
 	commandNote(state, &stderr, "visible diagnostic")
 	if got := stderr.String(); got != "cn-mon: visible diagnostic\n" {
-		t.Fatalf("fallback diagnostic=%q, want ordinary stderr output", got)
+		t.Fatalf("no-output screen fallback=%q, want ordinary stderr output", got)
+	}
+}
+
+func TestCommandNoteUsesDisabledScreenSink(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	defer writer.Close()
+	screen := output.OpenScreen(nil, writer, "default", true, output.KeyHandlers{})
+	defer screen.Close()
+	if screen.Enabled() {
+		t.Fatal("pipe-backed screen unexpectedly enabled live drawing")
+	}
+	state := &commandScreenState{screen: screen}
+	var stderr bytes.Buffer
+	commandNote(state, &stderr, "screen-owned diagnostic")
+	screen.Close()
+	_ = writer.Close()
+	data, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(data); got != "cn-mon: screen-owned diagnostic\n" {
+		t.Fatalf("disabled screen received %q, want its own diagnostic line", got)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("disabled screen diagnostic bypassed its writer: %q", stderr.String())
 	}
 }
 

@@ -66,9 +66,7 @@ func TestNativeCommandHistoryManagement(t *testing.T) {
 					t.Fatalf("JSON run row=%+v", row)
 				}
 			case "table":
-				if !bytes.Contains(stdout, []byte(`"Case/p`)) || !bytes.Contains(stdout, []byte(`ipe|Δ"`)) || !bytes.Contains(stdout, []byte(requestA.Key[:7])) || !bytes.Contains(stdout, []byte(requestA.Key[len(requestA.Key)-1:])) || !bytes.Contains(stdout, []byte("finishe")) || !bytes.Contains(stdout, []byte("d")) {
-					t.Fatalf("table run listing omitted exact ID/key/status: %q", stdout)
-				}
+				assertNativeManagementTableRun(t, stdout, runID, requestA.Key, "finished")
 			case "md":
 				if !bytes.Contains(stdout, []byte(`"Case/pipe\|Δ"`)) || !bytes.Contains(stdout, []byte(requestA.Key)) {
 					t.Fatalf("Markdown run listing omitted escaped full ID/key: %q", stdout)
@@ -143,6 +141,68 @@ func TestNativeCommandHistoryManagement(t *testing.T) {
 		t.Fatal("dead-owner fixture request key unexpectedly empty")
 	}
 	t.Log("CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT formats=json,table,csv,md exact-utf8-id=pass request-prefix=pass delete-cascade=pass clear=pass live-owner=protected dead-local-owner=deletable")
+}
+
+func assertNativeManagementTableRun(t *testing.T, output []byte, runID, requestKey, status string) {
+	t.Helper()
+	lines := strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n")
+	section := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "RUNS" {
+			section = i
+			break
+		}
+	}
+	if section < 0 || section+1 >= len(lines) {
+		t.Fatalf("table is missing RUNS section/header: %q", output)
+	}
+	requestAt := strings.Index(lines[section+1], "Request")
+	statusAt := strings.Index(lines[section+1], "Status")
+	stateAt := strings.Index(lines[section+1], "State")
+	if requestAt < 2 || statusAt <= requestAt+2 || stateAt <= statusAt+2 {
+		t.Fatalf("cannot identify table column boundaries from header %q", lines[section+1])
+	}
+	requestStart, statusStart, stateStart := len([]rune(lines[section+1][:requestAt])), len([]rune(lines[section+1][:statusAt])), len([]rune(lines[section+1][:stateAt]))
+	widths := [3]int{requestStart - 2, statusStart - requestStart - 2, stateStart - statusStart - 2}
+	starts := [3]int{0, requestStart, statusStart}
+	cell := func(line string, column int) string {
+		runes := []rune(line)
+		start, end := starts[column], starts[column]+widths[column]
+		if start >= len(runes) {
+			return ""
+		}
+		if end > len(runes) {
+			end = len(runes)
+		}
+		return strings.TrimSpace(string(runes[start:end]))
+	}
+	var headers [3]strings.Builder
+	headerEnd := -1
+	for i := section + 1; i < len(lines); i++ {
+		for column := range headers {
+			headers[column].WriteString(cell(lines[i], column))
+		}
+		if strings.ReplaceAll(headers[0].String(), " ", "") == "ID" && strings.ReplaceAll(headers[1].String(), " ", "") == "RequestID" && strings.ReplaceAll(headers[2].String(), " ", "") == "Status" {
+			headerEnd = i + 1
+			break
+		}
+	}
+	if headerEnd < 0 {
+		t.Fatalf("cannot reconstruct wrapped table headers from %q", output)
+	}
+	wantID, err := json.Marshal(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values [3]strings.Builder
+	for _, line := range lines[headerEnd:] {
+		for column := range values {
+			values[column].WriteString(cell(line, column))
+		}
+	}
+	if values[0].String() != string(wantID) || values[1].String() != requestKey || values[2].String() != status {
+		t.Fatalf("table did not reconstruct exact first cells (ID=%q key=%q status=%q) from wrapped output: %q", wantID, requestKey, status, output)
+	}
 }
 
 func TestNativeHistoryManagementPIDHelper(t *testing.T) {

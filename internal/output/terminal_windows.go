@@ -15,7 +15,11 @@ import (
 	"golang.org/x/term"
 )
 
-const windowsEnableVT = 0x0004
+const (
+	windowsEnableProcessedOutput    = 0x0001
+	windowsEnableVT                 = 0x0004
+	windowsDisableNewlineAutoReturn = 0x0008
+)
 
 const (
 	windowsKeyEvent       = 0x0001
@@ -96,10 +100,10 @@ func (s *Screen) initPlatform() {
 			}
 		}
 	}
-	if p.outputTTY {
+	if p.outputTTY && p.originalCursor != nil {
 		if err := windows.GetConsoleMode(p.outHandle, &p.outputMode); err == nil {
 			p.outputModeSaved = true
-			if err = windows.SetConsoleMode(p.outHandle, p.outputMode|windowsEnableVT); err == nil {
+			if err = windows.SetConsoleMode(p.outHandle, windowsOutputMode(p.outputMode)); err == nil {
 				p.outputChanged = true
 			} else {
 				p.outputTTY = false
@@ -113,6 +117,10 @@ func windowsInputReadMode(original uint32) uint32 {
 	return original&^(windows.ENABLE_LINE_INPUT|windows.ENABLE_ECHO_INPUT) | windows.ENABLE_PROCESSED_INPUT
 }
 
+func windowsOutputMode(original uint32) uint32 {
+	return original | windowsEnableProcessedOutput | windowsEnableVT | windowsDisableNewlineAutoReturn
+}
+
 func (s *Screen) platformInputEnabled() bool {
 	p := s.platform.(*terminalPlatform)
 	return p.inputTTY && p.inputChanged
@@ -121,6 +129,13 @@ func (s *Screen) platformInputEnabled() bool {
 func (s *Screen) platformEnabled() bool {
 	p := s.platform.(*terminalPlatform)
 	return p.outputTTY && p.outputChanged && p.originalCursor != nil
+}
+
+func (s *Screen) platformLineEnding() string {
+	if s.platform.(*terminalPlatform).outputChanged {
+		return "\r\n"
+	}
+	return "\n"
 }
 
 func (s *Screen) platformLost() bool {

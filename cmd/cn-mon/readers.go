@@ -58,7 +58,7 @@ func commandNote(state *commandScreenState, stderr io.Writer, message string) {
 	if !output.DiagnosticWriteAllowed(stderr) {
 		return
 	}
-	if state != nil && state.screen != nil && state.screen.Enabled() {
+	if state != nil && state.screen != nil && state.screen.CanWriteNote() {
 		state.screen.Note("cn-mon: " + message)
 		return
 	}

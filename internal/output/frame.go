@@ -365,7 +365,7 @@ func liveLegend(cells []byte, width int) []line {
 		cell  byte
 		text  string
 		style string
-	}{{'!', "replied", "success"}, {'R', "rejected (up, firewalled)", "info"}, {'T', "TCP only", "info"}, {'U', "unreachable (reported since first probed)", "error"}, {'x', "gone", "warning"}, {'.', "silent", "dim"}, {'E', "error", "error"}, {'?', "name did not resolve", "error"}}
+	}{{'!', "ICMP reply", "success"}, {'R', "rejected (up, firewalled)", "info"}, {'T', "TCP response (open or closed)", "info"}, {'U', "unreachable (reported since first probed)", "error"}, {'x', "gone", "warning"}, {'.', "silent", "dim"}, {'E', "error", "error"}, {'?', "name did not resolve", "error"}}
 	var out []line
 	current := line{}
 	used := 0
@@ -645,8 +645,14 @@ func liveTable(update monitor.LiveUpdate, width, room int) []line {
 	for _, row := range rows {
 		maxHost = max(maxHost, displayWidth(terminalText(row.Host)))
 	}
-	hostWidth := min(maxHost, max(width-46, 8))
-	head := line{{text: cropCells("Host", hostWidth), style: "header"}, {text: "  Latest           Last seen                 Seen", style: "header"}}
+	hostWidth := min(maxHost, max(width-53, 8))
+	hostHeader := cropCells("Host", hostWidth)
+	head := line{
+		{text: hostHeader + strings.Repeat(" ", max(0, hostWidth-displayWidth(hostHeader))) + "  ", style: "header"},
+		{text: "State  ", style: "header"},
+		{text: "ICMP" + strings.Repeat(" ", 12) + "  ", style: "header"},
+		{text: "Last seen" + strings.Repeat(" ", 16) + "  Seen", style: "header"},
+	}
 	lines := []line{clipLine(head, width)}
 	if room < 2 {
 		return []line{clipLine(line{{text: fmt.Sprintf("(+%d more)", len(rows)), style: "dim"}}, width)}
@@ -654,6 +660,10 @@ func liveTable(update monitor.LiveUpdate, width, room int) []line {
 	limit := max(room-1, 1)
 	if len(rows) > room-1 {
 		limit = max(room-2, 0)
+	}
+	partial := make(map[int]bool, len(update.Data.Partial))
+	for _, index := range update.Data.Partial {
+		partial[index] = true
 	}
 	for i, row := range rows {
 		if i >= limit {
@@ -663,9 +673,16 @@ func liveTable(update monitor.LiveUpdate, width, room int) []line {
 		if !row.LastSeen.IsZero() {
 			last = formatTimestamp(row.LastSeen)
 		}
+		host := cropCells(terminalText(row.Host), hostWidth)
 		latest := terminalText(row.Latest)
-		value := latest + strings.Repeat(" ", max(0, 16-displayWidth(latest))) + "  " + last + strings.Repeat(" ", max(0, 25-displayWidth(last))) + fmt.Sprintf("  %d of %d", row.SeenRounds, row.Rounds)
-		lines = append(lines, clipLine(line{{text: cropCells(terminalText(row.Host), hostWidth), style: "description"}, {text: "  " + value, style: cellStyle(row.Cell, false)}}, width))
+		seen := fmt.Sprintf("%d of %d", row.SeenRounds, row.Rounds)
+		style := cellStyle(row.Cell, partial[row.Index])
+		lines = append(lines, clipLine(line{
+			{text: host + strings.Repeat(" ", max(0, hostWidth-displayWidth(host))), style: "description"},
+			{text: "  "}, {text: string(row.Cell), style: style}, {text: "      "},
+			{text: latest + strings.Repeat(" ", max(0, 16-displayWidth(latest))), style: style}, {text: "  "},
+			{text: last + strings.Repeat(" ", max(0, 25-displayWidth(last))), style: style}, {text: "  " + seen, style: style},
+		}, width))
 	}
 	if len(rows) > limit {
 		lines = append(lines, clipLine(line{{text: fmt.Sprintf("(+%d more)", len(rows)-limit), style: "dim"}}, width))
