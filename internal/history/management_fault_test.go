@@ -16,6 +16,7 @@ func TestDeleteRunRetainsCommittedCountsAfterRealConnectionCloseFailure(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = seed.Close() })
 	if _, err := seed.BeginRun(context.Background(), writeTestRequest("abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"), writeTestRun("close-after-commit", writeTestTime(80))); err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +51,7 @@ func TestDeleteRunCancellationWaitingForWriterLockLeavesRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = seed.Close() })
 	if _, err := seed.BeginRun(context.Background(), writeTestRequest("bcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcde"), writeTestRun("locked-run", writeTestTime(90))); err != nil {
 		t.Fatal(err)
 	}
@@ -57,6 +59,7 @@ func TestDeleteRunCancellationWaitingForWriterLockLeavesRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cleanupLockConn := registerLockedConnectionCleanup(t, lockConn)
 	if _, err := lockConn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
 		t.Fatal(err)
 	}
@@ -64,23 +67,37 @@ func TestDeleteRunCancellationWaitingForWriterLockLeavesRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer other.Close()
+	t.Cleanup(func() { _ = other.Close() })
 	busyConn, err := other.db.Conn(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	cleanupBusyConn := registerConnectionCleanup(t, busyConn)
 	if _, err := busyConn.ExecContext(context.Background(), `PRAGMA busy_timeout=200`); err != nil {
 		t.Fatal(err)
 	}
 	if err := busyConn.Close(); err != nil {
 		t.Fatal(err)
 	}
+	cleanupBusyConn()
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	type deleteOutcome struct {
 		result DeleteResult
 		err    error
 	}
 	done := make(chan deleteOutcome, 1)
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Errorf("locked delete worker did not stop during cleanup")
+			}
+		}
+	})
 	go func() {
 		result, err := other.DeleteRun(ctx, "locked-run", DeleteGuard{Hostname: "writer-test-host", PIDState: func(int64) PIDState { return PIDDead }})
 		done <- deleteOutcome{result, err}
@@ -90,6 +107,7 @@ func TestDeleteRunCancellationWaitingForWriterLockLeavesRows(t *testing.T) {
 	var outcome deleteOutcome
 	select {
 	case outcome = <-done:
+		joined = true
 	case <-time.After(2 * time.Second):
 		t.Fatal("delete remained blocked after context cancellation")
 	}
@@ -102,6 +120,7 @@ func TestDeleteRunCancellationWaitingForWriterLockLeavesRows(t *testing.T) {
 	if err := lockConn.Close(); err != nil {
 		t.Fatal(err)
 	}
+	cleanupLockConn()
 	var count int
 	if err := seed.db.QueryRow(`SELECT COUNT(*) FROM run WHERE id='locked-run'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("locked row count=%d err=%v", count, err)
@@ -118,6 +137,7 @@ func TestDeleteRequestResolvesPrefixAfterWaitingForImmediateLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = seed.Close() })
 	if _, err := seed.BeginRun(context.Background(), writeTestRequest(strings.Repeat("a", 64)), writeTestRun("prefix-original", writeTestTime(91))); err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +145,7 @@ func TestDeleteRequestResolvesPrefixAfterWaitingForImmediateLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cleanupLockConn := registerLockedConnectionCleanup(t, lockConn)
 	if _, err := lockConn.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
 		t.Fatal(err)
 	}
@@ -132,24 +153,39 @@ func TestDeleteRequestResolvesPrefixAfterWaitingForImmediateLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer deleter.Close()
+	t.Cleanup(func() { _ = deleter.Close() })
 	busyConn, err := deleter.db.Conn(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
+	cleanupBusyConn := registerConnectionCleanup(t, busyConn)
 	if _, err := busyConn.ExecContext(context.Background(), `PRAGMA busy_timeout=1000`); err != nil {
 		t.Fatal(err)
 	}
 	if err := busyConn.Close(); err != nil {
 		t.Fatal(err)
 	}
+	cleanupBusyConn()
 	type outcome struct {
 		result DeleteResult
 		err    error
 	}
 	done := make(chan outcome, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	joined := false
+	t.Cleanup(func() {
+		cancel()
+		if !joined {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Errorf("prefix delete worker did not stop during cleanup")
+			}
+		}
+	})
 	go func() {
-		r, e := deleter.DeleteRequest(context.Background(), "aaaa", DeleteGuard{Hostname: "writer-test-host", PIDState: func(int64) PIDState { return PIDDead }})
+		r, e := deleter.DeleteRequest(ctx, "aaaa", DeleteGuard{Hostname: "writer-test-host", PIDState: func(int64) PIDState { return PIDDead }})
 		done <- outcome{r, e}
 	}()
 	time.Sleep(40 * time.Millisecond)
@@ -162,8 +198,10 @@ func TestDeleteRequestResolvesPrefixAfterWaitingForImmediateLock(t *testing.T) {
 	if err := lockConn.Close(); err != nil {
 		t.Fatal(err)
 	}
+	cleanupLockConn()
 	select {
 	case got := <-done:
+		joined = true
 		if !errors.Is(got.err, ErrAmbiguousRequest) || got.result.Committed {
 			t.Fatalf("prefix resolution result=%+v err=%v", got.result, got.err)
 		}
@@ -174,4 +212,29 @@ func TestDeleteRequestResolvesPrefixAfterWaitingForImmediateLock(t *testing.T) {
 	if err := seed.db.QueryRow(`SELECT COUNT(*) FROM request`).Scan(&requests); err != nil || requests != 2 {
 		t.Fatalf("requests after ambiguous resolution=%d err=%v", requests, err)
 	}
+}
+
+func registerConnectionCleanup(t *testing.T, conn *sql.Conn) func() {
+	t.Helper()
+	open := true
+	t.Cleanup(func() {
+		if open {
+			_ = conn.Close()
+		}
+	})
+	return func() { open = false }
+}
+
+func registerLockedConnectionCleanup(t *testing.T, conn *sql.Conn) func() {
+	t.Helper()
+	open := true
+	t.Cleanup(func() {
+		if open {
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			cancel()
+			_ = conn.Close()
+		}
+	})
+	return func() { open = false }
 }

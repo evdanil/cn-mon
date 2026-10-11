@@ -239,6 +239,7 @@ func TestDeleteRunPreservesExistingReaderSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = writer.Close() })
 	requestID, err := writer.BeginRun(context.Background(), writeTestRequest(strings.Repeat("2", 64)), writeTestRun("snapshot-run", writeTestTime(61)))
 	if err != nil {
 		t.Fatal(err)
