@@ -8,6 +8,11 @@ Download [cn-mon 0.3.0](https://github.com/evdanil/gotest/releases/tag/v0.3.0), 
 
 Earlier [0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0) and [0.2.0](https://github.com/evdanil/gotest/releases/tag/v0.2.0) sources, tags and assets remain unchanged. Their qualification evidence and the 0.3.0 public hashes are recorded in the [development plan](docs/DEVELOPMENT_PLAN.md).
 
+### Microsoft Store status
+
+Preparation is underway for a CLI-only Store package, with x64 MSIX as the recommended starting route. `cn-mon` is not currently available in Microsoft Store: the Partner Center identity has not been reserved, and packaged CLI behavior, eligibility and certification remain unverified. See the [Windows Store preparation guide](docs/WINDOWS_STORE_PREPARATION.md).
+
+
 ### Install cn-mon 0.3.0
 
 Download the archive for your platform and verify its checksum before extracting.
