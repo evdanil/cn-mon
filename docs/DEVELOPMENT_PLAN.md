@@ -381,7 +381,6 @@ This later documentation update records completed delivery; the release remains 
 
 The next distribution goal is a CLI-only Store package; x64 MSIX with a console app execution alias is the recommended starting route, subject to Store acceptance. This is documentation and discovery only: no package identity or MSIX build has been created, and no Store submission is ready. Reserve `cn-mon` in Partner Center and record its exact `Identity/Name`, `Identity/Publisher`, and `PublisherDisplayName` before authorizing manifest/package implementation. The later Windows package milestone must verify alias invocation, ordinary-user ICMP, stream/exit-code behavior, history/log/config paths, lifecycle operations, declared capabilities and WACK on a native Windows installation. CLI-only eligibility, package runtime behavior and certification are open gates. See the [Windows Store preparation guide](WINDOWS_STORE_PREPARATION.md).
 
-
 ## Native validation responsibilities
 
 | Layer / first integrated milestone | Routine CI | Explicit native/controlled evidence |
