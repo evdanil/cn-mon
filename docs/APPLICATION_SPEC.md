@@ -756,6 +756,10 @@ Design and independent implementation reviews approved the bounded update withou
 
 The authorized final dispatch from `main`, [run 38124176778](https://github.com/evdanil/gotest/actions/runs/38124176778), freshly built and qualified both platform archives from exact M11 merge `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed`. All 13 source/native/qualification/publication jobs succeeded. Publication consumed those exact successful-run bytes without rebuild/repack, proved `v0.3.0` absent, created its lightweight ref once, verified its commit target, and used draft `--verify-tag` plus before/after downloaded-asset comparison. The release was published at `2026-10-11T08:24:40Z`; its tag points directly to that commit, and all three public hashes match the qualified bytes. Preserve section 10.3's partial-failure recovery rules; no existing tag is retargeted or different asset overwritten. This later evidence update records the completed release while preserving its tagged source and archive snapshot.
 
+### 10.9 Windows Store distribution planning (not implemented)
+
+The current distribution remains the qualified Linux and Windows archives described above. Store preparation targets a CLI-only package and recommends x64 MSIX as the starting route, using a packaged full-trust desktop execution alias; the command-line-only listing's Store eligibility and launch acceptance are unconfirmed. No Partner Center product has been reserved, so package identity and manifest/build work are pending the exact `Identity/Name`, `Identity/Publisher`, and `PublisherDisplayName` values. Before submission, a native installed-package qualification must verify CLI and ICMP behavior, both `.cn` configuration layers, filesystem paths, install/update/uninstall, the `runFullTrust` declaration and WACK; Store certification remains a separate gate. Track the current route and open requirements in the [Windows Store preparation guide](WINDOWS_STORE_PREPARATION.md). This planning does not alter current archives or assert Store availability.
+
 ## 11. Acceptance scenarios
 
 These IDs are implementation/review traceability, not claims that the tests already passed.
