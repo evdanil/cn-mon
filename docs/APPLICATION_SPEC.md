@@ -760,7 +760,6 @@ The authorized final dispatch from `main`, [run 38124176778](https://github.com/
 
 The current distribution remains the qualified Linux and Windows archives described above. Store preparation targets a CLI-only package and recommends x64 MSIX as the starting route, using a desktop console app execution alias; the command-line-only listing's Store eligibility and launch acceptance are unconfirmed. No Partner Center product has been reserved, so package identity and manifest/build work are pending the exact `Identity/Name`, `Identity/Publisher`, and `PublisherDisplayName` values. Before submission, a native installed-package qualification must verify CLI and ICMP behavior, filesystem paths, install/update/uninstall, capability declarations and WACK; Store certification remains a separate gate. Track the current route and open requirements in the [Windows Store preparation guide](WINDOWS_STORE_PREPARATION.md). This planning does not alter current archives or assert Store availability.
 
-
 ## 11. Acceptance scenarios
 
 These IDs are implementation/review traceability, not claims that the tests already passed.
