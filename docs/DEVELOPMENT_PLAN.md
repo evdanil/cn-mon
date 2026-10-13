@@ -377,6 +377,11 @@ Both platforms used Go 1.27.2, CGO disabled and the existing unstripped build fl
 
 This later documentation update records completed delivery; the release remains pinned to `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed` and its original qualified bytes. The archives retain the source-revision documentation snapshot that accurately preceded publication. Published 0.1.0/0.2.0 tags, sources and all asset hashes were rechecked and remain unchanged. Preserve the existing create-once/no-retarget/no-overwrite and partial-failure recovery policy for future delivery.
 
+## Post-M11: Windows Store preparation (planning only)
+
+The next distribution goal is a CLI-only Store package; x64 MSIX with a console app execution alias is the recommended starting route, subject to Store acceptance. This is documentation and discovery only: no package identity or MSIX build has been created, and no Store submission is ready. Reserve `cn-mon` in Partner Center and record its exact `Identity/Name`, `Identity/Publisher`, and `PublisherDisplayName` before authorizing manifest/package implementation. The later Windows package milestone must verify alias invocation, ordinary-user ICMP, stream/exit-code behavior, history/log/config paths, lifecycle operations, declared capabilities and WACK on a native Windows installation. CLI-only eligibility, package runtime behavior and certification are open gates. See the [Windows Store preparation guide](WINDOWS_STORE_PREPARATION.md).
+
+
 ## Native validation responsibilities
 
 | Layer / first integrated milestone | Routine CI | Explicit native/controlled evidence |
