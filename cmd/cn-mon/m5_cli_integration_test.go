@@ -15,9 +15,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/evdanil/gotest/internal/history"
-	"github.com/evdanil/gotest/internal/monitor"
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/monitor"
+	"github.com/evdanil/cn-mon/internal/target"
 )
 
 func TestCLIListMissingHistoryReturnsEmptyReportWithoutCreatingHistory(t *testing.T) {

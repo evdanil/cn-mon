@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
+	"github.com/evdanil/cn-mon/internal/history"
 )
 
 func TestWriteRunsJSONPreservesExactIDAndEmptyArray(t *testing.T) {

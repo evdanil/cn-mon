@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
-	"github.com/evdanil/gotest/internal/monitor"
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/monitor"
+	"github.com/evdanil/cn-mon/internal/target"
 )
 
 type rerunSelection struct {

@@ -7,8 +7,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/target"
 )
 
 // Reader is the narrow read-only boundary used by list, show, and follow.

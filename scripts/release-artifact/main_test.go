@@ -494,7 +494,7 @@ func writeRawTARGZWithTrailing(t *testing.T, filename string, entries []rawArchi
 	}
 }
 
-const fixtureGoMod = `module github.com/evdanil/gotest
+const fixtureGoMod = `module github.com/evdanil/cn-mon
 
 go 1.26.0
 
@@ -519,7 +519,7 @@ replace github.com/prometheus-community/pro-bing => ./third_party/pro-bing
 `
 
 func validFixtureBuildInfo() *debug.BuildInfo {
-	info := &debug.BuildInfo{Path: "github.com/evdanil/gotest/cmd/cn-mon", Main: debug.Module{Path: "github.com/evdanil/gotest"}, GoVersion: "go1.27.2"}
+	info := &debug.BuildInfo{Path: "github.com/evdanil/cn-mon/cmd/cn-mon", Main: debug.Module{Path: "github.com/evdanil/cn-mon"}, GoVersion: "go1.27.2"}
 	dependencies := []struct{ path, version string }{
 		{"github.com/google/uuid", "v1.6.0"},
 		{"github.com/ncruces/go-sqlite3", "v0.35.6"},

@@ -67,9 +67,9 @@ func releaseREADME(input []byte, revision string) ([]byte, error) {
 		pathPart, fragment, hasFragment := strings.Cut(destination, "#")
 		switch pathPart {
 		case "docs/APPLICATION_SPEC.md", "./docs/APPLICATION_SPEC.md":
-			pathPart = "https://github.com/evdanil/gotest/blob/" + revision + "/docs/APPLICATION_SPEC.md"
+			pathPart = "https://github.com/evdanil/cn-mon/blob/" + revision + "/docs/APPLICATION_SPEC.md"
 		case "docs/DEVELOPMENT_PLAN.md", "./docs/DEVELOPMENT_PLAN.md":
-			pathPart = "https://github.com/evdanil/gotest/blob/" + revision + "/docs/DEVELOPMENT_PLAN.md"
+			pathPart = "https://github.com/evdanil/cn-mon/blob/" + revision + "/docs/DEVELOPMENT_PLAN.md"
 		case "", "LICENSE", "THIRD_PARTY_NOTICES.md":
 		default:
 			if strings.HasPrefix(pathPart, "https://") || strings.HasPrefix(pathPart, "http://") || strings.HasPrefix(pathPart, "mailto:") {

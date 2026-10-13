@@ -9,7 +9,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
+	"github.com/evdanil/cn-mon/internal/history"
 )
 
 // RunRecord is the presentation-safe history row emitted by --list-runs.

@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/evdanil/gotest/internal/history"
+	"github.com/evdanil/cn-mon/internal/history"
 )
 
 func requestRow(summary history.RequestSummary, stateRun *history.RunInfo, now time.Time, deps ReadDeps) (RequestRow, error) {

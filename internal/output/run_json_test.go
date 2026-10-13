@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evdanil/gotest/internal/monitor"
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/monitor"
+	"github.com/evdanil/cn-mon/internal/target"
 )
 
 func TestWriteRunJSONEmptyReportHasFourArrays(t *testing.T) {

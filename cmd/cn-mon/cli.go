@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/target"
 )
 
 type commandMode uint8

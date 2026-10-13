@@ -85,10 +85,10 @@ func validateBuildInfo(info *debug.BuildInfo, sourceRoot string, spec targetSpec
 	if info.GoVersion != "go1.27.2" {
 		return fmt.Errorf("binary Go version is %q, want go1.27.2", info.GoVersion)
 	}
-	if info.Path != "github.com/evdanil/gotest/cmd/cn-mon" {
+	if info.Path != "github.com/evdanil/cn-mon/cmd/cn-mon" {
 		return fmt.Errorf("binary main package is %q", info.Path)
 	}
-	if info.Main.Path != "github.com/evdanil/gotest" {
+	if info.Main.Path != "github.com/evdanil/cn-mon" {
 		return fmt.Errorf("binary module is %q", info.Main.Path)
 	}
 	settings := make(map[string]string, len(info.Settings))
@@ -171,7 +171,7 @@ func validateSourceModules(sourceRoot string) error {
 		}
 		switch fields[0] {
 		case "module":
-			hasModule = len(fields) == 2 && fields[1] == "github.com/evdanil/gotest"
+			hasModule = len(fields) == 2 && fields[1] == "github.com/evdanil/cn-mon"
 		case "require":
 			if len(fields) == 2 && fields[1] == "(" {
 				inRequire = true

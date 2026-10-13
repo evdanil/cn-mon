@@ -11,8 +11,8 @@ import (
 	"slices"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/target"
 )
 
 // openHistory owns the complete initial history sequence. A failed read never

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evdanil/gotest/internal/output"
+	"github.com/evdanil/cn-mon/internal/output"
 )
 
 func TestCommandNoteFallsBackWhenScreenUnavailable(t *testing.T) {

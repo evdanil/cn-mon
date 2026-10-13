@@ -1,4 +1,4 @@
-module github.com/evdanil/gotest
+module github.com/evdanil/cn-mon
 
 go 1.26.0
 

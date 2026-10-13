@@ -12,7 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/evdanil/gotest/internal/monitor"
+	"github.com/evdanil/cn-mon/internal/monitor"
 )
 
 func writeFrameDiff(w io.Writer, previous, next [][]byte, rowWidths []int, terminalWidth int) error {

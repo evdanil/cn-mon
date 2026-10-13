@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
+	"github.com/evdanil/cn-mon/internal/history"
 )
 
 // TestNativeReleaseLinuxNamespaceCommand runs the exact extracted artifact in

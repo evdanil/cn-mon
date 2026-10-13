@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/target"
 	"golang.org/x/sys/unix"
 )
 

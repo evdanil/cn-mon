@@ -30,9 +30,9 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
-	"github.com/evdanil/gotest/internal/history"
-	"github.com/evdanil/gotest/internal/probe"
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/probe"
+	"github.com/evdanil/cn-mon/internal/target"
 	"golang.org/x/sys/windows"
 )
 

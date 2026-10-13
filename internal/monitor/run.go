@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
-	"github.com/evdanil/gotest/internal/probe"
+	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/probe"
 )
 
 func Run(ctx context.Context, plan RunPlan, deps RunDeps) (outcome RunOutcome, runErr error) {

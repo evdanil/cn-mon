@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
-	"github.com/evdanil/gotest/internal/target"
+	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/target"
 )
 
 func openReader(ctx context.Context, path string, deps ReadDeps) (Reader, error) {

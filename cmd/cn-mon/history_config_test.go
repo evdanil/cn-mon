@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/evdanil/gotest/internal/history"
+	"github.com/evdanil/cn-mon/internal/history"
 )
 
 // This composition test proves that the path selected by the existing M1
