@@ -33,6 +33,7 @@ $script:CreatedFixtureFiles = @()
 $script:CreatedCertificate = $null
 $script:CreatedTrustedCertificate = $false
 $script:CreatedUser = $null
+$script:CreatedUserSid = $null
 $script:CreatedProfile = $null
 $script:OriginalArtifactAcl = $null
 $script:PrivateRoot = $null
@@ -49,6 +50,9 @@ $script:SignedCatalogFootprintPresent = $false
 $script:TrustPresenceChecked = $false
 $script:TrustedCertificatePresent = $false
 $script:LastSignatureLogPath = $null
+$script:CurrentSourceOperation = 'script_entry'
+$script:FailureSourceOperation = $null
+$script:PublicDiagnosticWritten = $false
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
@@ -58,6 +62,133 @@ function Set-CnMonMsixGate {
     param([string]$Name, [ValidateSet('pass', 'fail', 'incomplete')][string]$Status)
     $script:Result.gates[$Name] = $Status
     $script:GateUpdates[$Name] = $Status
+}
+
+function Set-CnMonMsixCaughtGateFailure {
+    param([string]$Name)
+    if (-not $script:GateUpdates.Contains($Name) -or $script:Result.gates[$Name] -eq 'pass') {
+        Set-CnMonMsixGate $Name 'fail'
+    }
+}
+
+function Get-CnMonMsixFailureDiagnostic {
+    param(
+        [string]$Mode,
+        [string]$Gate,
+        [string]$Operation,
+        [System.Management.Automation.ErrorRecord]$ErrorRecord
+    )
+    $allowedGates = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair', 'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack')
+    $allowedOperations = @(
+        'script_entry', 'hosted_preflight', 'user_mode_account_validation', 'identity_read', 'receipt_validation',
+        'signature_setup', 'temporary_user_account_create', 'temporary_user_profile_initialize',
+        'temporary_user_profile_wait', 'temporary_user_profile_validate', 'user_run_environment_setup',
+        'temporary_user_acl_setup', 'user_run_process_start', 'user_run_process_wait', 'user_run_result_read',
+        'user_mode_package_registration', 'user_mode_native_qualification', 'cleanup', 'unknown'
+    )
+    $allowedExceptionTypes = @('RuntimeException', 'MethodInvocationException', 'InvalidOperationException', 'IdentityNotMappedException', 'UnauthorizedAccessException', 'SecurityException', 'Win32Exception', 'IOException', 'FileNotFoundException', 'DirectoryNotFoundException', 'ArgumentException', 'ParameterBindingException', 'TimeoutException', 'NotSupportedException', 'ProcessStartException', 'other')
+    $modeValue = if ($Mode -in @('Hosted', 'User')) { $Mode } else { 'unknown' }
+    $gateValue = if ($Gate -in $allowedGates) { $Gate } else { 'unknown' }
+    $operationValue = if ($Operation -in $allowedOperations) { $Operation } else { 'unknown' }
+
+    $exceptions = [Collections.Generic.List[Exception]]::new()
+    $current = if ($null -ne $ErrorRecord) { $ErrorRecord.Exception } else { $null }
+    while ($null -ne $current -and $exceptions.Count -lt 8) {
+        $exceptions.Add($current)
+        $current = $current.InnerException
+    }
+    $typeName = if ($exceptions.Count -gt 0) { $exceptions[0].GetType().Name } else { 'other' }
+    $innerTypeName = if ($exceptions.Count -gt 1) { $exceptions[1].GetType().Name } else { 'none' }
+    $exceptionType = if ($typeName -in $allowedExceptionTypes) { $typeName } else { 'other' }
+    $innerExceptionType = if ($innerTypeName -in $allowedExceptionTypes) { $innerTypeName } else { 'none' }
+
+    $errorCategory = 'other'
+    if (@($exceptions | Where-Object { $_.GetType().Name -eq 'IdentityNotMappedException' }).Count -gt 0) { $errorCategory = 'identity_mapping' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -eq 'Win32Exception' }).Count -gt 0) { $errorCategory = 'win32_error' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -eq 'UnauthorizedAccessException' }).Count -gt 0) { $errorCategory = 'access_denied' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -match 'Security' }).Count -gt 0) { $errorCategory = 'security' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -eq 'TimeoutException' }).Count -gt 0) { $errorCategory = 'timeout' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -in @('FileNotFoundException', 'DirectoryNotFoundException') }).Count -gt 0) { $errorCategory = 'not_found' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -in @('IOException', 'FileLoadException') }).Count -gt 0) { $errorCategory = 'io' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -in @('ArgumentException', 'ParameterBindingException') }).Count -gt 0) { $errorCategory = 'invalid_argument' }
+    elseif (@($exceptions | Where-Object { $_.GetType().Name -eq 'InvalidOperationException' }).Count -gt 0) { $errorCategory = 'invalid_state' }
+    elseif ($operationValue -eq 'user_run_process_start') { $errorCategory = 'process_start' }
+
+    $baseException = if ($exceptions.Count -gt 0) { $exceptions[$exceptions.Count - 1] } else { $null }
+    $hresult = if ($null -ne $baseException) { [int]$baseException.HResult } else { $null }
+    $nativeErrorCode = $null
+    foreach ($exception in $exceptions) {
+        $nativeProperty = $exception.PSObject.Properties['NativeErrorCode']
+        if ($null -ne $nativeProperty -and $nativeProperty.Value -is [ValueType]) {
+            $nativeErrorCode = [int]$nativeProperty.Value
+            break
+        }
+    }
+
+    $scriptLine = 0
+    if ($null -ne $ErrorRecord -and $null -ne $ErrorRecord.InvocationInfo -and $ErrorRecord.InvocationInfo.ScriptLineNumber -gt 0) {
+        $scriptLine = [int]$ErrorRecord.InvocationInfo.ScriptLineNumber
+    }
+    $stackLines = [Collections.Generic.List[int]]::new()
+    if ($null -ne $ErrorRecord -and $ErrorRecord.ScriptStackTrace) {
+        foreach ($match in [regex]::Matches([string]$ErrorRecord.ScriptStackTrace, '(?i):\s*line\s+(\d+)\b')) {
+            $lineNumber = 0
+            if ([int]::TryParse($match.Groups[1].Value, [ref]$lineNumber)) { $stackLines.Add($lineNumber) }
+            if ($stackLines.Count -ge 8) { break }
+        }
+    }
+
+    return [ordered]@{
+        mode = $modeValue
+        gate = $gateValue
+        operation = $operationValue
+        error_category = $errorCategory
+        exception_type = $exceptionType
+        inner_exception_type = $innerExceptionType
+        hresult = $hresult
+        native_error_code = $nativeErrorCode
+        script_line = $scriptLine
+        stack_lines = @($stackLines.ToArray())
+    }
+}
+
+function Save-CnMonMsixQualificationFailureEvidence {
+    param(
+        [string]$Mode,
+        [string]$Gate,
+        [string]$Operation,
+        [string]$ArtifactDirectory,
+        [object]$Identity,
+        [System.Management.Automation.ErrorRecord]$ErrorRecord,
+        [switch]$PrivateOnly
+    )
+    try {
+        $privateDirectory = Join-Path $ArtifactDirectory 'private-failure-records'
+        New-Item -ItemType Directory -Force -Path $privateDirectory | Out-Null
+        $privatePath = Join-Path $privateDirectory ($Mode + '-' + [Guid]::NewGuid().ToString('N') + '.clixml')
+        Export-Clixml -InputObject $ErrorRecord -LiteralPath $privatePath -Depth 8 -Force -ErrorAction Stop
+    }
+    catch { }
+
+    if ($PrivateOnly) { return }
+    if (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode $Mode -Identity $Identity)) { return }
+    try {
+        $publicPath = Join-Path $ArtifactDirectory 'msix-signature-diagnostic.json'
+        $diagnostic = Get-CnMonMsixFailureDiagnostic -Mode $Mode -Gate $Gate -Operation $Operation -ErrorRecord $ErrorRecord
+        $public = [ordered]@{}
+        if (Test-Path -LiteralPath $publicPath -PathType Leaf) {
+            if (-not $script:PublicDiagnosticWritten) { return }
+            $existing = Get-Content -LiteralPath $publicPath -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+            foreach ($key in $existing.Keys) { $public[$key] = $existing[$key] }
+        }
+        else {
+            $public.schema_version = 1
+            $script:PublicDiagnosticWritten = $true
+        }
+        $public.qualification_failure = $diagnostic
+        [IO.File]::WriteAllText($publicPath, (ConvertTo-Json -InputObject $public -Depth 5) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    }
+    catch { }
 }
 
 function Write-CnMonMsixResult {
@@ -557,6 +688,7 @@ function Save-CnMonMsixSignatureDiagnostic {
         $diagnostic = Get-CnMonMsixSignatureDiagnostic -LogPath $LogPath -ExitCode $ExitCode -Phase $Phase
         $json = ConvertTo-Json -InputObject $diagnostic -Depth 4
         [IO.File]::WriteAllText($publicPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+        $script:PublicDiagnosticWritten = $true
     }
 }
 
@@ -697,6 +829,7 @@ function Save-CnMonMsixSignatureFailureEvidence {
                 catalog_footprint_present = $catalogFootprintPresent
             }
             [IO.File]::WriteAllText($publicPath, (ConvertTo-Json -InputObject $diagnostic -Depth 4) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+            $script:PublicDiagnosticWritten = $true
             $saveStatus = 'success'
         }
     }
@@ -1008,21 +1141,26 @@ function Assert-CnMonMsixFixtureReceipt {
 
 function New-CnMonMsixTemporaryUser {
     $script:CurrentGate = 'account'
+    $script:CurrentSourceOperation = 'temporary_user_account_create'
     $name = 'cmsx' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
     $random = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(36)) + 'aA1!'
     $password = ConvertTo-SecureString $random -AsPlainText -Force
     $user = New-LocalUser -Name $name -Password $password -AccountNeverExpires -PasswordNeverExpires -ErrorAction Stop
     $script:CreatedUser = $name
+    $script:CreatedUserSid = [string]$user.SID.Value
     $credential = [Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$name", $password)
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
     $initializeOut = Join-Path $script:PrivateRoot 'profile-init.stdout.log'
     $initializeErr = Join-Path $script:PrivateRoot 'profile-init.stderr.log'
+    $script:CurrentSourceOperation = 'temporary_user_profile_initialize'
     $process = Start-Process -FilePath $pwsh -Credential $credential -LoadUserProfile -WorkingDirectory $repositoryRoot -ArgumentList '-NoProfile -Command "exit 0"' -PassThru -RedirectStandardOutput $initializeOut -RedirectStandardError $initializeErr
+    $script:CurrentSourceOperation = 'temporary_user_profile_wait'
     if (-not $process.WaitForExit(60000) -or $process.ExitCode -ne 0) {
         if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
         throw 'temporary ordinary-user profile could not be initialized'
     }
-    $sid = $user.SID.Value
+    $script:CurrentSourceOperation = 'temporary_user_profile_validate'
+    $sid = $script:CreatedUserSid
     $profile = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='$sid'" -ErrorAction Stop
     if ($null -eq $profile -or -not (Test-Path -LiteralPath $profile.LocalPath -PathType Container)) {
         throw 'temporary ordinary-user profile was not created'
@@ -1034,12 +1172,15 @@ function New-CnMonMsixTemporaryUser {
 function Invoke-CnMonMsixUserRun {
     param([pscustomobject]$User, [string]$Candidate, [string]$SignedReceipt, [string]$Fixture, [switch]$InjectFailure)
     $script:CurrentGate = 'account'
+    $script:CurrentSourceOperation = 'user_run_environment_setup'
     $profile = $User.Profile
     $local = Join-Path $profile 'AppData/Local'
     $roaming = Join-Path $profile 'AppData/Roaming'
     $temp = Join-Path $local 'Temp'
     New-Item -ItemType Directory -Force -Path $temp, $roaming | Out-Null
-    $sidRule = [Security.AccessControl.FileSystemAccessRule]::new($User.SID, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+    $script:CurrentSourceOperation = 'temporary_user_acl_setup'
+    $sidIdentity = [Security.Principal.SecurityIdentifier]::new([string]$User.SID)
+    $sidRule = [Security.AccessControl.FileSystemAccessRule]::new($sidIdentity, 'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
     $acl = Get-Acl -LiteralPath $ArtifactDirectory
     if ($null -eq $script:OriginalArtifactAcl) { $script:OriginalArtifactAcl = $acl.GetSecurityDescriptorBinaryForm() }
     $acl.AddAccessRule($sidRule)
@@ -1068,6 +1209,10 @@ function Invoke-CnMonMsixUserRun {
         CNMON_NATIVE_COMMAND_EXPECT_PROBE = 'ordinary'
         CNMON_NATIVE_COMMAND_EXPECT_SID = $User.SID
         CNMON_NATIVE_COMMAND_BINARY = (Join-Path $local 'Microsoft/WindowsApps/cn-mon.exe')
+        GITHUB_ACTIONS = $env:GITHUB_ACTIONS
+        GITHUB_EVENT_NAME = $env:GITHUB_EVENT_NAME
+        GITHUB_REPOSITORY = $env:GITHUB_REPOSITORY
+        ImageOS = $env:ImageOS
     }
     foreach ($key in @('CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER', 'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN')) {
         $envOverrides[$key] = [Environment]::GetEnvironmentVariable($key)
@@ -1078,11 +1223,14 @@ function Invoke-CnMonMsixUserRun {
     $stdout = Join-Path $script:PrivateRoot $(if ($InjectFailure) { 'injected-user.stdout.log' } else { 'ordinary-user.stdout.log' })
     $stderr = Join-Path $script:PrivateRoot $(if ($InjectFailure) { 'injected-user.stderr.log' } else { 'ordinary-user.stderr.log' })
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
+    $script:CurrentSourceOperation = 'user_run_process_start'
     $process = Start-Process -FilePath $pwsh -Credential $User.Credential -LoadUserProfile -Environment $envOverrides -WorkingDirectory $repositoryRoot -ArgumentList $argLine -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $script:CurrentSourceOperation = 'user_run_process_wait'
     if (-not $process.WaitForExit(15 * 60 * 1000)) {
         Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
         throw 'ordinary-user package qualification exceeded its time limit'
     }
+    $script:CurrentSourceOperation = 'user_run_result_read'
     return [pscustomobject]@{ ExitCode = $process.ExitCode; ResultPath = (Join-Path $ArtifactDirectory 'msix-native-results.json') }
 }
 
@@ -1110,6 +1258,7 @@ function Remove-CnMonMsixTemporaryUser {
 
 function Invoke-CnMonMsixUserMode {
     $script:CurrentGate = 'identity'
+    $script:CurrentSourceOperation = 'user_mode_account_validation'
     Assert-CnMonMsixWindows
     if (-not $script:PrivateRoot) {
         $script:PrivateRoot = Join-Path $env:TEMP ('cn-mon-msix-user-' + [Guid]::NewGuid().ToString('N'))
@@ -1121,11 +1270,13 @@ function Invoke-CnMonMsixUserMode {
         throw 'ordinary-user SID is required'
     }
     Assert-CnMonMsixOrdinaryUser $ExpectedSid
+    $script:CurrentSourceOperation = 'receipt_validation'
     $receipt = Get-CnMonMsixReceipt $ReceiptPath
     $identity = Assert-CnMonMsixReceipt $receipt $PackagePath 'test' -RequireCandidate
     $script:DiagnosticIdentity = $identity
     $script:IdentityName = [string]$identity.Name
     $script:CurrentGate = 'signature'
+    $script:CurrentSourceOperation = 'user_mode_signature_validation'
     $script:CurrentDiagnosticPhase = 'user-trust-presence'
     $script:TrustPresenceChecked = $false
     $script:TrustedCertificatePresent = $false
@@ -1188,6 +1339,7 @@ function Invoke-CnMonMsixUserMode {
     Set-CnMonMsixGate 'signature' 'pass'
 
     $script:CurrentGate = 'upgrade'
+    $script:CurrentSourceOperation = 'user_mode_package_registration'
     $fixture = [Environment]::GetEnvironmentVariable('CNMON_MSIX_FIXTURE_PACKAGE')
     $fixtureReceiptPath = [Environment]::GetEnvironmentVariable('CNMON_MSIX_FIXTURE_RECEIPT')
     $testExe = [Environment]::GetEnvironmentVariable('CNMON_MSIX_TEST_EXE')
@@ -1217,6 +1369,7 @@ function Invoke-CnMonMsixUserMode {
     $testExe = [Environment]::GetEnvironmentVariable('CNMON_MSIX_TEST_EXE')
     Assert-CnMonMsixExpectedNativeRejection 'missing-package-preflight' $testExe 'NativeMSIXInstalledAlias'
 
+    $script:CurrentSourceOperation = 'user_mode_native_qualification'
     try {
         $fixturePackage = $fixture
         $fixtureReceipt = Get-CnMonMsixReceipt $fixtureReceiptPath
@@ -1393,19 +1546,20 @@ function Invoke-CnMonMsixUserMode {
         Set-CnMonMsixGate 'wack' 'incomplete'
     }
     catch {
+        if ($null -eq $script:FailureSourceOperation) { $script:FailureSourceOperation = $script:CurrentSourceOperation }
         if ($script:InjectedFailure -and $FailAfterInstall) {
             Set-CnMonMsixGate 'fail_injection' 'pass'
             $script:Failure = $true
         }
         else {
-            if (-not $script:Result.gates.Contains($script:CurrentGate) -or $script:Result.gates[$script:CurrentGate] -eq 'pass') {
-                Set-CnMonMsixGate $script:CurrentGate 'fail'
-            }
+            Set-CnMonMsixCaughtGateFailure -Name $script:CurrentGate
             $script:Failure = $true
         }
+        Save-CnMonMsixQualificationFailureEvidence -Mode $Mode -Gate $script:CurrentGate -Operation $script:FailureSourceOperation -ArtifactDirectory $ArtifactDirectory -Identity $script:DiagnosticIdentity -ErrorRecord $_ -PrivateOnly:($script:InjectedFailure -and $FailAfterInstall)
     }
     finally {
         $script:CurrentGate = 'cleanup'
+        $script:CurrentSourceOperation = 'cleanup'
         $cleanupFailed = $false
         try { Remove-CnMonMsixOwnedPackages $script:OwnedPackageSpecs } catch { $cleanupFailed = $true }
         if ($script:OwnedProfileFiles) {
@@ -1424,6 +1578,7 @@ function Invoke-CnMonMsixUserMode {
 
 function Invoke-CnMonMsixHostedMode {
     $script:CurrentGate = 'account'
+    $script:CurrentSourceOperation = 'hosted_preflight'
     Assert-CnMonMsixWindows
     if ($env:GITHUB_ACTIONS -cne 'true' -or [string]::IsNullOrWhiteSpace($env:ImageOS) -or
         $env:ImageOS -notmatch '^win' -or -not (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)) {
@@ -1439,9 +1594,11 @@ function Invoke-CnMonMsixHostedMode {
     if ($FailAfterInstall) { throw 'failure injection is only used by the hosted orchestrator' }
     $script:PrivateRoot = Join-Path $env:RUNNER_TEMP ('cn-mon-msix-private-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $script:PrivateRoot | Out-Null
+    $script:CurrentSourceOperation = 'identity_read'
     $identity = Read-CnMonMsixIdentity
     $script:DiagnosticIdentity = $identity
     $script:IdentityName = [string]$identity.Name
+    $script:CurrentSourceOperation = 'receipt_validation'
     $receipt = Get-CnMonMsixReceipt $ReceiptPath
     $null = Assert-CnMonMsixReceipt $receipt $PackagePath 'unsigned' -RequireCandidate
 
@@ -1465,6 +1622,7 @@ function Invoke-CnMonMsixHostedMode {
     Copy-Item -LiteralPath $PackagePath -Destination $candidate
     $script:CurrentGate = 'signature'
     $script:CurrentDiagnosticPhase = 'candidate-setup'
+    $script:CurrentSourceOperation = 'signature_setup'
     $script:TrustPresenceChecked = $false
     $script:TrustedCertificatePresent = $false
     $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $identity.Publisher -CertStoreLocation Cert:\LocalMachine\My -KeyExportPolicy Exportable -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddHours(6) -ErrorAction Stop
@@ -1541,7 +1699,9 @@ function Invoke-CnMonMsixHostedMode {
     }
 
     $script:CurrentGate = 'fail_injection'
+    $script:CurrentSourceOperation = 'temporary_user_account_create'
     $failureUser = New-CnMonMsixTemporaryUser
+    $script:CurrentSourceOperation = 'user_run_process_start'
     $failureResult = Invoke-CnMonMsixUserRun $failureUser $candidate $signedReceiptPath $fixturePath -InjectFailure
     $failureJson = Get-Content -LiteralPath $failureResult.ResultPath -Raw | ConvertFrom-Json -AsHashtable
     if ($failureResult.ExitCode -eq 0 -or $failureJson.gates.fail_injection -cne 'pass' -or $failureJson.gates.cleanup -cne 'pass') {
@@ -1550,9 +1710,12 @@ function Invoke-CnMonMsixHostedMode {
     Set-CnMonMsixGate 'fail_injection' 'pass'
     Remove-CnMonMsixTemporaryUser $failureUser.Name $failureUser.SID $script:IdentityName
     $script:CreatedUser = $null
+    $script:CreatedUserSid = $null
     $script:CreatedProfile = $null
 
+    $script:CurrentSourceOperation = 'temporary_user_account_create'
     $user = New-CnMonMsixTemporaryUser
+    $script:CurrentSourceOperation = 'user_run_process_start'
     $userResult = Invoke-CnMonMsixUserRun $user $candidate $signedReceiptPath $fixturePath
     $userJson = Get-Content -LiteralPath $userResult.ResultPath -Raw | ConvertFrom-Json -AsHashtable
     foreach ($key in $userJson.gates.Keys) {
@@ -1562,11 +1725,13 @@ function Invoke-CnMonMsixHostedMode {
         $script:Failure = $true
         Remove-CnMonMsixTemporaryUser $user.Name $user.SID $script:IdentityName
         $script:CreatedUser = $null
+        $script:CreatedUserSid = $null
         $script:CreatedProfile = $null
         return
     }
     Remove-CnMonMsixTemporaryUser $user.Name $user.SID $script:IdentityName
     $script:CreatedUser = $null
+    $script:CreatedUserSid = $null
     $script:CreatedProfile = $null
     Set-CnMonMsixGate 'account' 'pass'
     Set-CnMonMsixGate 'fail_injection' 'pass'
@@ -1701,22 +1866,35 @@ try {
     }
 }
 catch {
+    $caughtError = $_
+    if ($null -eq $script:FailureSourceOperation) { $script:FailureSourceOperation = $script:CurrentSourceOperation }
     if ($Mode -in @('Hosted', 'User') -and $script:CurrentGate -ceq 'signature' -and $null -ne $script:DiagnosticIdentity) {
         try {
-            Save-CnMonMsixSignatureFailureEvidence -Mode $Mode -ArtifactDirectory $ArtifactDirectory -Phase $script:CurrentDiagnosticPhase -Identity $script:DiagnosticIdentity -Exception $_.Exception -TrustPresenceChecked:$script:TrustPresenceChecked -TrustedCertificatePresent:$script:TrustedCertificatePresent
+            Save-CnMonMsixSignatureFailureEvidence -Mode $Mode -ArtifactDirectory $ArtifactDirectory -Phase $script:CurrentDiagnosticPhase -Identity $script:DiagnosticIdentity -Exception $caughtError.Exception -TrustPresenceChecked:$script:TrustPresenceChecked -TrustedCertificatePresent:$script:TrustedCertificatePresent
         } catch { }
     }
-    if (-not $script:InjectedFailure) {
-        if (-not $script:Result.gates.Contains($script:CurrentGate) -or $script:Result.gates[$script:CurrentGate] -eq 'pass') {
-            Set-CnMonMsixGate $script:CurrentGate 'fail'
+    if ($Mode -in @('Hosted', 'User')) {
+        $failureIdentity = $script:DiagnosticIdentity
+        if ($null -eq $failureIdentity) {
+            try { $failureIdentity = Read-CnMonMsixIdentity } catch { }
         }
+        Save-CnMonMsixQualificationFailureEvidence -Mode $Mode -Gate $script:CurrentGate -Operation $script:FailureSourceOperation -ArtifactDirectory $ArtifactDirectory -Identity $failureIdentity -ErrorRecord $caughtError
+    }
+    if (-not $script:InjectedFailure) {
+        Set-CnMonMsixCaughtGateFailure -Name $script:CurrentGate
         $script:Failure = $true
     }
 }
 finally {
     if ($Mode -eq 'Hosted') {
+        $script:CurrentSourceOperation = 'cleanup'
         if ($script:CreatedUser) {
-            try { Remove-CnMonMsixTemporaryUser $script:CreatedUser $script:CreatedProfile.SID $script:IdentityName } catch { $script:Failure = $true; Set-CnMonMsixGate 'cleanup' 'fail' }
+            try {
+                Remove-CnMonMsixTemporaryUser $script:CreatedUser $script:CreatedUserSid $script:IdentityName
+                $script:CreatedUser = $null
+                $script:CreatedUserSid = $null
+                $script:CreatedProfile = $null
+            } catch { $script:Failure = $true; Set-CnMonMsixGate 'cleanup' 'fail' }
         }
         if ($script:CreatedCertificate) {
             try { Remove-CnMonMsixOwnedCertificate $script:CreatedCertificate $script:CreatedTrustedCertificate $true } catch { $script:Failure = $true; Set-CnMonMsixGate 'cleanup' 'fail' }

@@ -137,6 +137,40 @@ function Invoke-MockedPackageLifecycle {
     }
 }
 
+function Invoke-MockedPartialUserCleanup {
+    $script:partialUserCleanupCalls = [Collections.Generic.List[string]]::new()
+
+    function Get-AppxPackage {
+        [CmdletBinding()]
+        param([string]$User, [string]$Name)
+        return @()
+    }
+    function Remove-AppxPackage {
+        [CmdletBinding()]
+        param([string]$Package, [string]$User)
+        throw 'unexpected package removal in partial-user cleanup fixture'
+    }
+    function Remove-LocalUser {
+        [CmdletBinding()]
+        param([string]$Name)
+        $script:partialUserCleanupCalls.Add("user:$Name")
+    }
+    function Get-CimInstance {
+        [CmdletBinding()]
+        param([string]$ClassName, [string]$Filter)
+        $script:partialUserCleanupCalls.Add("profile-query:$Filter")
+        return [pscustomobject]@{ Special = $false; LocalPath = 'mock-profile' }
+    }
+    function Remove-CimInstance {
+        [CmdletBinding()]
+        param([object]$InputObject)
+        $script:partialUserCleanupCalls.Add("profile:$($InputObject.LocalPath)")
+    }
+
+    Remove-CnMonMsixTemporaryUser -Name 'owned-user' -Sid 'S-1-5-21-123-456-789-1001' -IdentityName 'Example.CnMon'
+    return @($script:partialUserCleanupCalls)
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetPath = Join-Path $PSScriptRoot 'test-msix-windows.ps1'
 $modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
@@ -174,6 +208,10 @@ $requiredFunctions = @(
     'Invoke-CnMonMsixNativeTests',
     'Get-CnMonMsixSignedPayloadExpectedFiles',
     'Get-CnMonMsixDiagnosticErrorCategory',
+    'Get-CnMonMsixFailureDiagnostic',
+    'Save-CnMonMsixQualificationFailureEvidence',
+    'Set-CnMonMsixCaughtGateFailure',
+    'Remove-CnMonMsixTemporaryUser',
     'Assert-CnMonMsixPackagePayload',
     'Assert-CnMonMsixSignature',
     'Get-CnMonMsixSyntheticPrDiagnosticGuard',
@@ -1041,6 +1079,193 @@ stderr:
         }
         finally {
             foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') }
+        }
+    }
+
+    Invoke-Check 'account failure diagnostics are closed, guarded, and privately retained' {
+        $keys = @(
+            'GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS',
+            'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN'
+        )
+        $old = @{}
+        foreach ($key in $keys) { $old[$key] = [Environment]::GetEnvironmentVariable($key) }
+        try {
+            $env:GITHUB_ACTIONS = 'true'
+            $env:GITHUB_EVENT_NAME = 'pull_request'
+            $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'
+            $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+            $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+            $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $syntheticIdentity = [pscustomobject]@{
+                Name = 'Example.CnMon'
+                Publisher = 'CN=Example, O=Example'
+                PublisherDisplayName = 'Example Publisher'
+                ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+            }
+            $privateText = 'private exception text CN=Actual Publisher, O=Secret at C:\Users\private\profile'
+            if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+                $inner = [Security.Principal.IdentityNotMappedException]::new($privateText)
+                $expectedCategory = 'identity_mapping'
+                $expectedInnerType = 'IdentityNotMappedException'
+            }
+            else {
+                $inner = [UnauthorizedAccessException]::new($privateText)
+                $expectedCategory = 'access_denied'
+                $expectedInnerType = 'UnauthorizedAccessException'
+            }
+            $outer = [InvalidOperationException]::new($privateText, $inner)
+            try { throw $outer }
+            catch { $failureRecord = $_ }
+
+            $failureDiagnostic = Get-CnMonMsixFailureDiagnostic -Mode Hosted -Gate account -Operation temporary_user_acl_setup -ErrorRecord $failureRecord
+            Assert-Equal $failureDiagnostic.gate 'account' 'failure diagnostic lost the qualification gate'
+            Assert-Equal $failureDiagnostic.operation 'temporary_user_acl_setup' 'failure diagnostic lost the safe account operation'
+            Assert-Equal $failureDiagnostic.error_category $expectedCategory 'nested account error was not classified'
+            Assert-Equal $failureDiagnostic.exception_type 'InvalidOperationException' 'outer exception type was not mapped to its fixed value'
+            Assert-Equal $failureDiagnostic.inner_exception_type $expectedInnerType 'inner exception type was not mapped to its fixed value'
+            Assert-True ($failureDiagnostic.hresult -is [ValueType]) 'diagnostic omitted the numeric HRESULT'
+            Assert-True ($failureDiagnostic.script_line -is [ValueType]) 'diagnostic omitted the numeric source line'
+            Assert-True ($failureDiagnostic.stack_lines.Count -le 8) 'diagnostic retained too many stack line numbers'
+            foreach ($line in $failureDiagnostic.stack_lines) { Assert-True ($line -is [ValueType]) 'stack evidence included a nonnumeric value' }
+            $safeText = ConvertTo-Json -InputObject $failureDiagnostic -Depth 5
+            foreach ($sensitive in @($privateText, 'C:\Users\private', 'CN=Actual Publisher', 'Actual Publisher')) {
+                Assert-True ($safeText -notmatch [regex]::Escape($sensitive)) "fixed failure diagnostic leaked '$sensitive'"
+            }
+            $untrustedValues = Get-CnMonMsixFailureDiagnostic -Mode $privateText -Gate $privateText -Operation $privateText -ErrorRecord $failureRecord
+            Assert-Equal $untrustedValues.mode 'unknown' 'failure diagnostic accepted an unrecognized mode value'
+            Assert-Equal $untrustedValues.gate 'unknown' 'failure diagnostic accepted an unrecognized gate value'
+            Assert-Equal $untrustedValues.operation 'unknown' 'failure diagnostic accepted an unrecognized source operation'
+            Assert-True ((ConvertTo-Json -InputObject $untrustedValues -Depth 5) -notmatch [regex]::Escape($privateText)) 'closed-field fallback leaked caller-controlled values'
+
+            $publicDirectory = Join-Path $tempRoot 'general-failure-public'
+            $null = New-Item -ItemType Directory -Path $publicDirectory
+            Save-CnMonMsixQualificationFailureEvidence -Mode Hosted -Gate account -Operation temporary_user_acl_setup -ArtifactDirectory $publicDirectory -Identity $syntheticIdentity -ErrorRecord $failureRecord
+            $publicPath = Join-Path $publicDirectory 'msix-signature-diagnostic.json'
+            $publicText = [IO.File]::ReadAllText($publicPath)
+            $publicDiagnostic = Get-Content -LiteralPath $publicPath -Raw | ConvertFrom-Json -AsHashtable
+            Assert-Equal $publicDiagnostic.qualification_failure.gate 'account' 'outer-catch evidence omitted its gate'
+            Assert-Equal $publicDiagnostic.qualification_failure.operation 'temporary_user_acl_setup' 'outer-catch evidence omitted its source operation'
+            Assert-Equal $publicDiagnostic.qualification_failure.error_category $expectedCategory 'outer-catch evidence omitted its mapped error category'
+            Assert-True ($publicText -notmatch [regex]::Escape($privateText)) 'public JSON included the private exception message'
+            Assert-True ($publicText -notmatch [regex]::Escape('C:\Users\private')) 'public JSON included the private path'
+            Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $publicDirectory 'private-failure-records') -Filter '*.clixml').Count) 1 'synthetic error record was not retained in the private job directory'
+            $privateXml = Get-Content -LiteralPath (Get-ChildItem -LiteralPath (Join-Path $publicDirectory 'private-failure-records') -Filter '*.clixml' | Select-Object -First 1).FullName -Raw
+            Assert-True ($privateXml.Contains('private exception text')) 'full ErrorRecord was not retained privately'
+
+            $manualDirectory = Join-Path $tempRoot 'general-failure-manual'
+            $null = New-Item -ItemType Directory -Path $manualDirectory
+            $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+            Save-CnMonMsixQualificationFailureEvidence -Mode Hosted -Gate account -Operation temporary_user_acl_setup -ArtifactDirectory $manualDirectory -Identity $syntheticIdentity -ErrorRecord $failureRecord
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $manualDirectory 'msix-signature-diagnostic.json'))) 'manual job wrote public failure evidence'
+            Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $manualDirectory 'private-failure-records') -Filter '*.clixml').Count) 1 'manual ErrorRecord was not retained privately'
+
+            $env:GITHUB_EVENT_NAME = 'pull_request'
+            $injectedDirectory = Join-Path $tempRoot 'general-failure-injected'
+            $null = New-Item -ItemType Directory -Path $injectedDirectory
+            Save-CnMonMsixQualificationFailureEvidence -Mode User -Gate fail_injection -Operation user_run_process_wait -ArtifactDirectory $injectedDirectory -Identity $syntheticIdentity -ErrorRecord $failureRecord -PrivateOnly
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $injectedDirectory 'msix-signature-diagnostic.json'))) 'expected failure injection left a public diagnostic that could mask a later failure'
+            Assert-Equal (@(Get-ChildItem -LiteralPath (Join-Path $injectedDirectory 'private-failure-records') -Filter '*.clixml').Count) 1 'expected failure injection did not preserve its private record'
+
+            $outerCatchCalls = Get-CommandNodes $sourceAst 'Save-CnMonMsixQualificationFailureEvidence'
+            Assert-Equal $outerCatchCalls.Count 2 'User and outer catches do not capture general failure evidence'
+            $userMode = @($sourceAst.FindAll({
+                param($candidate)
+                $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq 'Invoke-CnMonMsixUserMode'
+            }, $true))[0]
+            $userRunAst = @($sourceAst.FindAll({
+                param($candidate)
+                $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq 'Invoke-CnMonMsixUserRun'
+            }, $true))[0]
+            Assert-Equal (Get-CommandNodes $userMode 'Save-CnMonMsixQualificationFailureEvidence').Count 1 'credentialed User-mode child does not capture its own swallowed failure'
+            Assert-True ($userMode.Extent.Text -match 'PrivateOnly:\(\$script:InjectedFailure -and \$FailAfterInstall\)') 'expected injection can create a public record before real User-mode failures'
+            foreach ($contextName in @('GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS')) {
+                Assert-True ($userRunAst.Extent.Text.Contains("$contextName = " + '$env:' + $contextName)) "credentialed child does not receive the fixed diagnostic context $contextName"
+            }
+            $gateFailureCalls = Get-CommandNodes $sourceAst 'Set-CnMonMsixCaughtGateFailure'
+            Assert-Equal $gateFailureCalls.Count 2 'both User and outer catches must distinguish default from explicit incomplete gates'
+
+            $previousResult = $script:Result
+            $previousGateUpdates = $script:GateUpdates
+            try {
+                $script:Result = [ordered]@{ gates = [ordered]@{ account = 'incomplete' } }
+                $script:GateUpdates = [ordered]@{}
+                Set-CnMonMsixCaughtGateFailure -Name account
+                Assert-Equal $script:Result.gates.account 'fail' 'caught execution failure left a default-incomplete gate unchanged'
+                $script:Result.gates.account = 'incomplete'
+                $script:GateUpdates = [ordered]@{ account = 'incomplete' }
+                Set-CnMonMsixCaughtGateFailure -Name account
+                Assert-Equal $script:Result.gates.account 'incomplete' 'caught failure overwrote an explicitly recorded prerequisite-incomplete gate'
+            }
+            finally {
+                $script:Result = $previousResult
+                $script:GateUpdates = $previousGateUpdates
+            }
+        }
+        finally {
+            foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') }
+        }
+    }
+
+    Invoke-Check 'temporary user account uses a SID ACL and owns partial profile cleanup' {
+        $userRun = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq 'Invoke-CnMonMsixUserRun'
+        }, $true))[0]
+        $aclConstructor = @($userRun.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.InvokeMemberExpressionAst] -and
+                $candidate.Extent.Text -match 'FileSystemAccessRule\]::new'
+        }, $true))
+        Assert-True ($aclConstructor.Count -eq 1) 'User mode no longer creates its artifact ACL rule'
+        Assert-True ($aclConstructor[0].Extent.Text -match '\$sidIdentity') 'artifact ACL rule does not use its SID identity'
+        $sidIdentityAssignment = @($userRun.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $candidate.Left.Extent.Text -eq '$sidIdentity'
+        }, $true)) | Select-Object -First 1
+        Assert-True ($null -ne $sidIdentityAssignment -and $sidIdentityAssignment.Right.Extent.Text -match '\[Security\.Principal\.SecurityIdentifier\]::new\(\[string\]\$User\.SID\)') 'artifact ACL rule still binds a SID string through the NTAccount overload'
+
+        $newUserFunction = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq 'New-CnMonMsixTemporaryUser'
+        }, $true))[0]
+        $newLocalUser = Get-CommandNodes $newUserFunction 'New-LocalUser' | Select-Object -First 1
+        $sidAssignment = @($newUserFunction.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $candidate.Left.Extent.Text -eq '$script:CreatedUserSid'
+        }, $true)) | Select-Object -First 1
+        Assert-True ($null -ne $newLocalUser -and $null -ne $sidAssignment) 'temporary user ownership does not record the returned SID'
+        Assert-True ($sidAssignment.Extent.StartOffset -gt $newLocalUser.Extent.StartOffset -and $sidAssignment.Extent.StartOffset -lt $newUserFunction.Extent.EndOffset) 'owned SID is not recorded immediately after user creation'
+        $createdNameAssignment = @($newUserFunction.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $candidate.Left.Extent.Text -eq '$script:CreatedUser'
+        }, $true)) | Select-Object -First 1
+        $sourceText = [IO.File]::ReadAllText($targetPath)
+        $assignmentGap = $sourceText.Substring($createdNameAssignment.Extent.EndOffset, $sidAssignment.Extent.StartOffset - $createdNameAssignment.Extent.EndOffset)
+        Assert-True ($assignmentGap -match '^\s*$') 'owned SID is not captured immediately alongside the newly created user name'
+        Assert-True ($sidAssignment.Right.Extent.Text -match '\[string\]\$user\.SID\.Value') 'partial-profile cleanup SID is not captured from the owned New-LocalUser result'
+        $outerCleanup = Get-CommandNodes $sourceAst 'Remove-CnMonMsixTemporaryUser' | Where-Object { $_.Extent.Text -match '\$script:CreatedUser\s+\$script:CreatedUserSid' }
+        Assert-True ($outerCleanup.Count -ge 1) 'Hosted rollback does not pass the independently owned SID when profile initialization fails'
+
+        $cleanupCalls = @(Invoke-MockedPartialUserCleanup)
+        Assert-True ($cleanupCalls -contains 'user:owned-user') 'partial-user cleanup did not remove its owned account'
+        Assert-True ($cleanupCalls -contains "profile-query:SID='S-1-5-21-123-456-789-1001'") 'partial-user cleanup did not query the owned SID profile'
+        Assert-True ($cleanupCalls -contains 'profile:mock-profile') 'partial-user cleanup did not remove an existing partially initialized profile'
+
+        if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+            $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new([string]$sid.Value),
+                'Modify', 'ContainerInherit,ObjectInherit', 'None', 'Allow'
+            )
+            $directorySecurity = [Security.AccessControl.DirectorySecurity]::new()
+            $directorySecurity.AddAccessRule($rule)
+            Assert-Equal $rule.IdentityReference.GetType().Name 'SecurityIdentifier' 'ACL constructor did not preserve SID identity'
         }
     }
 
