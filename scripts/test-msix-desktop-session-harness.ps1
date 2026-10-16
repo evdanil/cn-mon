@@ -98,6 +98,43 @@ Assert-True ($prepareSource.IndexOf('Open-CnMonMsixSessionSettings -Page Aliases
     $prepareSource.IndexOf('Add-AppxPackage -Path $script:PackageFullPath', [StringComparison]::Ordinal)) 'Settings binding is not verified before package installation'
 Assert-True ($prepareSource.Contains('settings_pid', [StringComparison]::Ordinal) -and $prepareSource.Contains('host_pid', [StringComparison]::Ordinal) -and
     $prepareSource.Contains('hwnd', [StringComparison]::Ordinal) -and $prepareSource.Contains('user_sid', [StringComparison]::Ordinal)) 'private pre-install Settings witness omits identity or window fields'
+$aliasPhaseAst = $sourceAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -ceq 'Invoke-CnMonMsixSessionAliasState'
+}, $true)
+$aliasPhaseSource = $aliasPhaseAst.Extent.Text
+Assert-True (-not $aliasPhaseSource.Contains('Test-CnMonMsixSessionAliasToggle', [StringComparison]::Ordinal) -and
+    -not $aliasPhaseSource.Contains('TogglePattern', [StringComparison]::Ordinal)) 'alias phase still depends on a UIA toggle pattern'
+Assert-True ($aliasPhaseSource.IndexOf('Wait-CnMonMsixSessionUserConfirmation', [StringComparison]::Ordinal) -lt
+    $aliasPhaseSource.IndexOf('Get-CnMonMsixSessionAutomationWindows', [StringComparison]::Ordinal) -and
+    $aliasPhaseSource.IndexOf('Get-CnMonMsixSessionAutomationWindows', [StringComparison]::Ordinal) -lt
+    $aliasPhaseSource.IndexOf('Save-CnMonMsixSessionScreenshot', [StringComparison]::Ordinal) -and
+    $aliasPhaseSource.IndexOf('Save-CnMonMsixSessionScreenshot', [StringComparison]::Ordinal) -lt
+    $aliasPhaseSource.IndexOf('Invoke-CnMonMsixSessionShellSet', [StringComparison]::Ordinal) -and
+    $aliasPhaseSource.IndexOf('Invoke-CnMonMsixSessionShellSet', [StringComparison]::Ordinal) -lt
+    $aliasPhaseSource.IndexOf('settings_verified = $true', [StringComparison]::Ordinal)) 'alias evidence is marked before exact-window capture and native behavior'
+$aliasFunction = $aliasPhaseAst.Extent.Text
+. ([scriptblock]::Create($aliasFunction))
+function Open-CnMonMsixSessionSettings { $p = [Diagnostics.Process]::GetCurrentProcess(); return @{ Process = $p; SettingsProcess = $p; WindowHandle = [IntPtr]1 } }
+function Wait-CnMonMsixSessionUserConfirmation {}
+function Get-CnMonMsixSessionAutomationWindows { ,@([pscustomobject]@{ verified = $true }) }
+function Set-CnMonMsixSessionWindowForeground {}
+function Save-CnMonMsixSessionScreenshot { param($Name) return $Name }
+function Invoke-CnMonMsixSessionShellSet { if ($script:AliasMockNativeFails) { throw 'mock native failure' }; return @{} }
+function Save-CnMonMsixSessionState {}
+function Write-CnMonMsixSessionSupplement {}
+function Initialize-AliasMockState {
+    $script:State = @{ completed = @{ prepare = $true; alias_off = $false; alias_on = $false }; path_before = [Environment]::GetEnvironmentVariable('PATH', 'Process');
+        screenshots = [Collections.ArrayList]::new(); observations = @{ alias = @{ off = @{ settings_opened = $false; settings_verified = $false; pwsh_failure = $false; cmd_failure = $false }; on = @{ settings_opened = $false; settings_verified = $false; pwsh_success = $false; cmd_success = $false; packaged_process_identity_verified = $false }; path_unchanged = $false } } }
+}
+Initialize-AliasMockState
+$script:AliasMockNativeFails = $false
+Invoke-CnMonMsixSessionAliasState -AliasState Off
+Assert-True $script:State.observations.alias.off.settings_verified 'operator-confirmed Settings evidence without a TogglePattern was not accepted'
+Initialize-AliasMockState
+$script:AliasMockNativeFails = $true
+try { Invoke-CnMonMsixSessionAliasState -AliasState Off; throw 'mock native failure was not propagated' } catch { Assert-True (-not $script:State.observations.alias.off.settings_verified -and -not $script:State.completed.alias_off) 'native failure incorrectly marked alias evidence complete' }
 $directWindow = [pscustomobject]@{ process_id = 201; session_id = 1; window_handle = 0x100; class_name = 'SystemSettings'; descendant_process_ids = @() }
 Assert-True (Test-CnMonMsixSessionSettingsWindowBinding -Window $directWindow -SettingsProcessId 201 -OwnerProcessId 201 -ExpectedSessionId 1 -ExpectedWindowHandle 0x100 -SettingsIdentityVerified $true -OwnerIdentityVerified $true) 'direct Settings window binding was rejected'
 $hostedWindow = [pscustomobject]@{ process_id = 301; session_id = 1; window_handle = 0x200; class_name = 'ApplicationFrameWindow'; descendant_process_ids = @(201) }

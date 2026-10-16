@@ -541,36 +541,6 @@ function Find-CnMonMsixSessionWindowHandle {
     throw 'the exact run-owned Windows Terminal window title was not observed'
 }
 
-function Test-CnMonMsixSessionAliasToggle {
-    param([Diagnostics.Process]$Process, [Diagnostics.Process]$SettingsProcess, [IntPtr]$WindowHandle, [ValidateSet('Off', 'On')][string]$Expected)
-    try {
-        $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process -SettingsProcess $SettingsProcess -WindowHandle $WindowHandle
-        foreach ($window in $windows) {
-            $elements = $window.FindAll([Windows.Automation.TreeScope]::Descendants,
-                [Windows.Automation.Condition]::TrueCondition)
-            foreach ($element in $elements) {
-                if ([string]$element.Current.Name -notmatch '(?i)cn-mon\.exe') { continue }
-                $pattern = $null
-                if ($element.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
-                    $value = [string]$pattern.Current.ToggleState
-                    return $value -ceq $Expected
-                }
-                $children = $element.FindAll([Windows.Automation.TreeScope]::Descendants,
-                    [Windows.Automation.Condition]::TrueCondition)
-                foreach ($child in $children) {
-                    $pattern = $null
-                    if ($child.TryGetCurrentPattern([Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
-                        $value = [string]$pattern.Current.ToggleState
-                        return $value -ceq $Expected
-                    }
-                }
-            }
-        }
-    }
-    catch { return $false }
-    return $false
-}
-
 function Get-CnMonMsixSessionRepairObservation {
     param([Diagnostics.Process]$Process, [Diagnostics.Process]$SettingsProcess, [IntPtr]$WindowHandle)
     $observation = [ordered]@{ repair_button = $null; progress_visible = $false; candidate_page_verified = $false; visible_names = @() }
@@ -869,24 +839,26 @@ function Invoke-CnMonMsixSessionAliasState {
     try {
         $direction = if ($AliasState -eq 'Off') { 'turn the cn-mon.exe execution alias Off' } else { 'turn the cn-mon.exe execution alias On' }
         Wait-CnMonMsixSessionUserConfirmation -Instruction "In Settings, open Advanced app settings > App execution aliases (or the equivalent visible link on this Windows build), locate cn-mon.exe, and $direction. Leave that Settings page visible." -RequiredText $AliasState.ToUpperInvariant()
-        $verifiedToggle = Test-CnMonMsixSessionAliasToggle -Process $settings.Process -SettingsProcess $settings.SettingsProcess `
-            -WindowHandle $settings.WindowHandle -Expected $AliasState
-        if (-not $verifiedToggle) { throw 'the exact cn-mon.exe alias state was not verified in this Settings process' }
+        $settingsWindows = @(Get-CnMonMsixSessionAutomationWindows -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle)
+        if ($settingsWindows.Count -ne 1) { throw 'the exact verified Settings window was unavailable after operator confirmation' }
         Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
         $screenshotName = if ($AliasState -eq 'Off') { 'alias-off-settings.png' } else { 'alias-on-settings.png' }
         $screenshot = Save-CnMonMsixSessionScreenshot -Name $screenshotName
+        if ([string]::IsNullOrEmpty([string]$screenshot)) { throw 'verified Settings window screenshot was not captured' }
+        $beforePath = [string]$script:State.path_before
+        if ([Environment]::GetEnvironmentVariable('PATH', 'Process') -cne $beforePath) { throw 'PATH changed during alias testing' }
+        $results = Invoke-CnMonMsixSessionShellSet -ExpectedAliasState $AliasState
+        $pathUnchanged = [Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $beforePath
+        if (-not $pathUnchanged) { throw 'PATH changed during alias testing' }
         $script:State.screenshots.Add($screenshot)
         $script:State.observations.alias[$AliasState.ToLowerInvariant()].settings_opened = $true
-        $script:State.observations.alias[$AliasState.ToLowerInvariant()].settings_verified = $verifiedToggle
+        $script:State.observations.alias[$AliasState.ToLowerInvariant()].settings_verified = $true
         Save-CnMonMsixSessionState
     }
     finally {
         $settings.Process.Dispose()
         if ($settings.SettingsProcess.Id -ne $settings.Process.Id) { $settings.SettingsProcess.Dispose() }
     }
-    $beforePath = [string]$script:State.path_before
-    if ([Environment]::GetEnvironmentVariable('PATH', 'Process') -cne $beforePath) { throw 'PATH changed during alias testing' }
-    $results = Invoke-CnMonMsixSessionShellSet -ExpectedAliasState $AliasState
     $key = $AliasState.ToLowerInvariant()
     if ($AliasState -eq 'Off') {
         $script:State.observations.alias.off.pwsh_failure = $true
@@ -897,7 +869,7 @@ function Invoke-CnMonMsixSessionAliasState {
         $script:State.observations.alias.on.cmd_success = $true
         $script:State.observations.alias.on.packaged_process_identity_verified = $true
     }
-    $script:State.observations.alias.path_unchanged = ([Environment]::GetEnvironmentVariable('PATH', 'Process') -ceq $beforePath)
+    $script:State.observations.alias.path_unchanged = $pathUnchanged
     $script:State.completed["alias_$key"] = $true
     Save-CnMonMsixSessionState
     Write-CnMonMsixSessionSupplement
