@@ -23,6 +23,8 @@ $helperNames = @(
     'Test-CnMonMsixSessionRepairTarget',
     'Test-CnMonMsixSessionRepairActionAllowed',
     'Test-CnMonMsixSessionRepairObservationAllowsInvoke',
+    'Test-CnMonMsixSessionSettingsWindowBinding',
+    'Select-CnMonMsixSessionSettingsWindowContext',
     'Test-CnMonMsixOwnedShellProcess',
     'Stop-CnMonMsixSessionShellIfOwned',
     'Test-CnMonMsixSessionRecoveryPaths',
@@ -63,35 +65,51 @@ $repairObservationAst = $sourceAst.Find({
 }, $true)
 Assert-True ($null -ne $repairObservationAst) 'desktop Repair observation constructor is missing'
 Assert-True ([regex]::IsMatch($repairObservationAst.Extent.Text, '\$button\s*=\s*\[pscustomobject\]@\{\s*name\s*=\s''Repair''\s+element\s*=\s*\$element\s+enabled\s*=')) 'actual Repair observation does not bind its exact name, UIA element, and enabled state'
-$settingsFunctionAsts = @($sourceAst.FindAll({
+$openSettingsAst = $sourceAst.Find({
     param($candidate)
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $candidate.Name -in @('Get-CnMonMsixSessionSettingsUri', 'Open-CnMonMsixSessionSettings', 'Test-CnMonMsixSessionSameUserProcess')
-}, $true))
-Assert-Equal $settingsFunctionAsts.Count 3 'Settings open or verification functions are missing'
-. ([scriptblock]::Create((@($settingsFunctionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine)))
-function Start-Process {
-    [CmdletBinding()]
-    param([string]$FilePath, [switch]$PassThru)
-    $global:startedSettingsUris.Add($FilePath)
-    if ($PSBoundParameters.ContainsKey('PassThru')) { throw 'System Settings ShellExecute returned no process handle when PassThru was requested.' }
-}
-function Get-Process {
-    [CmdletBinding()]
-    param([string]$Name)
-    return [pscustomobject]@{
-        Name = 'SystemSettings'
-        SessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
-        MainWindowHandle = [IntPtr]1
-    }
-}
-function Test-CnMonMsixSessionSameUserProcess { param([object]$Process) return $true }
-function Start-Sleep { param([int]$Milliseconds) }
-$global:startedSettingsUris = [Collections.Generic.List[string]]::new()
-$settingsWindow = Open-CnMonMsixSessionSettings -Page 'Aliases'
-Assert-Equal $global:startedSettingsUris.Count 1 'Settings URI was not started exactly once'
-Assert-Equal $global:startedSettingsUris[0] 'ms-settings:appsfeatures' 'Settings URI changed'
-Assert-Equal $settingsWindow.Name 'SystemSettings' 'Settings verification did not return the same-user window'
+        $candidate.Name -ceq 'Open-CnMonMsixSessionSettings'
+}, $true)
+Assert-True ($null -ne $openSettingsAst) 'Settings window discovery function is missing'
+Assert-True ($openSettingsAst.Extent.Text.Contains('Start-Process -FilePath $uri -ErrorAction Stop', [StringComparison]::Ordinal)) 'Settings URI launch changed'
+Assert-True (-not $openSettingsAst.Extent.Text.Contains('-PassThru', [StringComparison]::Ordinal)) 'Settings URI launch requests a ShellExecute process handle'
+Assert-True ($openSettingsAst.Extent.Text.Contains('Select-CnMonMsixSessionSettingsWindowContext', [StringComparison]::Ordinal)) 'Settings discovery does not reject ambiguous root windows'
+$automationWindowsAst = $sourceAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -ceq 'Get-CnMonMsixSessionAutomationWindows'
+}, $true)
+Assert-True ($automationWindowsAst.Extent.Text.Contains('NativeWindowHandleProperty', [StringComparison]::Ordinal)) 'Settings UIA reacquisition is not scoped to the exact HWND'
+Assert-True ($automationWindowsAst.Extent.Text.Contains('Test-CnMonMsixSessionSettingsWindowBinding', [StringComparison]::Ordinal)) 'Settings UIA reacquisition does not revalidate its process binding'
+Assert-True ($sourceText.Contains('Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle', [StringComparison]::Ordinal)) 'Settings foregrounding does not use the selected HWND'
+$terminalWindowAst = $sourceAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -ceq 'Find-CnMonMsixSessionWindowHandle'
+}, $true)
+Assert-True ($terminalWindowAst.Extent.Text.Contains('Get-CnMonMsixSessionAutomationWindows -Process $Process', [StringComparison]::Ordinal)) 'Terminal UIA process-window behavior changed'
+$prepareAst = $sourceAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -ceq 'Invoke-CnMonMsixSessionPrepare'
+}, $true)
+$prepareSource = $prepareAst.Extent.Text
+Assert-True ($prepareSource.IndexOf('Open-CnMonMsixSessionSettings -Page Aliases', [StringComparison]::Ordinal) -lt
+    $prepareSource.IndexOf('Add-AppxPackage -Path $script:PackageFullPath', [StringComparison]::Ordinal)) 'Settings binding is not verified before package installation'
+Assert-True ($prepareSource.Contains('settings_pid', [StringComparison]::Ordinal) -and $prepareSource.Contains('host_pid', [StringComparison]::Ordinal) -and
+    $prepareSource.Contains('hwnd', [StringComparison]::Ordinal) -and $prepareSource.Contains('user_sid', [StringComparison]::Ordinal)) 'private pre-install Settings witness omits identity or window fields'
+$directWindow = [pscustomobject]@{ process_id = 201; session_id = 1; window_handle = 0x100; class_name = 'SystemSettings'; descendant_process_ids = @() }
+Assert-True (Test-CnMonMsixSessionSettingsWindowBinding -Window $directWindow -SettingsProcessId 201 -OwnerProcessId 201 -ExpectedSessionId 1 -ExpectedWindowHandle 0x100 -SettingsIdentityVerified $true -OwnerIdentityVerified $true) 'direct Settings window binding was rejected'
+$hostedWindow = [pscustomobject]@{ process_id = 301; session_id = 1; window_handle = 0x200; class_name = 'ApplicationFrameWindow'; descendant_process_ids = @(201) }
+Assert-True (Test-CnMonMsixSessionSettingsWindowBinding -Window $hostedWindow -SettingsProcessId 201 -OwnerProcessId 301 -ExpectedSessionId 1 -ExpectedWindowHandle 0x200 -SettingsIdentityVerified $true -OwnerIdentityVerified $true) 'verified hosted Settings descendant binding was rejected'
+Assert-True (-not (Test-CnMonMsixSessionSettingsWindowBinding -Window $hostedWindow -SettingsProcessId 201 -OwnerProcessId 301 -ExpectedSessionId 1 -ExpectedWindowHandle 0x200 -SettingsIdentityVerified $true -OwnerIdentityVerified $false)) 'wrong host owner SID was accepted'
+Assert-True (-not (Test-CnMonMsixSessionSettingsWindowBinding -Window $hostedWindow -SettingsProcessId 201 -OwnerProcessId 301 -ExpectedSessionId 2 -ExpectedWindowHandle 0x200 -SettingsIdentityVerified $true -OwnerIdentityVerified $true)) 'wrong host session was accepted'
+Assert-True (-not (Test-CnMonMsixSessionSettingsWindowBinding -Window $hostedWindow -SettingsProcessId 201 -OwnerProcessId 999 -ExpectedSessionId 1 -ExpectedWindowHandle 0x200 -SettingsIdentityVerified $true -OwnerIdentityVerified $true)) 'unrelated frame host was accepted'
+$unrelatedFrame = $hostedWindow.PSObject.Copy(); $unrelatedFrame.descendant_process_ids = @(999)
+Assert-True (-not (Test-CnMonMsixSessionSettingsWindowBinding -Window $unrelatedFrame -SettingsProcessId 201 -OwnerProcessId 301 -ExpectedSessionId 1 -ExpectedWindowHandle 0x200 -SettingsIdentityVerified $true -OwnerIdentityVerified $true)) 'frame without the exact Settings descendant was accepted'
+Assert-True (-not (Test-CnMonMsixSessionSettingsWindowBinding -Window $hostedWindow -SettingsProcessId 201 -OwnerProcessId 301 -ExpectedSessionId 1 -ExpectedWindowHandle 0x201 -SettingsIdentityVerified $true -OwnerIdentityVerified $true)) 'swapped Settings window HWND was accepted'
+Assert-True (-not (Test-CnMonMsixSessionSettingsWindowBinding -Window $hostedWindow -SettingsProcessId 201 -OwnerProcessId 301 -ExpectedSessionId 1 -ExpectedWindowHandle 0x200 -SettingsIdentityVerified $false -OwnerIdentityVerified $true)) 'wrong Settings process owner SID was accepted'
+Assert-True ($null -eq (Select-CnMonMsixSessionSettingsWindowContext -Candidates @($hostedWindow, $directWindow))) 'ambiguous Settings top-level windows were accepted'
 $seedAst = $sourceAst.Find({
     param($candidate)
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and

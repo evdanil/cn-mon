@@ -380,15 +380,67 @@ function Open-CnMonMsixSessionSettings {
     param([ValidateSet('Aliases', 'Package')][string]$Page)
     $uri = Get-CnMonMsixSessionSettingsUri -Page $Page
     $null = Start-Process -FilePath $uri -ErrorAction Stop
+    Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
+    Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     while ([DateTime]::UtcNow -lt $deadline) {
-        $settings = @(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue | Where-Object {
-            $_.SessionId -eq [Diagnostics.Process]::GetCurrentProcess().SessionId -and $_.MainWindowHandle -ne [IntPtr]::Zero
+        $settingsProcesses = @(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue | Where-Object {
+            $_.SessionId -eq [Diagnostics.Process]::GetCurrentProcess().SessionId
         })
-        if ($settings.Count -gt 0 -and (Test-CnMonMsixSessionSameUserProcess -Process $settings[0])) { return $settings[0] }
+        if ($settingsProcesses.Count -gt 0) {
+            $topWindows = [Windows.Automation.AutomationElement]::RootElement.FindAll(
+                [Windows.Automation.TreeScope]::Children, [Windows.Automation.Condition]::TrueCondition)
+            $contexts = [Collections.Generic.List[object]]::new()
+            foreach ($settingsProcess in $settingsProcesses) {
+                if (-not (Test-CnMonMsixSessionSameUserProcess -Process $settingsProcess)) { continue }
+                foreach ($window in $topWindows) {
+                    $windowProcessId = [int]$window.Current.ProcessId
+                    $windowHandle = [IntPtr]$window.Current.NativeWindowHandle
+                    if ($windowHandle -eq [IntPtr]::Zero) { continue }
+                    $ownerProcess = $null
+                    $descendantProcessIds = @()
+                    if ($windowProcessId -eq [int]$settingsProcess.Id) {
+                        $ownerProcess = $settingsProcess
+                    }
+                    elseif ([string]$window.Current.ClassName -ceq 'ApplicationFrameWindow') {
+                        try { $ownerProcess = Get-Process -Id $windowProcessId -ErrorAction Stop }
+                        catch { continue }
+                        if ([string]$ownerProcess.ProcessName -cne 'ApplicationFrameHost' -or
+                            $ownerProcess.SessionId -ne [Diagnostics.Process]::GetCurrentProcess().SessionId -or
+                            -not (Test-CnMonMsixSessionSameUserProcess -Process $ownerProcess)) { continue }
+                        $settingsCondition = [Windows.Automation.PropertyCondition]::new(
+                            [Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$settingsProcess.Id)
+                        $descendants = $window.FindAll([Windows.Automation.TreeScope]::Descendants, $settingsCondition)
+                        $descendantProcessIds = @($descendants | ForEach-Object { [int]$_.Current.ProcessId })
+                    }
+                    else { continue }
+
+                    $binding = [pscustomobject]@{
+                        process_id = $windowProcessId
+                        session_id = [int]$ownerProcess.SessionId
+                        window_handle = [int64]$windowHandle.ToInt64()
+                        class_name = [string]$window.Current.ClassName
+                        descendant_process_ids = $descendantProcessIds
+                    }
+                    if (Test-CnMonMsixSessionSettingsWindowBinding -Window $binding -SettingsProcessId ([int]$settingsProcess.Id) `
+                            -OwnerProcessId ([int]$ownerProcess.Id) -ExpectedSessionId ([Diagnostics.Process]::GetCurrentProcess().SessionId) `
+                            -SettingsIdentityVerified $true -OwnerIdentityVerified $true) {
+                        $linkage = if ($ownerProcess.Id -eq $settingsProcess.Id) { 'direct' } else { 'descendant' }
+                        $contexts.Add([pscustomobject]@{
+                            Process = $ownerProcess
+                            SettingsProcess = $settingsProcess
+                            WindowHandle = $windowHandle
+                            Linkage = $linkage
+                        })
+                    }
+                }
+            }
+            $context = Select-CnMonMsixSessionSettingsWindowContext -Candidates @($contexts.ToArray())
+            if ($null -ne $context) { return $context }
+        }
         Start-Sleep -Milliseconds 300
     }
-    throw 'Windows Settings did not open in the active user session'
+    throw 'Windows Settings did not expose one unambiguous same-user window linked to the active Settings process'
 }
 
 function Test-CnMonMsixSessionSameUserProcess {
@@ -402,11 +454,75 @@ function Test-CnMonMsixSessionSameUserProcess {
     catch { return $false }
 }
 
+function Test-CnMonMsixSessionSettingsWindowBinding {
+    param(
+        [object]$Window,
+        [int]$SettingsProcessId,
+        [int]$OwnerProcessId,
+        [int]$ExpectedSessionId,
+        [int64]$ExpectedWindowHandle = 0,
+        [bool]$SettingsIdentityVerified,
+        [bool]$OwnerIdentityVerified
+    )
+    if ($null -eq $Window -or -not $SettingsIdentityVerified -or -not $OwnerIdentityVerified) { return $false }
+    if ([int]$Window.session_id -ne $ExpectedSessionId -or [int64]$Window.window_handle -eq 0) { return $false }
+    if ($ExpectedWindowHandle -ne 0 -and [int64]$Window.window_handle -ne $ExpectedWindowHandle) { return $false }
+    if ($SettingsProcessId -le 0 -or $OwnerProcessId -le 0) { return $false }
+    if ([int]$Window.process_id -eq $SettingsProcessId) { return $OwnerProcessId -eq $SettingsProcessId }
+    return [int]$Window.process_id -eq $OwnerProcessId -and
+        [string]$Window.class_name -ceq 'ApplicationFrameWindow' -and
+        @($Window.descendant_process_ids | Where-Object { [int]$_ -eq $SettingsProcessId }).Count -gt 0
+}
+
+function Select-CnMonMsixSessionSettingsWindowContext {
+    param([object[]]$Candidates)
+    if ($Candidates.Count -ne 1) { return $null }
+    return $Candidates[0]
+}
+
 function Get-CnMonMsixSessionAutomationWindows {
-    param([Diagnostics.Process]$Process)
+    param([Diagnostics.Process]$Process, [IntPtr]$WindowHandle = [IntPtr]::Zero, [Diagnostics.Process]$SettingsProcess)
     Add-Type -AssemblyName UIAutomationClient -ErrorAction Stop
     Add-Type -AssemblyName UIAutomationTypes -ErrorAction Stop
     if (-not (Test-CnMonMsixSessionSameUserProcess -Process $Process)) { throw 'Settings process is outside the active user session' }
+    if ($null -ne $SettingsProcess) {
+        if ($WindowHandle -eq [IntPtr]::Zero -or -not (Test-CnMonMsixSessionSameUserProcess -Process $SettingsProcess)) {
+            throw 'verified Settings window context is outside the active user session'
+        }
+        $Process.Refresh()
+        $SettingsProcess.Refresh()
+        $condition = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::NativeWindowHandleProperty, [int]$WindowHandle.ToInt64())
+        $windows = [Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [Windows.Automation.TreeScope]::Children, $condition)
+        if ($windows.Count -ne 1) { throw 'the exact Settings top-level window could not be reacquired' }
+        $window = $windows[0]
+        $windowProcessId = [int]$window.Current.ProcessId
+        $descendantProcessIds = @()
+        if ([int]$Process.Id -ne [int]$SettingsProcess.Id) {
+            if ([string]$Process.ProcessName -cne 'ApplicationFrameHost' -or
+                [string]$window.Current.ClassName -cne 'ApplicationFrameWindow') {
+                throw 'Settings frame host identity changed'
+            }
+            $settingsCondition = [Windows.Automation.PropertyCondition]::new(
+                [Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$SettingsProcess.Id)
+            $descendants = $window.FindAll([Windows.Automation.TreeScope]::Descendants, $settingsCondition)
+            $descendantProcessIds = @($descendants | ForEach-Object { [int]$_.Current.ProcessId })
+        }
+        $binding = [pscustomobject]@{
+            process_id = $windowProcessId
+            session_id = [int]$Process.SessionId
+            window_handle = [int64]$window.Current.NativeWindowHandle
+            class_name = [string]$window.Current.ClassName
+            descendant_process_ids = $descendantProcessIds
+        }
+        if (-not (Test-CnMonMsixSessionSettingsWindowBinding -Window $binding -SettingsProcessId ([int]$SettingsProcess.Id) `
+                -OwnerProcessId ([int]$Process.Id) -ExpectedSessionId ([Diagnostics.Process]::GetCurrentProcess().SessionId) `
+                -ExpectedWindowHandle $WindowHandle.ToInt64() -SettingsIdentityVerified $true -OwnerIdentityVerified $true)) {
+            throw 'Settings window no longer contains the verified Settings process'
+        }
+        return @($window)
+    }
     $condition = [Windows.Automation.PropertyCondition]::new(
         [Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$Process.Id)
     return [Windows.Automation.AutomationElement]::RootElement.FindAll(
@@ -426,9 +542,9 @@ function Find-CnMonMsixSessionWindowHandle {
 }
 
 function Test-CnMonMsixSessionAliasToggle {
-    param([Diagnostics.Process]$Process, [ValidateSet('Off', 'On')][string]$Expected)
+    param([Diagnostics.Process]$Process, [Diagnostics.Process]$SettingsProcess, [IntPtr]$WindowHandle, [ValidateSet('Off', 'On')][string]$Expected)
     try {
-        $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process
+        $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process -SettingsProcess $SettingsProcess -WindowHandle $WindowHandle
         foreach ($window in $windows) {
             $elements = $window.FindAll([Windows.Automation.TreeScope]::Descendants,
                 [Windows.Automation.Condition]::TrueCondition)
@@ -456,9 +572,9 @@ function Test-CnMonMsixSessionAliasToggle {
 }
 
 function Get-CnMonMsixSessionRepairObservation {
-    param([Diagnostics.Process]$Process)
+    param([Diagnostics.Process]$Process, [Diagnostics.Process]$SettingsProcess, [IntPtr]$WindowHandle)
     $observation = [ordered]@{ repair_button = $null; progress_visible = $false; candidate_page_verified = $false; visible_names = @() }
-    $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process
+    $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process -SettingsProcess $SettingsProcess -WindowHandle $WindowHandle
     foreach ($window in $windows) {
         $elements = $window.FindAll([Windows.Automation.TreeScope]::Descendants,
             [Windows.Automation.Condition]::TrueCondition)
@@ -493,11 +609,11 @@ function Get-CnMonMsixSessionRepairObservation {
 }
 
 function Save-CnMonMsixSessionRepairUiTrace {
-    param([Diagnostics.Process]$Process)
+    param([Diagnostics.Process]$Process, [Diagnostics.Process]$SettingsProcess, [IntPtr]$WindowHandle)
     $rows = [Collections.Generic.List[string]]::new()
     $rows.Add("SettingsProcessId=$($Process.Id); SessionId=$($Process.SessionId); UserSid=$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)")
     try {
-        $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process
+        $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process -SettingsProcess $SettingsProcess -WindowHandle $WindowHandle
         $count = 0
         foreach ($window in $windows) {
             $elements = $window.FindAll([Windows.Automation.TreeScope]::Descendants,
@@ -753,9 +869,10 @@ function Invoke-CnMonMsixSessionAliasState {
     try {
         $direction = if ($AliasState -eq 'Off') { 'turn the cn-mon.exe execution alias Off' } else { 'turn the cn-mon.exe execution alias On' }
         Wait-CnMonMsixSessionUserConfirmation -Instruction "In Settings, open Advanced app settings > App execution aliases (or the equivalent visible link on this Windows build), locate cn-mon.exe, and $direction. Leave that Settings page visible." -RequiredText $AliasState.ToUpperInvariant()
-        $verifiedToggle = Test-CnMonMsixSessionAliasToggle -Process $settings -Expected $AliasState
+        $verifiedToggle = Test-CnMonMsixSessionAliasToggle -Process $settings.Process -SettingsProcess $settings.SettingsProcess `
+            -WindowHandle $settings.WindowHandle -Expected $AliasState
         if (-not $verifiedToggle) { throw 'the exact cn-mon.exe alias state was not verified in this Settings process' }
-        Set-CnMonMsixSessionWindowForeground -Process $settings
+        Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
         $screenshotName = if ($AliasState -eq 'Off') { 'alias-off-settings.png' } else { 'alias-on-settings.png' }
         $screenshot = Save-CnMonMsixSessionScreenshot -Name $screenshotName
         $script:State.screenshots.Add($screenshot)
@@ -763,7 +880,10 @@ function Invoke-CnMonMsixSessionAliasState {
         $script:State.observations.alias[$AliasState.ToLowerInvariant()].settings_verified = $verifiedToggle
         Save-CnMonMsixSessionState
     }
-    finally { $settings.Dispose() }
+    finally {
+        $settings.Process.Dispose()
+        if ($settings.SettingsProcess.Id -ne $settings.Process.Id) { $settings.SettingsProcess.Dispose() }
+    }
     $beforePath = [string]$script:State.path_before
     if ([Environment]::GetEnvironmentVariable('PATH', 'Process') -cne $beforePath) { throw 'PATH changed during alias testing' }
     $results = Invoke-CnMonMsixSessionShellSet -ExpectedAliasState $AliasState
@@ -791,14 +911,14 @@ function Invoke-CnMonMsixSessionRepair {
     $script:State.observations.repair.data_before_sha256 = $startHash
     $settings = Open-CnMonMsixSessionSettings -Page Package
     try {
-        Set-CnMonMsixSessionWindowForeground -Process $settings
+        Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
         $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-start.png'))
-        Save-CnMonMsixSessionRepairUiTrace -Process $settings
+        Save-CnMonMsixSessionRepairUiTrace -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
         Save-CnMonMsixSessionState
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         $before = $null
         while ([DateTime]::UtcNow -lt $deadline) {
-            $before = Get-CnMonMsixSessionRepairObservation -Process $settings
+            $before = Get-CnMonMsixSessionRepairObservation -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
             if ($before.candidate_page_verified -and $null -ne $before.repair_button -and $before.repair_button.enabled) { break }
             Start-Sleep -Milliseconds 300
         }
@@ -819,10 +939,10 @@ function Invoke-CnMonMsixSessionRepair {
         $deadline = [DateTime]::UtcNow.AddSeconds(30)
         $sawProgress = $false
         while ([DateTime]::UtcNow -lt $deadline) {
-            $current = Get-CnMonMsixSessionRepairObservation -Process $settings
+            $current = Get-CnMonMsixSessionRepairObservation -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
             if ($current.progress_visible -or ($null -ne $current.repair_button -and -not $current.repair_button.enabled)) {
                 $sawProgress = $true
-                Set-CnMonMsixSessionWindowForeground -Process $settings
+                Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
                 $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-progress.png'))
                 Save-CnMonMsixSessionState
                 break
@@ -833,10 +953,10 @@ function Invoke-CnMonMsixSessionRepair {
         if ($sawProgress) {
             $deadline = [DateTime]::UtcNow.AddSeconds(120)
             while ([DateTime]::UtcNow -lt $deadline) {
-                $current = Get-CnMonMsixSessionRepairObservation -Process $settings
+                $current = Get-CnMonMsixSessionRepairObservation -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
                 if (-not $current.progress_visible -and $null -ne $current.repair_button -and
                     (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $current)) {
-                    Set-CnMonMsixSessionWindowForeground -Process $settings
+                    Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
                     $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-complete.png'))
                     $script:State.observations.repair.completion_observed = $true
                     break
@@ -845,7 +965,10 @@ function Invoke-CnMonMsixSessionRepair {
             }
         }
     }
-    finally { $settings.Dispose() }
+    finally {
+        $settings.Process.Dispose()
+        if ($settings.SettingsProcess.Id -ne $settings.Process.Id) { $settings.SettingsProcess.Dispose() }
+    }
 
     if (-not (Test-CnMonMsixDesktopPhaseAllowed -Phase 'RepairAfter' -Completed $script:State.completed)) {
         throw 'desktop repair readback phase is out of order'
@@ -967,6 +1090,7 @@ function Invoke-CnMonMsixSessionPrepare {
         appdata_log_name = 'cn-mon-msix-desktop-' + [Guid]::NewGuid().ToString('N') + '.log'
         appdata_history_path = ''
         appdata_log_path = ''
+        settings_window_binding = $null
         screenshots = [Collections.Generic.List[object]]::new()
         cleanup_passed = $false
         observations = @{
@@ -992,6 +1116,24 @@ function Invoke-CnMonMsixSessionPrepare {
         if (Test-Path -LiteralPath $path) { throw 'package-private AppData target already exists; prior data was preserved' }
     }
     Save-CnMonMsixSessionState
+
+    $initialSettings = Open-CnMonMsixSessionSettings -Page Aliases
+    try {
+        $script:State.settings_window_binding = [ordered]@{
+            linkage = [string]$initialSettings.Linkage
+            host_pid = [int]$initialSettings.Process.Id
+            hwnd = '0x{0:X}' -f $initialSettings.WindowHandle.ToInt64()
+            settings_pid = [int]$initialSettings.SettingsProcess.Id
+            session_id = [int]$initialSettings.Process.SessionId
+            user_sid = [string]$identity.User.Value
+        }
+        Save-CnMonMsixSessionState
+        Write-Host "Pre-install Settings window binding verified: linkage=$($initialSettings.Linkage); host_pid=$($initialSettings.Process.Id); hwnd=$($script:State.settings_window_binding.hwnd); settings_pid=$($initialSettings.SettingsProcess.Id); session_id=$($initialSettings.Process.SessionId); user_sid=$($identity.User.Value)"
+    }
+    finally {
+        $initialSettings.Process.Dispose()
+        if ($initialSettings.SettingsProcess.Id -ne $initialSettings.Process.Id) { $initialSettings.SettingsProcess.Dispose() }
+    }
 
     $script:State.package_install_attempted = $true
     Save-CnMonMsixSessionState
