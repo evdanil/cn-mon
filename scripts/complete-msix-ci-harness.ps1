@@ -112,7 +112,7 @@ Write-Host 'PASS reviewed-record routing requires a newly added PR config and pr
 
 $wantAllowedPaths = @(
     '.github/workflows/msix.yml',
-        '.gitattributes',
+    '.gitattributes',
     'README.md',
     'docs/APPLICATION_SPEC.md',
     'docs/DEVELOPMENT_PLAN.md',
@@ -128,6 +128,7 @@ $wantAllowedPaths = @(
     'scripts/complete-msix-ci.ps1',
     'scripts/complete-msix-qualification-harness.ps1',
     'scripts/complete-msix-qualification.ps1',
+    'scripts/msix-ci.ps1',
     'scripts/release-artifact/archive.go',
     'scripts/release-artifact/main_test.go',
     'scripts/test-msix-desktop-preflight-harness.ps1',
@@ -136,6 +137,9 @@ $wantAllowedPaths = @(
     'scripts/test-msix-desktop-checks.ps1',
     'scripts/test-msix-desktop-session-harness.ps1',
     'scripts/test-msix-desktop-session.ps1',
+    'scripts/test-msix-windows-harness.ps1',
+    'scripts/test-msix-windows.ps1',
+    'scripts/test-release-workflow.py',
     'scripts/test-msix-workflow.py'
 )
 $allowedPaths = @(Get-CnMonMsixCompletionAllowedChangedPaths)
@@ -303,6 +307,19 @@ try {
         $null = New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force
         [IO.File]::WriteAllText($full, '{}')
     }
+    $reviewedDocPaths = @(
+        'docs/APPLICATION_SPEC.md',
+        'docs/DEVELOPMENT_PLAN.md',
+        'docs/MSIX_PACKAGING_PLAN.md',
+        'docs/MSIX_PACKAGING_SPEC.md',
+        'docs/WINDOWS_STORE_LISTING.md',
+        'docs/WINDOWS_STORE_PREPARATION.md'
+    )
+    foreach ($path in $reviewedDocPaths) {
+        $full = Join-Path $controllerRoot $path
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force
+        [IO.File]::WriteAllText($full, 'reviewed baseline documentation')
+    }
     & git -C $controllerRoot add .
     & git -C $controllerRoot commit --quiet -m reviewed-controller
     if ($LASTEXITCODE -ne 0) { throw 'reviewed controller fixture commit failed' }
@@ -310,11 +327,18 @@ try {
     $historicalHash = Get-CnMonMsixGitBlobSha256 -RepositoryRoot $controllerRoot -Revision $controllerRevision -Path 'scripts/complete-msix-qualification.ps1'
     $controllerWorkflowText = [IO.File]::ReadAllText($controllerWorkflow).Replace('REVIEWED_COMPLETION_CONTROLLER_REVISION', $controllerRevision)
     [IO.File]::WriteAllText($controllerWorkflow, $controllerWorkflowText)
-    & git -C $controllerRoot add -- .github/workflows/msix.yml
+    foreach ($path in $reviewedDocPaths) { [IO.File]::WriteAllText((Join-Path $controllerRoot $path), 'reviewed documentation update') }
+    $stagePaths = @('.github/workflows/msix.yml') + $reviewedDocPaths
+    & git -C $controllerRoot add -- $stagePaths
     & git -C $controllerRoot commit --quiet -m evidence-and-pin
     if ($LASTEXITCODE -ne 0) { throw 'evidence controller fixture commit failed' }
     $controllerHead = (& git -C $controllerRoot rev-parse HEAD).Trim()
     Assert-CnMonMsixReviewedController -RepositoryRoot $controllerRoot -ControllerRevision $controllerRevision -HeadRevision $controllerHead -EvidenceOnly
+    $reviewedChanges = Get-CnMonMsixChangedPaths -RepositoryRoot $controllerRoot -BaselineRevision $controllerRevision -HeadRevision $controllerHead
+    $expectedReviewedChanges = @('.github/workflows/msix.yml') + $reviewedDocPaths | Sort-Object
+    $actualReviewedChanges = @($reviewedChanges | Sort-Object)
+    Assert-True ($actualReviewedChanges.Count -eq 7 -and ($actualReviewedChanges -join "`n") -ceq ($expectedReviewedChanges -join "`n")) `
+        'reviewed pin transition did not accept exactly the six qualification documentation updates'
     $forbiddenControllerPath = Join-Path $controllerRoot 'cmd/forbidden.go'
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $forbiddenControllerPath) -Force
     [IO.File]::WriteAllText($forbiddenControllerPath, 'forbidden')

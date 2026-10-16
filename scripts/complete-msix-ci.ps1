@@ -88,6 +88,7 @@ function Get-CnMonMsixCompletionAllowedChangedPaths {
         'scripts/complete-msix-ci.ps1',
         'scripts/complete-msix-qualification-harness.ps1',
         'scripts/complete-msix-qualification.ps1',
+        'scripts/msix-ci.ps1',
         'scripts/release-artifact/archive.go',
         'scripts/release-artifact/main_test.go',
         'scripts/test-msix-desktop-preflight-harness.ps1',
@@ -96,6 +97,9 @@ function Get-CnMonMsixCompletionAllowedChangedPaths {
         'scripts/test-msix-desktop-checks.ps1',
         'scripts/test-msix-desktop-session-harness.ps1',
         'scripts/test-msix-desktop-session.ps1',
+        'scripts/test-msix-windows-harness.ps1',
+        'scripts/test-msix-windows.ps1',
+        'scripts/test-release-workflow.py',
         'scripts/test-msix-workflow.py'
     )
 }
@@ -461,6 +465,12 @@ function Assert-CnMonMsixReviewedController {
     if (-not $EvidenceOnly) { return }
     $evidencePaths = @(
         '.github/workflows/msix.yml',
+        'docs/APPLICATION_SPEC.md',
+        'docs/DEVELOPMENT_PLAN.md',
+        'docs/MSIX_PACKAGING_PLAN.md',
+        'docs/MSIX_PACKAGING_SPEC.md',
+        'docs/WINDOWS_STORE_LISTING.md',
+        'docs/WINDOWS_STORE_PREPARATION.md',
         'packaging/windows/qualification/completion.json',
         'packaging/windows/qualification/local-audit-report.json',
         'packaging/windows/qualification/desktop-supplement.json',
