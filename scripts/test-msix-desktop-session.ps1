@@ -883,6 +883,8 @@ function Invoke-CnMonMsixSessionRepair {
     $script:State.observations.repair.data_before_sha256 = $startHash
     $settings = Open-CnMonMsixSessionSettings -Page Package
     try {
+        Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle -Maximize
+        Wait-CnMonMsixSessionUserConfirmation -Instruction "In Settings, open Installed apps, select cn-mon Network Monitor (version $($script:Receipt.package_version), $($script:Receipt.publisher_display_name)), choose the three-dot menu and Advanced options. Leave the page visible. Locate Repair, but do not click Repair or Reset." -RequiredText 'READY'
         Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
         $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-start.png'))
         Save-CnMonMsixSessionRepairUiTrace -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle

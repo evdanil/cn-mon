@@ -135,6 +135,33 @@ Assert-True $script:State.observations.alias.off.settings_verified 'operator-con
 Initialize-AliasMockState
 $script:AliasMockNativeFails = $true
 try { Invoke-CnMonMsixSessionAliasState -AliasState Off; throw 'mock native failure was not propagated' } catch { Assert-True (-not $script:State.observations.alias.off.settings_verified -and -not $script:State.completed.alias_off) 'native failure incorrectly marked alias evidence complete' }
+$repairFunctionAst = $sourceAst.Find({ param($candidate) $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -ceq 'Invoke-CnMonMsixSessionRepair' }, $true)
+. ([scriptblock]::Create($repairFunctionAst.Extent.Text))
+$repairPhaseSource = $repairFunctionAst.Extent.Text
+Assert-True ($repairPhaseSource.IndexOf('Wait-CnMonMsixSessionUserConfirmation', [StringComparison]::Ordinal) -lt $repairPhaseSource.IndexOf('Save-CnMonMsixSessionScreenshot', [StringComparison]::Ordinal) -and
+    $repairPhaseSource.IndexOf('Wait-CnMonMsixSessionUserConfirmation', [StringComparison]::Ordinal) -lt $repairPhaseSource.IndexOf('Get-CnMonMsixSessionRepairObservation', [StringComparison]::Ordinal) -and
+    $repairPhaseSource.IndexOf('Get-CnMonMsixSessionRepairObservation', [StringComparison]::Ordinal) -lt $repairPhaseSource.IndexOf('$invokePattern.Invoke()', [StringComparison]::Ordinal)) 'Repair operator confirmation is not before observation and activation'
+$repairConfirmationIndex = $repairPhaseSource.IndexOf('Wait-CnMonMsixSessionUserConfirmation', [StringComparison]::Ordinal)
+$repairRefocusIndex = $repairPhaseSource.IndexOf('Set-CnMonMsixSessionWindowForeground', $repairConfirmationIndex, [StringComparison]::Ordinal)
+Assert-True ($repairConfirmationIndex -lt $repairRefocusIndex -and $repairRefocusIndex -lt $repairPhaseSource.IndexOf('Save-CnMonMsixSessionScreenshot', [StringComparison]::Ordinal)) 'Repair window is not refocused after confirmation and before capture'
+Assert-True ($repairPhaseSource.Contains("-RequiredText 'READY'", [StringComparison]::Ordinal) -and $repairPhaseSource.Contains('$script:Receipt.package_version', [StringComparison]::Ordinal) -and $repairPhaseSource.Contains('$script:Receipt.publisher_display_name', [StringComparison]::Ordinal)) 'Repair prompt does not identify the exact candidate and require READY confirmation'
+function Get-CnMonMsixSessionDataDigest { 'fixture-digest' }
+function Save-CnMonMsixSessionRepairUiTrace {}
+function Get-CnMonMsixSessionRepairObservation { $script:RepairObservationCalls++; $script:RepairMockEvents.Add('observation'); throw 'stop after observed confirmation ordering' }
+function Set-CnMonMsixSessionWindowForeground { $script:RepairMockEvents.Add('foreground') }
+function Save-CnMonMsixSessionScreenshot { $script:RepairScreenshotCalls++; $script:RepairMockEvents.Add('screenshot'); return 'fixture.png' }
+function Wait-CnMonMsixSessionUserConfirmation { if ($script:RejectRepairConfirmation) { throw 'desktop observation was not confirmed' }; $script:RepairConfirmed = $true; $script:RepairMockEvents.Add('confirmation') }
+function Initialize-RepairMockState {
+    $script:State = @{ completed = @{ prepare = $true; alias_off = $true; alias_on = $true }; owned_files = @(); screenshots = [Collections.ArrayList]::new(); package_full_name = 'fixture'; observations = @{ repair = @{ data_before_sha256 = $null } } }
+}
+$script:RepairObservationCalls = 0; $script:RepairScreenshotCalls = 0; $script:RepairConfirmed = $false; $script:RepairMockEvents = [Collections.ArrayList]::new()
+$script:RejectRepairConfirmation = $true; Initialize-RepairMockState
+try { Invoke-CnMonMsixSessionRepair; throw 'rejected Repair confirmation was not enforced' } catch {}
+Assert-True ($script:RepairObservationCalls -eq 0 -and $script:RepairScreenshotCalls -eq 0 -and -not $script:RepairConfirmed) 'Repair observation or capture ran after rejected confirmation'
+$script:RejectRepairConfirmation = $false; Initialize-RepairMockState
+try { Invoke-CnMonMsixSessionRepair; throw 'Repair observation stop was not reached' } catch {}
+Assert-True ($script:RepairConfirmed -and $script:RepairObservationCalls -eq 1 -and $script:RepairScreenshotCalls -eq 1) 'valid Repair confirmation did not precede capture and observation'
+Assert-True ($script:RepairMockEvents.IndexOf('confirmation') -lt $script:RepairMockEvents.LastIndexOf('foreground') -and $script:RepairMockEvents.LastIndexOf('foreground') -lt $script:RepairMockEvents.IndexOf('screenshot') -and $script:RepairMockEvents.IndexOf('screenshot') -lt $script:RepairMockEvents.IndexOf('observation')) 'Repair capture sequence did not refocus after confirmation'
 $directWindow = [pscustomobject]@{ process_id = 201; session_id = 1; window_handle = 0x100; class_name = 'SystemSettings'; descendant_process_ids = @() }
 Assert-True (Test-CnMonMsixSessionSettingsWindowBinding -Window $directWindow -SettingsProcessId 201 -OwnerProcessId 201 -ExpectedSessionId 1 -ExpectedWindowHandle 0x100 -SettingsIdentityVerified $true -OwnerIdentityVerified $true) 'direct Settings window binding was rejected'
 $hostedWindow = [pscustomobject]@{ process_id = 301; session_id = 1; window_handle = 0x200; class_name = 'ApplicationFrameWindow'; descendant_process_ids = @(201) }
