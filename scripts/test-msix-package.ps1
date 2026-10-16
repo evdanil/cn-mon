@@ -283,8 +283,13 @@ try {
     if ($renderedVisuals.GetAttribute('AppListEntry') -cne 'default') {
         throw 'rendered package does not have a normal Start entry'
     }
+    $renderedPackageTitle = $validManifest.Xml.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Properties"]/*[local-name()="DisplayName"]')
+    if ($renderedPackageTitle.InnerText -cne 'cn-mon — Network Monitor' -or
+        $renderedVisuals.GetAttribute('DisplayName') -cne 'cn-mon — Network Monitor') {
+        throw 'manifest does not use the reserved display title in both locations'
+    }
     $testCount++
-    Write-Host 'PASS manifest renders runtime identity and normal Start entry'
+    Write-Host 'PASS manifest renders runtime identity, normal Start entry, and reserved display title'
 
     $manifestSource = Get-Content -LiteralPath $manifestPath -Raw
     foreach ($case in @(
@@ -294,6 +299,10 @@ try {
         @{ Name = 'hidden Start entry is rejected'; Old = 'AppListEntry="default"'; New = 'AppListEntry="none"'; Pattern = 'AppListEntry' },
         @{ Name = 'missing Start entry is rejected'; Old = 'AppListEntry="default"'; New = ''; Pattern = 'AppListEntry' },
         @{ Name = 'unknown Start entry is rejected'; Old = 'AppListEntry="default"'; New = 'AppListEntry="unknown"'; Pattern = 'AppListEntry' },
+        @{ Name = 'en dash in package title is rejected'; Old = '<DisplayName>cn-mon — Network Monitor</DisplayName>'; New = '<DisplayName>cn-mon – Network Monitor</DisplayName>'; Pattern = 'display title' },
+        @{ Name = 'missing package title is rejected'; Old = '<DisplayName>cn-mon — Network Monitor</DisplayName>'; New = ''; Pattern = 'display title' },
+        @{ Name = 'hyphen in app title is rejected'; Old = 'DisplayName="cn-mon — Network Monitor"'; New = 'DisplayName="cn-mon - Network Monitor"'; Pattern = 'display title' },
+        @{ Name = 'missing app title is rejected'; Old = ' DisplayName="cn-mon — Network Monitor"'; New = ''; Pattern = 'display title' },
         @{ Name = 'wrong execution alias is rejected'; Old = 'Alias="cn-mon.exe"'; New = 'Alias="other.exe"'; Pattern = 'alias' }
     )) {
         $fixturePath = Join-Path $testRoot ('manifest-' + [guid]::NewGuid().ToString('N') + '.xml')
