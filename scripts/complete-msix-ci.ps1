@@ -546,6 +546,7 @@ function Save-CnMonMsixPinnedArtifactArchive {
     try {
         $request = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, [Uri]$Uri)
         $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Token)
+        $null = $request.Headers.UserAgent.ParseAdd('cn-mon-msix-qualification/1.0')
         $null = $request.Headers.Accept.ParseAdd('application/vnd.github+json')
         $null = $request.Headers.TryAddWithoutValidation('X-GitHub-Api-Version', '2022-11-28')
         $response = $apiClient.Send($request)
