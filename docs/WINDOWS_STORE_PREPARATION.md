@@ -44,6 +44,8 @@ pwsh -NoProfile -File ./scripts/test-msix-desktop-checks.ps1 `
 
 It writes `msix-desktop-supplement.json` and the public test-signer certificate into the existing private artifact directory. Its summary reports preflight eligibility only and deliberately leaves repair, conflicts, screenshots and cleanup incomplete. It does not pass the desktop supplement or substitute for actual installed-package checks. The visible-console supplement and Store screenshot capture remain pending.
 
+For the frozen synthetic candidate, the signer certificate is valid from `2026-10-16 07:12:33 UTC` through `2026-10-16 13:22:32 UTC`. Complete any new installed-desktop qualification start to finish within that interval and retain the existing validity checks. Later immutable-evidence review does not require current certificate validity; independent private review must verify the actual run's start and end times. If qualification is incomplete at expiry, clean up owned state, obtain fresh Hosted and Certify results, replace the candidate pins, records and private evidence atomically, and recapture desktop proof. Re-signing alone does not preserve prior gates.
+
 ## Distribution route
 
 Microsoft's [Store submission overview](https://learn.microsoft.com/windows/apps/publish/) describes two relevant routes:

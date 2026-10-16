@@ -140,6 +140,8 @@ The standalone desktop preflight inventories session/token eligibility, SDK and 
 
 ### Hosted qualification evidence
 
+For the frozen synthetic candidate, the signer certificate is valid from `2026-10-16 07:12:33 UTC` through `2026-10-16 13:22:32 UTC`. Any new installed-desktop qualification must start and finish within this interval, with existing certificate-validity checks retained. Later review or CI replay of the immutable evidence does not require current certificate validity; independent private review must establish that the actual desktop run began and ended within the interval. If the work is incomplete at expiry, clean up owned state, run fresh Hosted qualification and Certify, atomically replace all candidate pins, records and private evidence, and recapture actual desktop proof. Re-signing alone cannot reuse old gates. A longer validity policy is future work: update both the current six-hour certificate-creation lifetime and the 6.5-hour acceptance cap together, against a fresh candidate.
+
 | Run | Candidate and result |
 | --- | --- |
 | [38866515555](https://github.com/evdanil/cn-mon/actions/runs/38866515555), `b6c874d` | Current synthetic sidecar candidate: 17 pass, 0 fail, 2 incomplete. The strict WACK parser validates the report and passes all 24 tests, including `dpi_awareness`. The two incomplete qualification gates are repair and command-conflict/alias recovery; the overall qualification job exits nonzero. |
