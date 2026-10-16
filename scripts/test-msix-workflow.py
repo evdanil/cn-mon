@@ -165,6 +165,17 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertRegex(text, r'uses: actions/download-artifact@[0-9a-f]{40}')
         self.assertRegex(text, r'uses: actions/upload-artifact@[0-9a-f]{40}')
 
+    def test_package_and_trusted_jobs_run_harness_safety_checks_before_qualification(self):
+        text = workflow_text()
+        safety_command = 'pwsh -NoProfile -File ./scripts/test-msix-windows-harness.ps1'
+        for job_name, work_step in (
+                ('synthetic-package', 'Build synthetic unsigned MSIX'),
+                ('trusted-manual', 'Build trusted unsigned MSIX')):
+            job = job_block(text, job_name)
+            safety = named_step(job, 'Test native MSIX harness safety')
+            self.assertIn(safety_command, safety)
+            self.assertLess(job.index('Test native MSIX harness safety'), job.index(work_step))
+
     def test_pr_jobs_use_only_the_four_synthetic_identity_variables(self):
         text = workflow_text()
         for job_name in ('synthetic-package', 'synthetic-qualification'):

@@ -25,6 +25,9 @@ jobs:
       - name: Test workflow and artifact allowlist
         shell: pwsh
         run: python scripts/test-msix-workflow.py
+      - name: Test native MSIX harness safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-windows-harness.ps1
       - name: Configure synthetic identity
         shell: pwsh
         run: |
@@ -189,6 +192,9 @@ jobs:
       - name: Test workflow and artifact allowlist
         shell: pwsh
         run: python scripts/test-msix-workflow.py
+      - name: Test native MSIX harness safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-windows-harness.ps1
       - name: Configure trusted identity
         shell: pwsh
         env:

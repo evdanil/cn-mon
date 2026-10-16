@@ -37,6 +37,96 @@ function Write-WackFixture {
     [IO.File]::WriteAllText($Path, $xml, [Text.UTF8Encoding]::new($false))
 }
 
+function Invoke-MockedCertificateCleanup {
+    param([bool]$RemoveTrustedCopy, [bool]$DeletePrivateKey, [bool]$FailTrustedCopy)
+    $script:certificateRemovalCalls = [Collections.Generic.List[object]]::new()
+    $script:certificateRemovalFailed = $false
+    $script:mockTrustedCopyFailure = $FailTrustedCopy
+    function Remove-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [switch]$Force, [switch]$DeleteKey)
+        $script:certificateRemovalCalls.Add([pscustomobject]@{
+            LiteralPath = $LiteralPath
+            Force = $Force.IsPresent
+            DeleteKey = $DeleteKey.IsPresent
+        })
+        if ($script:mockTrustedCopyFailure -and $LiteralPath -like 'Cert:\LocalMachine\TrustedPeople\*') {
+            throw 'mock TrustedPeople removal failure'
+        }
+    }
+
+    try {
+        Remove-CnMonMsixOwnedCertificate -Thumbprint '0123456789ABCDEF0123456789ABCDEF01234567' -RemoveTrustedCopy:$RemoveTrustedCopy -DeletePrivateKey:$DeletePrivateKey
+    }
+    catch { $script:certificateRemovalFailed = $true }
+    return [pscustomobject]@{
+        Calls = @($script:certificateRemovalCalls)
+        Failed = $script:certificateRemovalFailed
+    }
+}
+
+function Invoke-MockedPackageLifecycle {
+    $script:mockPackageState = [Collections.Generic.List[object]]::new()
+    $script:mockRemovedPackages = [Collections.Generic.List[string]]::new()
+    $script:mockPackageOwnership = [Collections.Generic.List[object]]::new()
+    $script:mockPackageValidationFailed = $false
+    $script:mockPackageCandidate = [pscustomobject]@{
+        Name = 'Example.CnMon'
+        Publisher = 'CN=Example, O=Example'
+        PackageFamilyName = 'Example.CnMon_518g7wxbxvqf6'
+        Version = '1.3.0.0'
+        PackageFullName = 'Example.CnMon_1.3.0.0_x64__518g7wxbxvqf6'
+    }
+    $script:mockPackagePreexisting = [pscustomobject]@{
+        Name = 'Example.CnMon'
+        Publisher = 'CN=Other Publisher'
+        PackageFamilyName = 'Example.CnMon_otherfamily'
+        Version = '1.3.0.0'
+        PackageFullName = 'Example.CnMon_1.3.0.0_x64__otherfamily'
+    }
+    $script:mockPackageState.Add($script:mockPackagePreexisting)
+
+    function Add-AppxPackage {
+        [CmdletBinding()]
+        param([string]$Path)
+        $script:mockPackageState.Add($script:mockPackageCandidate)
+    }
+    function Get-AppxPackage {
+        [CmdletBinding()]
+        param([string]$Name)
+        return @($script:mockPackageState | Where-Object { [string]$_.Name -ceq $Name })
+    }
+    function Remove-AppxPackage {
+        [CmdletBinding()]
+        param([string]$Package)
+        $script:mockRemovedPackages.Add($Package)
+        $matches = @($script:mockPackageState | Where-Object { [string]$_.PackageFullName -ceq $Package })
+        foreach ($match in $matches) { $null = $script:mockPackageState.Remove($match) }
+    }
+
+    try {
+        $identity = [pscustomobject]@{
+            Name = 'Example.CnMon'
+            Publisher = 'CN=Example, O=Example'
+            ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+        }
+        Add-CnMonMsixOwnedPackage -Identity $identity -Version '1.3.0.0' -PackagePath 'candidate.msix' -Ownership $script:mockPackageOwnership
+        throw 'simulated validation failure after successful package registration'
+    }
+    catch { $script:mockPackageValidationFailed = $true }
+
+    try { Remove-CnMonMsixOwnedPackages -Ownership $script:mockPackageOwnership }
+    catch { throw 'mock package cleanup unexpectedly failed' }
+    return [pscustomobject]@{
+        ValidationFailed = $script:mockPackageValidationFailed
+        Ownership = $script:mockPackageOwnership
+        Removed = @($script:mockRemovedPackages)
+        Remaining = @($script:mockPackageState)
+        Candidate = $script:mockPackageCandidate
+        Preexisting = $script:mockPackagePreexisting
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetPath = Join-Path $PSScriptRoot 'test-msix-windows.ps1'
 $goTestPath = Join-Path $repoRoot 'cmd/cn-mon'
@@ -54,6 +144,9 @@ $requiredFunctions = @(
     'Get-CnMonMsixWackStatus',
     'Get-CnMonMsixTrustAction',
     'Test-CnMonMsixAdministratorsMembership',
+    'Remove-CnMonMsixOwnedCertificate',
+    'Add-CnMonMsixOwnedPackage',
+    'Remove-CnMonMsixOwnedPackages',
     'Assert-CnMonMsixTargetsAbsent',
     'Get-CnMonMsixProfileTargets',
     'Invoke-CnMonMsixNativeTests'
@@ -246,6 +339,44 @@ exit 0
         Assert-Equal (Get-CnMonMsixTrustAction -HasTrustedCertificate $false -FreshHostedRunner $false) 'incomplete' 'untrusted non-hosted certificate was accepted'
     }
 
+    Invoke-Check 'certificate cleanup attempts owned private-key removal after public-copy failure' {
+        $ordinary = Invoke-MockedCertificateCleanup -RemoveTrustedCopy $true -DeletePrivateKey $false -FailTrustedCopy $false
+        Assert-Equal $ordinary.Calls.Count 1 'ordinary cleanup should remove exactly the owned TrustedPeople copy'
+        Assert-Equal $ordinary.Calls[0].LiteralPath 'Cert:\LocalMachine\TrustedPeople\0123456789ABCDEF0123456789ABCDEF01234567' 'ordinary cleanup targeted an unexpected store'
+        Assert-True $ordinary.Calls[0].Force 'ordinary public-copy cleanup omitted force removal'
+        Assert-True (-not $ordinary.Calls[0].DeleteKey) 'ordinary TrustedPeople cleanup tried to delete a private key'
+        Assert-True (-not $ordinary.Failed) 'ordinary cleanup reported failure without an injected removal error'
+
+        $failedTrustedCopy = Invoke-MockedCertificateCleanup -RemoveTrustedCopy $true -DeletePrivateKey $true -FailTrustedCopy $true
+        Assert-True $failedTrustedCopy.Failed 'cleanup did not report the injected TrustedPeople removal failure'
+        Assert-Equal $failedTrustedCopy.Calls.Count 2 'private-key cleanup was skipped after TrustedPeople removal failed'
+        Assert-Equal $failedTrustedCopy.Calls[1].LiteralPath 'Cert:\LocalMachine\My\0123456789ABCDEF0123456789ABCDEF01234567' 'private-key cleanup targeted an unexpected store'
+        Assert-True $failedTrustedCopy.Calls[1].Force 'private-key cleanup omitted force removal'
+        Assert-True $failedTrustedCopy.Calls[1].DeleteKey 'private-key cleanup did not request deletion of the owned key'
+    }
+
+    Invoke-Check 'failed post-registration validation removes only the exact newly owned package' {
+        $lifecycle = Invoke-MockedPackageLifecycle
+        Assert-True $lifecycle.ValidationFailed 'the post-registration validation failure was not simulated'
+        Assert-Equal $lifecycle.Ownership.Count 1 'registration did not record its ownership intent'
+        Assert-True ($lifecycle.Ownership[0].PackageFullNames -contains $lifecycle.Candidate.PackageFullName) 'actual registered PackageFullName was not recorded before later validation'
+        Assert-Equal $lifecycle.Removed.Count 1 'cleanup removed an unexpected number of registrations'
+        Assert-Equal $lifecycle.Removed[0] $lifecycle.Candidate.PackageFullName 'cleanup did not remove the actual newly registered PackageFullName'
+        Assert-Equal $lifecycle.Remaining.Count 1 'cleanup removed a preexisting unrelated registration'
+        Assert-Equal $lifecycle.Remaining[0].PackageFullName $lifecycle.Preexisting.PackageFullName 'cleanup did not preserve the other-family registration'
+
+        $userMode = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Invoke-CnMonMsixUserMode'
+        }, $true))[0]
+        $preflight = Get-CommandNodes $userMode 'Get-AppxPackage' | Where-Object { $_.Extent.Text -match '-Name \$identity\.Name' } | Select-Object -First 1
+        $registration = Get-CommandNodes $userMode 'Add-CnMonMsixOwnedPackage' | Select-Object -First 1
+        Assert-True ($null -ne $preflight -and $null -ne $registration) 'User mode is missing same-name preflight or owned registration'
+        Assert-True ($preflight.Extent.StartOffset -lt $registration.Extent.StartOffset) 'owned package registration starts before preexisting same-name registrations are rejected'
+        Assert-True ($userMode.Extent.Text -match 'qualification user already has a package with this name') 'User mode no longer rejects any preexisting same-name package before registration'
+    }
+
     Invoke-Check 'ordinary-user guard rejects Administrators SID even when token membership is deny-only' {
         Assert-True (Test-CnMonMsixAdministratorsMembership @('S-1-5-32-544')) 'Administrators group SID was not detected'
         Assert-True (-not (Test-CnMonMsixAdministratorsMembership @('S-1-5-32-545', 'S-1-5-32-546'))) 'ordinary built-in groups were treated as Administrators'
@@ -267,6 +398,8 @@ exit 0
         Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'fail' 'explicit WACK failure was not preserved'
         Write-WackFixture $report -Overall 'WARNING'
         Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'fail' 'WACK warning was incorrectly accepted'
+        Write-WackFixture $report -Overall 'PASS' -TestResult 'FAIL'
+        Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'fail' 'per-test WACK failure was hidden by the overall PASS'
         Write-WackFixture $report -Overall 'PASS' -Partial 'TRUE'
         Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'incomplete' 'partial WACK run was accepted'
         Write-WackFixture $report -Overall 'PASS' -TestResult 'UNKNOWN'
