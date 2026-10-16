@@ -18,6 +18,13 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Read release package version
+        id: release
+        shell: pwsh
+        run: |
+          $release = Get-Content -Raw packaging/windows/release.json | ConvertFrom-Json
+          if ($release.package_version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+          "package_version=$($release.package_version)" | Add-Content -Path $env:GITHUB_OUTPUT
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.27.2'
@@ -68,7 +75,7 @@ jobs:
         with:
           name: cn-mon-msix-synthetic-package-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}\cn-mon-msix-job\package\cn-mon_1.3.0.0_x64.msix
+            ${{ runner.temp }}\cn-mon-msix-job\package\cn-mon_${{ steps.release.outputs.package_version }}_x64.msix
             ${{ runner.temp }}\cn-mon-msix-job\package\msix-receipt.json
           if-no-files-found: ignore
           retention-days: 14
@@ -96,6 +103,8 @@ jobs:
     needs: synthetic-package
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      CONTROLLER_REVISION: REVIEWED_COMPLETION_CONTROLLER_REVISION
     permissions:
       actions: read
       contents: read
@@ -111,10 +120,32 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Read release package version
+        id: release
+        shell: pwsh
+        run: |
+          $release = Get-Content -Raw packaging/windows/release.json | ConvertFrom-Json
+          if ($release.package_version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+          "package_version=$($release.package_version)" | Add-Content -Path $env:GITHUB_OUTPUT
       - name: Select the pull request qualification route
         id: route
         shell: pwsh
-        run: pwsh -NoProfile -File ./scripts/complete-msix-ci.ps1 -Mode SelectRoute -ConfigurationPath packaging/windows/qualification/completion.json
+        run: |
+          $revision = $env:CONTROLLER_REVISION
+          if ($revision -notmatch '^[0-9a-f]{40}$') { throw 'reviewed completion controller revision is not pinned' }
+          $script = Join-Path $env:RUNNER_TEMP 'complete-msix-ci.ps1'
+          $git = [Diagnostics.ProcessStartInfo]::new('git')
+          $git.ArgumentList.Add('-C'); $git.ArgumentList.Add($env:GITHUB_WORKSPACE)
+          $git.ArgumentList.Add('cat-file'); $git.ArgumentList.Add('blob')
+          $git.ArgumentList.Add("${revision}:scripts/complete-msix-ci.ps1")
+          $git.UseShellExecute = $false; $git.RedirectStandardOutput = $true; $git.RedirectStandardError = $true
+          $process = [Diagnostics.Process]::Start($git)
+          $stream = [IO.File]::Create($script)
+          try { $process.StandardOutput.BaseStream.CopyTo($stream) } finally { $stream.Dispose() }
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { Remove-Item $script -Force -ErrorAction SilentlyContinue; throw 'reviewed completion controller could not be read' }
+          "controller_path=$script" | Add-Content -Path $env:GITHUB_OUTPUT
+          pwsh -NoProfile -File $script -Mode SelectRoute -ConfigurationPath packaging/windows/qualification/completion.json -RepositoryRoot $env:GITHUB_WORKSPACE -PullRequestBaseRevision '${{ github.event.pull_request.base.sha }}' -PullRequestHeadRevision '${{ github.event.pull_request.head.sha }}' -ControllerRevision $revision
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.27.2'
@@ -135,7 +166,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: pwsh -NoProfile -File ./scripts/complete-msix-ci.ps1 -Mode Complete -ConfigurationPath packaging/windows/qualification/completion.json
+        run: pwsh -NoProfile -File '${{ steps.route.outputs.controller_path }}' -Mode Complete -ConfigurationPath packaging/windows/qualification/completion.json -RepositoryRoot $env:GITHUB_WORKSPACE -ControllerRevision $env:CONTROLLER_REVISION
       - name: Upload reviewed completion summary
         if: success() && steps.route.outputs.mode == 'ReviewedRecord'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -186,7 +217,7 @@ jobs:
         shell: pwsh
         run: >-
           pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1
-          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix'
+          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix'
           -ReceiptPath '${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json'
           -SdkBinDirectory 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
           -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
@@ -201,7 +232,7 @@ jobs:
         with:
           name: cn-mon-msix-synthetic-qualification-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json
@@ -247,6 +278,13 @@ jobs:
           repository: ${{ github.repository }}
           ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Read release package version
+        id: release
+        shell: pwsh
+        run: |
+          $release = Get-Content -Raw packaging/windows/release.json | ConvertFrom-Json
+          if ($release.package_version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+          "package_version=$($release.package_version)" | Add-Content -Path $env:GITHUB_OUTPUT
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.27.2'
@@ -313,7 +351,7 @@ jobs:
         shell: pwsh
         run: >-
           pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1
-          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix'
+          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix'
           -ReceiptPath '${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json'
           -SdkBinDirectory 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
           -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'

@@ -30,6 +30,11 @@ $requiredFunctions = @(
     'Get-CnMonMsixRequiredCompletionPaths',
     'Assert-CnMonMsixCompletionChangedPaths',
     'Get-CnMonMsixGitOutput',
+    'Get-CnMonMsixSha256',
+    'Get-CnMonMsixGitBlobBytes',
+    'Get-CnMonMsixGitBlobSha256',
+    'Export-CnMonMsixGitBlob',
+    'Assert-CnMonMsixReviewedController',
     'Get-CnMonMsixChangedPaths',
     'Assert-CnMonMsixCandidateRevisionAncestor',
     'Assert-CnMonMsixCompletionConfig',
@@ -50,21 +55,64 @@ if (@($requiredFunctions | Where-Object { $_ -notin @($functionAsts | ForEach-Ob
 }
 . ([scriptblock]::Create(($functionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine))
 
-$routePath = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-route-' + [Guid]::NewGuid().ToString('N'))
+$routeRoot = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-route-' + [Guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $routeRoot
 try {
-    Assert-True ((Get-CnMonMsixRoute -ConfigurationPath $routePath -EventName 'pull_request') -ceq 'Qualification') `
+    & git -C $routeRoot init --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'route fixture repository could not be initialized' }
+    & git -C $routeRoot config user.name 'Completion CI harness'
+    & git -C $routeRoot config user.email 'completion-ci@example.invalid'
+    [IO.File]::WriteAllText((Join-Path $routeRoot 'base.txt'), 'base')
+    & git -C $routeRoot add base.txt
+    & git -C $routeRoot commit --quiet -m base
+    if ($LASTEXITCODE -ne 0) { throw 'route fixture base commit could not be created' }
+    $routeBaseRevision = (& git -C $routeRoot rev-parse HEAD).Trim()
+    $routeConfigPath = Join-Path $routeRoot 'packaging/windows/qualification/completion.json'
+    Assert-True ((Get-CnMonMsixRoute -ConfigurationPath $routeConfigPath -RepositoryRoot $routeRoot `
+        -PullRequestBaseRevision $routeBaseRevision -PullRequestHeadRevision $routeBaseRevision `
+        -EventName 'pull_request') -ceq 'Qualification') `
         'missing reviewed configuration did not retain ordinary qualification'
-    [IO.File]::WriteAllText($routePath, 'route-presence-test-only')
-    Assert-True ((Get-CnMonMsixRoute -ConfigurationPath $routePath -EventName 'pull_request') -ceq 'ReviewedRecord') `
-        'present reviewed configuration did not select the reviewed-record route'
-    Assert-Throws { Get-CnMonMsixRoute -ConfigurationPath $routePath -EventName 'workflow_dispatch' } `
+    $null = New-Item -ItemType Directory -Path (Split-Path -Parent $routeConfigPath) -Force
+    [IO.File]::WriteAllText($routeConfigPath, '{"mode":"ReviewedRecord"}')
+    & git -C $routeRoot add packaging/windows/qualification/completion.json
+    & git -C $routeRoot commit --quiet -m 'introduce reviewed completion config'
+    if ($LASTEXITCODE -ne 0) { throw 'route fixture config-add commit could not be created' }
+    $routeAddedRevision = (& git -C $routeRoot rev-parse HEAD).Trim()
+    Assert-True ((Get-CnMonMsixRoute -ConfigurationPath $routeConfigPath -RepositoryRoot $routeRoot `
+        -PullRequestBaseRevision $routeBaseRevision -PullRequestHeadRevision $routeAddedRevision `
+        -EventName 'pull_request') -ceq 'ReviewedRecord') `
+        'newly introduced reviewed configuration did not select the reviewed-record route'
+
+    [IO.File]::WriteAllText((Join-Path $routeRoot 'unrelated.txt'), 'inherited config')
+    & git -C $routeRoot add unrelated.txt
+    & git -C $routeRoot commit --quiet -m 'leave completion config unchanged'
+    if ($LASTEXITCODE -ne 0) { throw 'route fixture inherited-config commit could not be created' }
+    $routeInheritedRevision = (& git -C $routeRoot rev-parse HEAD).Trim()
+    Assert-True ((Get-CnMonMsixRoute -ConfigurationPath $routeConfigPath -RepositoryRoot $routeRoot `
+        -PullRequestBaseRevision $routeAddedRevision -PullRequestHeadRevision $routeInheritedRevision `
+        -EventName 'pull_request') -ceq 'Qualification') `
+        'inherited unchanged reviewed configuration selected reviewed-record mode'
+
+    [IO.File]::WriteAllText($routeConfigPath, '{"mode":"ModifiedReviewedRecord"}')
+    & git -C $routeRoot add packaging/windows/qualification/completion.json
+    & git -C $routeRoot commit --quiet -m 'modify existing completion config'
+    if ($LASTEXITCODE -ne 0) { throw 'route fixture config-modification commit could not be created' }
+    $routeModifiedRevision = (& git -C $routeRoot rev-parse HEAD).Trim()
+    Assert-True ((Get-CnMonMsixRoute -ConfigurationPath $routeConfigPath -RepositoryRoot $routeRoot `
+        -PullRequestBaseRevision $routeAddedRevision -PullRequestHeadRevision $routeModifiedRevision `
+        -EventName 'pull_request') -ceq 'Qualification') `
+        'modified existing reviewed configuration selected reviewed-record mode'
+    Assert-Throws { Get-CnMonMsixRoute -ConfigurationPath $routeConfigPath -RepositoryRoot $routeRoot `
+        -PullRequestBaseRevision $routeAddedRevision -PullRequestHeadRevision $routeModifiedRevision `
+        -EventName 'workflow_dispatch' } `
         'reviewed-record route was available outside pull_request'
 }
-finally { if ([IO.File]::Exists($routePath)) { [IO.File]::Delete($routePath) } }
-Write-Host 'PASS the fixed reviewed-record route is pull-request-only and absent configuration preserves qualification'
+finally { Remove-Item -LiteralPath $routeRoot -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host 'PASS reviewed-record routing requires a newly added PR config and preserves qualification otherwise'
 
 $wantAllowedPaths = @(
     '.github/workflows/msix.yml',
+        '.gitattributes',
     'README.md',
     'docs/APPLICATION_SPEC.md',
     'docs/DEVELOPMENT_PLAN.md',
@@ -110,6 +158,41 @@ Assert-Throws {
     Assert-CnMonMsixCompletionChangedPaths -ChangedPaths @('README.md', 'README.md')
 } 'duplicate changed paths were accepted'
 Write-Host 'PASS completion path changes are explicit, exact and require all sanitized evidence files'
+
+$eolRoot = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-eol-' + [Guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $eolRoot
+try {
+    & git -C $eolRoot init --quiet
+    & git -C $eolRoot config user.name 'Completion EOL harness'
+    & git -C $eolRoot config user.email 'completion-eol@example.invalid'
+    [IO.File]::WriteAllText((Join-Path $eolRoot '.gitattributes'), @'
+packaging/windows/qualification/completion.json -text
+packaging/windows/qualification/local-audit-report.json -text
+packaging/windows/qualification/desktop-supplement.json -text
+packaging/windows/qualification/desktop-review-record.json -text
+'@)
+    $eolPaths = Get-CnMonMsixRequiredCompletionPaths
+    $eolHashes = @{}
+    foreach ($path in $eolPaths) {
+        $full = Join-Path $eolRoot $path
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force
+        $bytes = [byte[]](0x7B, 0x0D, 0x0A, 0x20, 0x22, 0x6B, 0x22, 0x3A, 0x20, 0x31, 0x0A, 0x7D, 0x0D, 0x0A)
+        [IO.File]::WriteAllBytes($full, $bytes)
+        $eolHashes[$path] = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    }
+    & git -C $eolRoot add .
+    & git -C $eolRoot commit --quiet -m raw-evidence-json
+    $eolRevision = (& git -C $eolRoot rev-parse HEAD).Trim()
+    foreach ($autocrlf in @('true', 'false')) {
+        & git -C $eolRoot -c "core.autocrlf=$autocrlf" checkout --quiet --force $eolRevision
+        foreach ($path in $eolPaths) {
+            Assert-True ((Get-CnMonMsixSha256 -Path (Join-Path $eolRoot $path)) -ceq $eolHashes[$path]) `
+                "Git checkout with core.autocrlf=$autocrlf changed evidence bytes in '$path'"
+        }
+    }
+}
+finally { Remove-Item -LiteralPath $eolRoot -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host 'PASS Git preserves exact sanitized evidence JSON bytes with core.autocrlf enabled or disabled'
 
 $testGitRoot = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-git-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $testGitRoot
@@ -196,6 +279,74 @@ try {
 finally { Remove-Item -LiteralPath $testGitRoot -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host 'PASS the immutable packaging revision must be an ancestor of the PR head'
 
+$controllerRoot = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-controller-' + [Guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $controllerRoot
+try {
+    & git -C $controllerRoot init --quiet
+    & git -C $controllerRoot config user.name 'Completion controller harness'
+    & git -C $controllerRoot config user.email 'completion-controller@example.invalid'
+    $controllerWrapper = Join-Path $controllerRoot 'scripts/complete-msix-ci.ps1'
+    $controllerWorkflow = Join-Path $controllerRoot '.github/workflows/msix.yml'
+    $historicalValidator = Join-Path $controllerRoot 'scripts/complete-msix-qualification.ps1'
+    $null = New-Item -ItemType Directory -Path (Split-Path -Parent $controllerWrapper) -Force
+    $null = New-Item -ItemType Directory -Path (Split-Path -Parent $controllerWorkflow) -Force
+    [IO.File]::WriteAllText($controllerWrapper, 'reviewed controller bytes')
+    [IO.File]::WriteAllText($historicalValidator, 'historical validator bytes')
+    [IO.File]::WriteAllText($controllerWorkflow, "pin=REVIEWED_COMPLETION_CONTROLLER_REVISION`n")
+    & git -C $controllerRoot add .
+    & git -C $controllerRoot commit --quiet -m reviewed-controller
+    if ($LASTEXITCODE -ne 0) { throw 'reviewed controller fixture commit failed' }
+    $controllerRevision = (& git -C $controllerRoot rev-parse HEAD).Trim()
+    $historicalHash = Get-CnMonMsixGitBlobSha256 -RepositoryRoot $controllerRoot -Revision $controllerRevision -Path 'scripts/complete-msix-qualification.ps1'
+    $controllerWorkflowText = [IO.File]::ReadAllText($controllerWorkflow).Replace('REVIEWED_COMPLETION_CONTROLLER_REVISION', $controllerRevision)
+    [IO.File]::WriteAllText($controllerWorkflow, $controllerWorkflowText)
+    foreach ($path in @(
+        'packaging/windows/qualification/completion.json',
+        'packaging/windows/qualification/local-audit-report.json',
+        'packaging/windows/qualification/desktop-supplement.json',
+        'packaging/windows/qualification/desktop-review-record.json'
+    )) {
+        $full = Join-Path $controllerRoot $path
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $full) -Force
+        [IO.File]::WriteAllText($full, '{}')
+    }
+    & git -C $controllerRoot add .
+    & git -C $controllerRoot commit --quiet -m evidence-and-pin
+    if ($LASTEXITCODE -ne 0) { throw 'evidence controller fixture commit failed' }
+    $controllerHead = (& git -C $controllerRoot rev-parse HEAD).Trim()
+    Assert-CnMonMsixReviewedController -RepositoryRoot $controllerRoot -ControllerRevision $controllerRevision -HeadRevision $controllerHead -EvidenceOnly
+    $forbiddenControllerPath = Join-Path $controllerRoot 'cmd/forbidden.go'
+    $null = New-Item -ItemType Directory -Path (Split-Path -Parent $forbiddenControllerPath) -Force
+    [IO.File]::WriteAllText($forbiddenControllerPath, 'forbidden')
+    & git -C $controllerRoot add -- cmd/forbidden.go
+    & git -C $controllerRoot commit --quiet -m forbidden-change
+    $tamperedHead = (& git -C $controllerRoot rev-parse HEAD).Trim()
+    Assert-Throws { Assert-CnMonMsixReviewedController -RepositoryRoot $controllerRoot -ControllerRevision $controllerRevision -HeadRevision $tamperedHead -EvidenceOnly } `
+        'evidence-only controller check accepted a forbidden application path'
+    [IO.File]::WriteAllText($controllerWorkflow, $controllerWorkflowText + "changed=true`n")
+    & git -C $controllerRoot add -- .github/workflows/msix.yml
+    & git -C $controllerRoot commit --quiet -m workflow-change
+    $tamperedHead = (& git -C $controllerRoot rev-parse HEAD).Trim()
+    Assert-Throws { Assert-CnMonMsixReviewedController -RepositoryRoot $controllerRoot -ControllerRevision $controllerRevision -HeadRevision $tamperedHead } `
+        'controller check accepted a changed workflow'
+    [IO.File]::WriteAllText($controllerWrapper, 'changed controller bytes')
+    & git -C $controllerRoot add -- scripts/complete-msix-ci.ps1
+    & git -C $controllerRoot commit --quiet -m wrapper-change
+    $tamperedHead = (& git -C $controllerRoot rev-parse HEAD).Trim()
+    Assert-Throws { Assert-CnMonMsixReviewedController -RepositoryRoot $controllerRoot -ControllerRevision $controllerRevision -HeadRevision $tamperedHead } `
+        'controller check accepted changed wrapper bytes'
+    [IO.File]::WriteAllText($historicalValidator, 'changed validator bytes')
+    & git -C $controllerRoot add -- scripts/complete-msix-qualification.ps1
+    & git -C $controllerRoot commit --quiet -m changed-validator
+    $tamperedHead = (& git -C $controllerRoot rev-parse HEAD).Trim()
+    Assert-True ((Get-CnMonMsixGitBlobSha256 -RepositoryRoot $controllerRoot -Revision $controllerRevision -Path 'scripts/complete-msix-qualification.ps1') -ceq $historicalHash) `
+        'historical validator blob changed when the current source changed'
+    Assert-True ((Get-CnMonMsixGitBlobSha256 -RepositoryRoot $controllerRoot -Revision $tamperedHead -Path 'scripts/complete-msix-qualification.ps1') -cne $historicalHash) `
+        'historical replay fixture did not distinguish changed current validator source'
+}
+finally { Remove-Item -LiteralPath $controllerRoot -Recurse -Force -ErrorAction SilentlyContinue }
+Write-Host 'PASS reviewed controller, normalized pin transition, evidence-only paths and historical blob replay'
+
 $candidate = Get-CnMonMsixPinnedCandidate
 $artifact = ConvertFrom-Json -InputObject (@{
     id = $candidate.artifact_id
@@ -279,7 +430,7 @@ $validConfig = [ordered]@{
     mode = 'ReviewedRecord'
     expected_local_audit_record_sha256 = 'a' * 64
     expected_native_helper_sha256 = $candidate.native_helper_sha256
-    validator_revision = 'c' * 40
+    validator_revision = 'c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6'
 }
 Assert-CnMonMsixCompletionConfig -Config $validConfig -Candidate $candidate
 $badConfig = [ordered]@{}
@@ -287,6 +438,9 @@ foreach ($key in $validConfig.Keys) { $badConfig[$key] = $validConfig[$key] }
 $badConfig.validator_revision = $candidate.packaging_revision
 Assert-Throws { Assert-CnMonMsixCompletionConfig -Config $badConfig -Candidate $candidate } `
     'completion config accepted the candidate packaging revision as its validator revision'
+$badConfig.validator_revision = 'd' * 40
+Assert-Throws { Assert-CnMonMsixCompletionConfig -Config $badConfig -Candidate $candidate } `
+    'completion config accepted an unreviewed validator revision'
 $badConfig = [ordered]@{}
 foreach ($key in $validConfig.Keys) { $badConfig[$key] = $validConfig[$key] }
 $badConfig.expected_native_helper_sha256 = 'b' * 64
@@ -307,7 +461,7 @@ $gateNames = @(
 $passingGates = [ordered]@{}
 foreach ($gate in $gateNames) { $passingGates[$gate] = 'pass' }
 $auditSha = 'a' * 64
-$validatorRevision = 'c' * 40
+$validatorRevision = 'c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6'
 $driverSha = 'd' * 64
 $supplementSha = 'e' * 64
 $reviewSha = 'f' * 64

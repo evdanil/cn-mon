@@ -163,12 +163,15 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertIn('completion_provenance: ${{ steps.complete.outputs.provenance }}', qualify)
 
         route = named_step(qualify, 'Select the pull request qualification route')
-        self.assertIn('scripts/complete-msix-ci.ps1 -Mode SelectRoute', route)
+        self.assertIn('cat-file', route)
+        self.assertIn('StandardOutput.BaseStream.CopyTo', route)
+        self.assertIn('RUNNER_TEMP', route)
+        self.assertIn('-Mode SelectRoute', route)
         self.assertIn('packaging/windows/qualification/completion.json', route)
         completion = named_step(qualify, 'Validate reviewed MSIX completion record')
         self.assertIn("if: steps.route.outputs.mode == 'ReviewedRecord'", completion)
         self.assertIn('id: complete', completion)
-        self.assertIn('scripts/complete-msix-ci.ps1 -Mode Complete', completion)
+        self.assertIn('steps.route.outputs.controller_path', completion)
         self.assertIn('GH_TOKEN: ${{ github.token }}', completion)
         self.assertIn('EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}', completion)
 
@@ -191,10 +194,18 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertIn('cn-mon-msix-reviewed-completion-summary-${{ github.run_id }}-${{ github.run_attempt }}', reviewed_summary)
         self.assertIn('reviewed-completion-summary.json', reviewed_summary)
         self.assertNotIn('complete-msix-ci.ps1', manual)
+        pin = re.search(r'^\s+CONTROLLER_REVISION: (.+)$', qualify, re.MULTILINE)
+        self.assertIsNotNone(pin)
+        self.assertRegex(pin.group(1), r'^(?:REVIEWED_COMPLETION_CONTROLLER_REVISION|[0-9a-f]{40})$')
+        self.assertLessEqual(text.count('REVIEWED_COMPLETION_CONTROLLER_REVISION'), 1)
 
     def test_reviewed_completion_wrapper_safety_harness(self):
         self.assertTrue(COMPLETION_CI_PATH.is_file(), 'reviewed completion CI wrapper is missing')
         self.assertTrue(COMPLETION_CI_HARNESS_PATH.is_file(), 'reviewed completion CI harness is missing')
+        controller = COMPLETION_CI_PATH.read_text(encoding='utf-8')
+        self.assertIn("c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6", controller)
+        self.assertIn("f50a7bce0752b9b3ba36f42f1fb2a6fd84b21cd32b1a7ed9324cada5ae141e7c", controller)
+        self.assertIn("42fce86a4c1e3f9bce0686a65d28b5ef5bf19e554d38e9ce4e4d2ebd6b7c5613", controller)
         pwsh = shutil.which('pwsh')
         self.assertIsNotNone(pwsh, 'PowerShell 7 is required for the reviewed completion CI harness')
         result = subprocess.run(
@@ -385,12 +396,12 @@ class MsixWorkflowTests(unittest.TestCase):
                           package_uploads + qualify_uploads + manual_uploads]
         self.assertEqual(len(artifact_names), len(set(artifact_names)))
         self.assertEqual(set(path_entries(package_uploads[0])), {
-            r'${{ runner.temp }}\cn-mon-msix-job\package\cn-mon_1.3.0.0_x64.msix',
+            r'${{ runner.temp }}\cn-mon-msix-job\package\cn-mon_${{ steps.release.outputs.package_version }}_x64.msix',
             r'${{ runner.temp }}\cn-mon-msix-job\package\msix-receipt.json',
         })
         qualify_evidence = named_step(qualify, 'Upload synthetic qualification evidence')
         self.assertEqual(set(path_entries(qualify_evidence)), {
-            r'${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix',
+            r'${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json',
@@ -414,6 +425,22 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertIn("steps.package.outcome == 'success'", package_uploads[0])
         for upload in package_uploads + qualify_uploads + manual_uploads:
             self.assertNotRegex(upload.lower(), r'\.pfx|\.p12|\.key|wack\.xml|wack\.html|\.log')
+        self.assertIn('Read release package version', package)
+        self.assertIn('Read release package version', qualify)
+        self.assertIn('Read release package version', manual)
+
+    def test_release_package_version_drives_all_workflow_package_paths(self):
+        text = workflow_text()
+        self.assertIn("$release.package_version -notmatch '^\\d+\\.\\d+\\.\\d+\\.\\d+$'", text)
+        for path in (
+            r'cn-mon_${{ steps.release.outputs.package_version }}_x64.msix',
+            r'cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix',
+        ):
+            self.assertIn(path, text)
+        rendered_131 = text.replace('${{ steps.release.outputs.package_version }}', '1.3.1.0')
+        self.assertIn(r'cn-mon_1.3.1.0_x64.msix', rendered_131)
+        self.assertIn(r'cn-mon_1.3.1.0_x64-signed.msix', rendered_131)
+        self.assertNotRegex(text, r'cn-mon_1\.3\.0\.0_x64(?:-signed)?\.msix')
 
     def test_synthetic_signature_diagnostic_is_guarded_and_exactly_allowlisted(self):
         text = workflow_text()

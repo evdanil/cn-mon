@@ -6,7 +6,11 @@ param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('SelectRoute', 'Complete')]
     [string]$Mode,
-    [string]$ConfigurationPath = 'packaging/windows/qualification/completion.json'
+    [string]$ConfigurationPath = 'packaging/windows/qualification/completion.json',
+    [string]$RepositoryRoot = '',
+    [string]$PullRequestBaseRevision = '',
+    [string]$PullRequestHeadRevision = '',
+    [string]$ControllerRevision = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,10 +19,25 @@ $PSNativeCommandUseErrorActionPreference = $false
 function Get-CnMonMsixRoute {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigurationPath,
-        [Parameter(Mandatory = $true)][string]$EventName
+        [Parameter(Mandatory = $true)][string]$EventName,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$PullRequestBaseRevision,
+        [Parameter(Mandatory = $true)][string]$PullRequestHeadRevision
     )
     if ($EventName -cne 'pull_request') { throw 'reviewed completion is available only in pull request context' }
-    if (Test-Path -LiteralPath $ConfigurationPath -PathType Leaf) { return 'ReviewedRecord' }
+    if ($PullRequestBaseRevision -cnotmatch '^[0-9a-f]{40}$' -or
+        $PullRequestHeadRevision -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'pull request revisions are invalid'
+    }
+    if (-not (Test-Path -LiteralPath $ConfigurationPath -PathType Leaf)) { return 'Qualification' }
+    $relativePath = [IO.Path]::GetRelativePath($RepositoryRoot, [IO.Path]::GetFullPath($ConfigurationPath)).Replace('\', '/')
+    if ($relativePath -cne 'packaging/windows/qualification/completion.json') {
+        throw 'reviewed completion route configuration path is invalid'
+    }
+    $change = Get-CnMonMsixGitOutput -RepositoryRoot $RepositoryRoot -Arguments @(
+        'diff', '--no-renames', '--name-status', $PullRequestBaseRevision, $PullRequestHeadRevision, '--', $relativePath
+    )
+    if ($change -ceq ("A`t" + $relativePath)) { return 'ReviewedRecord' }
     return 'Qualification'
 }
 
@@ -53,6 +72,7 @@ function Get-CnMonMsixPinnedCandidate {
 function Get-CnMonMsixCompletionAllowedChangedPaths {
     return @(
         '.github/workflows/msix.yml',
+        '.gitattributes',
         'README.md',
         'docs/APPLICATION_SPEC.md',
         'docs/DEVELOPMENT_PLAN.md',
@@ -143,7 +163,7 @@ function Assert-CnMonMsixCompletionConfig {
         $Config.expected_native_helper_sha256 -isnot [string] -or
         $Config.expected_native_helper_sha256 -cne $Candidate.native_helper_sha256 -or
         $Config.validator_revision -isnot [string] -or
-        $Config.validator_revision -cnotmatch '^[0-9a-f]{40}$' -or
+        $Config.validator_revision -cne 'c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6' -or
         $Config.validator_revision -ceq $Candidate.packaging_revision) {
         throw 'reviewed completion configuration does not pin the immutable evidence'
     }
@@ -370,6 +390,87 @@ function Get-CnMonMsixGitOutput {
     return ($output -join '')
 }
 
+function Get-CnMonMsixGitBlobBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$Revision,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+    if ($Revision -cnotmatch '^[0-9a-f]{40}$' -or $Path -match '(^/|\\|\.\.)') {
+        throw 'required repository blob provenance is invalid'
+    }
+    $start = [Diagnostics.ProcessStartInfo]::new('git')
+    foreach ($argument in @('-C', $RepositoryRoot, 'cat-file', 'blob', "${Revision}:$Path")) { $start.ArgumentList.Add($argument) }
+    $start.UseShellExecute = $false
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($start)
+    $memory = [IO.MemoryStream]::new()
+    try {
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.StandardOutput.BaseStream.CopyTo($memory)
+        $process.WaitForExit()
+        $null = $stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) { throw 'required repository blob could not be read' }
+        return ,$memory.ToArray()
+    }
+    finally { $memory.Dispose(); $process.Dispose() }
+}
+
+function Get-CnMonMsixGitBlobSha256 {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot, [Parameter(Mandatory = $true)][string]$Revision, [Parameter(Mandatory = $true)][string]$Path)
+    $bytes = Get-CnMonMsixGitBlobBytes -RepositoryRoot $RepositoryRoot -Revision $Revision -Path $Path
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+}
+
+function Export-CnMonMsixGitBlob {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot, [Parameter(Mandatory = $true)][string]$Revision, [Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Destination)
+    $bytes = Get-CnMonMsixGitBlobBytes -RepositoryRoot $RepositoryRoot -Revision $Revision -Path $Path
+    [IO.File]::WriteAllBytes($Destination, $bytes)
+}
+
+function Assert-CnMonMsixReviewedController {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$ControllerRevision,
+        [Parameter(Mandatory = $true)][string]$HeadRevision,
+        [switch]$EvidenceOnly
+    )
+    if ($ControllerRevision -cnotmatch '^[0-9a-f]{40}$' -or $HeadRevision -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'reviewed completion controller revision is not pinned'
+    }
+    Assert-CnMonMsixCandidateRevisionAncestor -RepositoryRoot $RepositoryRoot -BaselineRevision $ControllerRevision -HeadRevision $HeadRevision
+    foreach ($path in @('scripts/complete-msix-ci.ps1', '.github/workflows/msix.yml')) {
+        $headHash = Get-CnMonMsixGitBlobSha256 -RepositoryRoot $RepositoryRoot -Revision $HeadRevision -Path $path
+        if ($path -ceq 'scripts/complete-msix-ci.ps1') {
+            $pinnedHash = Get-CnMonMsixGitBlobSha256 -RepositoryRoot $RepositoryRoot -Revision $ControllerRevision -Path $path
+            if ($headHash -cne $pinnedHash) { throw 'pull request changed the reviewed completion controller' }
+        }
+        else {
+            $templateBytes = Get-CnMonMsixGitBlobBytes -RepositoryRoot $RepositoryRoot -Revision $ControllerRevision -Path $path
+            $headBytes = Get-CnMonMsixGitBlobBytes -RepositoryRoot $RepositoryRoot -Revision $HeadRevision -Path $path
+            $utf8 = [Text.UTF8Encoding]::new($false, $true)
+            $template = $utf8.GetString($templateBytes)
+            $head = $utf8.GetString($headBytes)
+            $placeholder = 'REVIEWED_COMPLETION_CONTROLLER_REVISION'
+            if ([regex]::Matches($template, [regex]::Escape($placeholder)).Count -ne 1) { throw 'reviewed workflow template has an invalid controller pin placeholder' }
+            $expected = $template.Replace($placeholder, $ControllerRevision)
+            if ($head -cne $expected) { throw 'pull request changed the reviewed MSIX workflow outside its controller pin' }
+        }
+    }
+    if (-not $EvidenceOnly) { return }
+    $evidencePaths = @(
+        '.github/workflows/msix.yml',
+        'packaging/windows/qualification/completion.json',
+        'packaging/windows/qualification/local-audit-report.json',
+        'packaging/windows/qualification/desktop-supplement.json',
+        'packaging/windows/qualification/desktop-review-record.json'
+    )
+    $changed = Get-CnMonMsixChangedPaths -RepositoryRoot $RepositoryRoot -BaselineRevision $ControllerRevision -HeadRevision $HeadRevision
+    foreach ($path in $changed) { if ($path -cnotin $evidencePaths) { throw 'pull request changes are outside the evidence-only completion allowlist' } }
+    foreach ($path in $evidencePaths) { if ($path -cnotin $changed) { throw 'pull request is missing a fixed sanitized completion record' } }
+}
+
 function Get-CnMonMsixChangedPaths {
     param(
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,
@@ -532,23 +633,14 @@ function Export-CnMonMsixPinnedBaselineFiles {
     finally { if ($null -ne $archive) { $archive.Dispose() } }
 }
 
-function Assert-CnMonMsixValidatorRevisionUnchanged {
-    param(
-        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
-        [Parameter(Mandatory = $true)][string]$ValidatorRevision,
-        [Parameter(Mandatory = $true)][string]$HeadRevision
-    )
-    & git -C $RepositoryRoot diff --quiet $ValidatorRevision $HeadRevision -- scripts/complete-msix-qualification.ps1 2>$null
-    if ($LASTEXITCODE -ne 0) { throw 'completion validator changed after the pinned local audit revision' }
-}
-
 function Invoke-CnMonMsixReviewedCompletion {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigurationPath,
-        [Parameter(Mandatory = $true)][string]$ExpectedPRHeadSha
+        [Parameter(Mandatory = $true)][string]$ExpectedPRHeadSha,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$ControllerRevision
     )
     $candidate = Get-CnMonMsixPinnedCandidate
-    $repositoryRoot = Split-Path -Parent $PSScriptRoot
     if ($env:GITHUB_ACTIONS -cne 'true' -or $env:GITHUB_EVENT_NAME -cne 'pull_request' -or
         $env:GITHUB_REPOSITORY -cne $candidate.repository) {
         throw 'reviewed completion requires the configured GitHub pull request context'
@@ -562,8 +654,8 @@ function Invoke-CnMonMsixReviewedCompletion {
     $config = Read-CnMonMsixCompletionConfig -Path $ConfigurationPath -Candidate $candidate
     Assert-CnMonMsixCandidateRevisionAncestor -RepositoryRoot $repositoryRoot `
         -BaselineRevision $config.validator_revision -HeadRevision $headRevision
-    Assert-CnMonMsixValidatorRevisionUnchanged -RepositoryRoot $repositoryRoot `
-        -ValidatorRevision $config.validator_revision -HeadRevision $headRevision
+    Assert-CnMonMsixReviewedController -RepositoryRoot $repositoryRoot `
+        -ControllerRevision $ControllerRevision -HeadRevision $headRevision -EvidenceOnly
     $changedPaths = Get-CnMonMsixChangedPaths -RepositoryRoot $repositoryRoot `
         -BaselineRevision $candidate.packaging_revision -HeadRevision $headRevision
     Assert-CnMonMsixCompletionChangedPaths -ChangedPaths $changedPaths
@@ -611,8 +703,15 @@ function Invoke-CnMonMsixReviewedCompletion {
     $inputDirectory = Join-Path $jobRoot 'baseline'
     Export-CnMonMsixPinnedBaselineFiles -ArchivePath $archivePath -Destination $inputDirectory -Candidate $candidate
     $outputPath = Join-Path $jobRoot 'completion-report.json'
-    $validatorPath = Join-Path $repositoryRoot 'scripts/complete-msix-qualification.ps1'
-    $driverPath = Join-Path $repositoryRoot 'scripts/test-msix-desktop-session.ps1'
+    $validatorRevision = 'c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6'
+    $validatorPath = Join-Path $jobRoot 'complete-msix-qualification.ps1'
+    $driverPath = Join-Path $jobRoot 'test-msix-desktop-session.ps1'
+    Export-CnMonMsixGitBlob -RepositoryRoot $repositoryRoot -Revision $validatorRevision -Path 'scripts/complete-msix-qualification.ps1' -Destination $validatorPath
+    Export-CnMonMsixGitBlob -RepositoryRoot $repositoryRoot -Revision $validatorRevision -Path 'scripts/test-msix-desktop-session.ps1' -Destination $driverPath
+    if ((Get-CnMonMsixSha256 -Path $validatorPath) -cne 'f50a7bce0752b9b3ba36f42f1fb2a6fd84b21cd32b1a7ed9324cada5ae141e7c' -or
+        (Get-CnMonMsixSha256 -Path $driverPath) -cne '42fce86a4c1e3f9bce0686a65d28b5ef5bf19e554d38e9ce4e4d2ebd6b7c5613') {
+        throw 'historical desktop validator or driver bytes do not match the reviewed pin'
+    }
     $supplementPath = Join-Path $repositoryRoot 'packaging/windows/qualification/desktop-supplement.json'
     $reviewPath = Join-Path $repositoryRoot 'packaging/windows/qualification/desktop-review-record.json'
     $desktopDriverSha256 = Get-CnMonMsixSha256 -Path $driverPath
@@ -678,16 +777,21 @@ function Invoke-CnMonMsixReviewedCompletion {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
+    $root = if (-not [string]::IsNullOrWhiteSpace($RepositoryRoot)) { $RepositoryRoot } elseif (-not [string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) { $env:GITHUB_WORKSPACE } else { Split-Path -Parent $PSScriptRoot }
     if ($Mode -eq 'SelectRoute') {
-        $root = Split-Path -Parent $PSScriptRoot
+        Assert-CnMonMsixReviewedController -RepositoryRoot $root -ControllerRevision $ControllerRevision -HeadRevision $PullRequestHeadRevision
+    }
+    if ($Mode -eq 'SelectRoute') {
         $path = if ([IO.Path]::IsPathRooted($ConfigurationPath)) { $ConfigurationPath } else { Join-Path $root $ConfigurationPath }
-        $route = Get-CnMonMsixRoute -ConfigurationPath $path -EventName $env:GITHUB_EVENT_NAME
+        $route = Get-CnMonMsixRoute -ConfigurationPath $path -EventName $env:GITHUB_EVENT_NAME `
+            -RepositoryRoot $root -PullRequestBaseRevision $PullRequestBaseRevision -PullRequestHeadRevision $PullRequestHeadRevision
         if ([string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) { throw 'GitHub step output path is unavailable' }
         [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "mode=$route$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
         Write-Host "Selected pull request qualification route: $route"
     }
     else {
-        $path = if ([IO.Path]::IsPathRooted($ConfigurationPath)) { $ConfigurationPath } else { Join-Path (Split-Path -Parent $PSScriptRoot) $ConfigurationPath }
-        Invoke-CnMonMsixReviewedCompletion -ConfigurationPath $path -ExpectedPRHeadSha $env:EXPECTED_PR_HEAD_SHA
+        $path = if ([IO.Path]::IsPathRooted($ConfigurationPath)) { $ConfigurationPath } else { Join-Path $root $ConfigurationPath }
+        Invoke-CnMonMsixReviewedCompletion -ConfigurationPath $path -ExpectedPRHeadSha $env:EXPECTED_PR_HEAD_SHA `
+            -RepositoryRoot $root -ControllerRevision $ControllerRevision
     }
 }
