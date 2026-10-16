@@ -63,6 +63,35 @@ $repairObservationAst = $sourceAst.Find({
 }, $true)
 Assert-True ($null -ne $repairObservationAst) 'desktop Repair observation constructor is missing'
 Assert-True ([regex]::IsMatch($repairObservationAst.Extent.Text, '\$button\s*=\s*\[pscustomobject\]@\{\s*name\s*=\s''Repair''\s+element\s*=\s*\$element\s+enabled\s*=')) 'actual Repair observation does not bind its exact name, UIA element, and enabled state'
+$settingsFunctionAsts = @($sourceAst.FindAll({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -in @('Get-CnMonMsixSessionSettingsUri', 'Open-CnMonMsixSessionSettings', 'Test-CnMonMsixSessionSameUserProcess')
+}, $true))
+Assert-Equal $settingsFunctionAsts.Count 3 'Settings open or verification functions are missing'
+. ([scriptblock]::Create((@($settingsFunctionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine)))
+function Start-Process {
+    [CmdletBinding()]
+    param([string]$FilePath, [switch]$PassThru)
+    $global:startedSettingsUris.Add($FilePath)
+    if ($PSBoundParameters.ContainsKey('PassThru')) { throw 'System Settings ShellExecute returned no process handle when PassThru was requested.' }
+}
+function Get-Process {
+    [CmdletBinding()]
+    param([string]$Name)
+    return [pscustomobject]@{
+        Name = 'SystemSettings'
+        SessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+        MainWindowHandle = [IntPtr]1
+    }
+}
+function Test-CnMonMsixSessionSameUserProcess { param([object]$Process) return $true }
+function Start-Sleep { param([int]$Milliseconds) }
+$global:startedSettingsUris = [Collections.Generic.List[string]]::new()
+$settingsWindow = Open-CnMonMsixSessionSettings -Page 'Aliases'
+Assert-Equal $global:startedSettingsUris.Count 1 'Settings URI was not started exactly once'
+Assert-Equal $global:startedSettingsUris[0] 'ms-settings:appsfeatures' 'Settings URI changed'
+Assert-Equal $settingsWindow.Name 'SystemSettings' 'Settings verification did not return the same-user window'
 $seedAst = $sourceAst.Find({
     param($candidate)
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and

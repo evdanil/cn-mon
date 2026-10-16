@@ -379,7 +379,7 @@ function Get-CnMonMsixSessionSettingsUri {
 function Open-CnMonMsixSessionSettings {
     param([ValidateSet('Aliases', 'Package')][string]$Page)
     $uri = Get-CnMonMsixSessionSettingsUri -Page $Page
-    $null = Start-Process -FilePath $uri -PassThru -ErrorAction Stop
+    $null = Start-Process -FilePath $uri -ErrorAction Stop
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     while ([DateTime]::UtcNow -lt $deadline) {
         $settings = @(Get-Process -Name SystemSettings -ErrorAction SilentlyContinue | Where-Object {
