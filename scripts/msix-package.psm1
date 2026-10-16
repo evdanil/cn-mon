@@ -455,8 +455,8 @@ function Read-CnMonMsixManifest {
         throw 'manifest application contract is invalid'
     }
     $visuals = $applications[0].SelectSingleNode('*[local-name()="VisualElements"]')
-    if ($null -eq $visuals -or $visuals.GetAttribute('AppListEntry') -cne 'none') {
-        throw 'manifest must hide the graphical Start entry'
+    if ($null -eq $visuals -or $visuals.GetAttribute('AppListEntry') -cne 'default') {
+        throw 'manifest must declare the default AppListEntry'
     }
     $aliasNodes = $applications[0].SelectNodes('.//*[local-name()="Extension"][@Category="windows.appExecutionAlias"]/*[local-name()="AppExecutionAlias"]/*[local-name()="ExecutionAlias"]')
     if ($aliasNodes.Count -ne 1 -or $aliasNodes[0].GetAttribute('Alias') -cne 'cn-mon.exe') {

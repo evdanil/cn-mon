@@ -279,14 +279,21 @@ try {
     if ($renderedIdentity.GetAttribute('Name') -cne 'Example.CnMon' -or $renderedIdentity.GetAttribute('ProcessorArchitecture') -cne 'x64') {
         throw 'rendered package identity did not retain the expected architecture and name'
     }
+    $renderedVisuals = $validManifest.Xml.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Applications"]/*[local-name()="Application"]/*[local-name()="VisualElements"]')
+    if ($renderedVisuals.GetAttribute('AppListEntry') -cne 'default') {
+        throw 'rendered package does not have a normal Start entry'
+    }
     $testCount++
-    Write-Host 'PASS manifest renders the runtime identity object'
+    Write-Host 'PASS manifest renders runtime identity and normal Start entry'
 
     $manifestSource = Get-Content -LiteralPath $manifestPath -Raw
     foreach ($case in @(
         @{ Name = 'literal manifest identity is rejected'; Old = '__CNMON_MSIX_IDENTITY_NAME__'; New = 'SYNTHETIC-LITERAL-IDENTITY-MARKER'; Pattern = 'Name' },
         @{ Name = 'wrong manifest Publisher is rejected'; Old = '__CNMON_MSIX_IDENTITY_PUBLISHER__'; New = '__WRONG_PUBLISHER__'; Pattern = 'Publisher' },
         @{ Name = 'non-x64 manifest is rejected'; Old = 'ProcessorArchitecture="x64"'; New = 'ProcessorArchitecture="arm64"'; Pattern = 'x64' },
+        @{ Name = 'hidden Start entry is rejected'; Old = 'AppListEntry="default"'; New = 'AppListEntry="none"'; Pattern = 'AppListEntry' },
+        @{ Name = 'missing Start entry is rejected'; Old = 'AppListEntry="default"'; New = ''; Pattern = 'AppListEntry' },
+        @{ Name = 'unknown Start entry is rejected'; Old = 'AppListEntry="default"'; New = 'AppListEntry="unknown"'; Pattern = 'AppListEntry' },
         @{ Name = 'wrong execution alias is rejected'; Old = 'Alias="cn-mon.exe"'; New = 'Alias="other.exe"'; Pattern = 'alias' }
     )) {
         $fixturePath = Join-Path $testRoot ('manifest-' + [guid]::NewGuid().ToString('N') + '.xml')

@@ -6,7 +6,7 @@
          IgnorableNamespaces="uap uap3 desktop">
   <Identity Name="__CNMON_MSIX_IDENTITY_NAME__"
             Publisher="__CNMON_MSIX_IDENTITY_PUBLISHER__"
-            Version="1.3.0.0"
+            Version="1.3.1.0"
             ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>cn-mon Network Monitor</DisplayName>
@@ -30,7 +30,7 @@
                            BackgroundColor="#0B1220"
                            Square44x44Logo="Assets\Square44x44Logo.png"
                            Square150x150Logo="Assets\Square150x150Logo.png"
-                           AppListEntry="none" />
+                           AppListEntry="default" />
       <Extensions>
         <uap3:Extension Category="windows.appExecutionAlias"
                         Executable="cn-mon.exe"
