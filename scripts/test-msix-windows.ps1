@@ -931,7 +931,7 @@ function Invoke-CnMonMsixUserMode {
             'CNMON_NATIVE_MSIX_ORDINARY icmp_ipv4=OK icmp_ipv6=OK history=external log=external profile=preserved',
             'CNMON_NATIVE_MSIX_ORDINARY tcp_open=open tcp_refused=closed',
             'CNMON_NATIVE_MSIX_PROFILE default-history=real-profile default-log=real-profile',
-            'CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful view=v-and-V',
+            'CNMON_NATIVE_MSIX_VIEW key=v-and-V toggles=verified',
             'CNMON_NATIVE_COMMAND_CONFIG ini90=retained cli30=pruned-old-seed recent-round-retained history-path=ini log-path=ini',
             'CNMON_NATIVE_COMMAND_RERUN actual-command-seed=list-discovery=pass removed-input=replayed tcp=open overrides=10s,10s json-history=agree source-results=preserved invalid-selection=exit2-no-write',
             'CNMON_NATIVE_RELEASE_INPUT file=space-bom stdin=requested tcp=open json=pass history=finished',

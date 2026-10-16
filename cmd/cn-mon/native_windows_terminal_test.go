@@ -328,7 +328,10 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query private-console test role: %v", err)
 	}
-	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful view=v-and-V report=complete display=state-icmp idle-row=stable bottom-anchor=footer edge-row=width-filled edge-update=changed-anchored buffer=viewport=33x7 final-cell=p cursor=footer-start no-scroll=pass geometry=restored resize=tiny-restored input=restored output=restored cursor=restored history=stopped sid=%s", role.sid)
+	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete display=state-icmp idle-row=stable bottom-anchor=footer edge-row=width-filled edge-update=changed-anchored buffer=viewport=33x7 final-cell=p cursor=footer-start no-scroll=pass geometry=restored resize=tiny-restored input=restored output=restored cursor=restored history=stopped sid=%s", role.sid)
+	if os.Getenv("CNMON_MSIX_TEST") == "1" {
+		t.Log("CNMON_NATIVE_MSIX_VIEW key=v-and-V toggles=verified")
+	}
 }
 
 func TestNativeCommandWindowsPrivateConsoleQLeavesWriterActive(t *testing.T) {
