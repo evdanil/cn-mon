@@ -20,6 +20,16 @@ function Assert-Throws {
     throw $Message
 }
 
+function Assert-ThrowsMatching {
+    param([scriptblock]$Action, [string]$Pattern, [string]$Message)
+    try { & $Action }
+    catch {
+        if ($_.Exception.Message -match $Pattern) { return }
+        throw "$Message (unexpected error: $($_.Exception.Message))"
+    }
+    throw $Message
+}
+
 function Get-CommandNodes {
     param([System.Management.Automation.Language.Ast]$Node, [string]$CommandName)
     return @($Node.FindAll({
@@ -129,11 +139,17 @@ function Invoke-MockedPackageLifecycle {
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetPath = Join-Path $PSScriptRoot 'test-msix-windows.ps1'
+$modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
 $goTestPath = Join-Path $repoRoot 'cmd/cn-mon'
 $parseErrors = $null
 $sourceAst = [System.Management.Automation.Language.Parser]::ParseFile($targetPath, [ref]$null, [ref]$parseErrors)
 if ($parseErrors.Count -gt 0) {
     throw "Task2 harness did not parse: $($parseErrors[0].Message)"
+}
+$moduleParseErrors = $null
+$moduleAst = [System.Management.Automation.Language.Parser]::ParseFile($modulePath, [ref]$null, [ref]$moduleParseErrors)
+if ($moduleParseErrors.Count -gt 0) {
+    throw "packaging module did not parse: $($moduleParseErrors[0].Message)"
 }
 
 # Import only pure helper definitions; the qualification script's top-level entry point is never executed.
@@ -156,6 +172,21 @@ $functionAsts = @($sourceAst.FindAll({
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $requiredFunctions -contains $candidate.Name
 }, $true))
+$fixtureFilesFunctionAsts = @($sourceAst.FindAll({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -eq 'Get-CnMonMsixFixtureFiles'
+}, $true))
+$moduleHelperNames = @('Get-CnMonMsixSha256', 'Test-CnMonMsixHash', 'Assert-CnMonMsixPayload')
+$moduleFunctionAsts = @($moduleAst.FindAll({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $moduleHelperNames -contains $candidate.Name
+}, $true))
+$missingModuleHelpers = @($moduleHelperNames | Where-Object { $_ -notin @($moduleFunctionAsts | ForEach-Object Name) })
+if ($missingModuleHelpers.Count -gt 0) {
+    throw "payload assertion helper contract is not available: $($missingModuleHelpers -join ', ')"
+}
 $foundFunctions = @($functionAsts | ForEach-Object Name)
 $missingFunctions = @($requiredFunctions | Where-Object { $_ -notin $foundFunctions })
 if ($missingFunctions.Count -gt 0) {
@@ -165,9 +196,10 @@ if ($missingFunctions.Count -gt 0) {
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-harness-test-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tempRoot
 $helperPath = Join-Path $tempRoot 'extracted-helpers.ps1'
-$helperText = ($functionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+$helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFunctionAsts) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
 [IO.File]::WriteAllText($helperPath, $helperText, [Text.UTF8Encoding]::new($false))
 . $helperPath
+$script:MakeAppxFootprint = @('[Content_Types].xml', 'AppxBlockMap.xml')
 $ArtifactDirectory = $tempRoot
 
 $passed = 0
@@ -375,6 +407,75 @@ exit 0
         Assert-True ($null -ne $preflight -and $null -ne $registration) 'User mode is missing same-name preflight or owned registration'
         Assert-True ($preflight.Extent.StartOffset -lt $registration.Extent.StartOffset) 'owned package registration starts before preexisting same-name registrations are rejected'
         Assert-True ($userMode.Extent.Text -match 'qualification user already has a package with this name') 'User mode no longer rejects any preexisting same-name package before registration'
+    }
+
+    Invoke-Check 'fixture allowlist retains all candidate files and validates the actual payload exactly' {
+        Assert-Equal $fixtureFilesFunctionAsts.Count 1 'full fixture file-map helper is not implemented'
+        $sourceNames = @(
+            'cn-mon.exe', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
+            'AppxManifest.xml', 'Assets/StoreLogo.png', 'Assets/Square44x44Logo.png',
+            'Assets/Square150x150Logo.png', 'README-MSIX.md'
+        )
+        $candidateRoot = Join-Path $tempRoot 'candidate-payload'
+        $fixtureRoot = Join-Path $tempRoot 'fixture-payload'
+        $null = New-Item -ItemType Directory -Path $candidateRoot, $fixtureRoot
+        $sourceFiles = [ordered]@{}
+        $contents = @{}
+        foreach ($name in $sourceNames) {
+            $content = "candidate source bytes for $name"
+            $contents[$name] = $content
+            $candidatePath = Join-Path $candidateRoot $name
+            $fixturePath = Join-Path $fixtureRoot $name
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $candidatePath) -Force
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $fixturePath) -Force
+            [IO.File]::WriteAllText($candidatePath, $content, [Text.UTF8Encoding]::new($false))
+            $fixtureContent = if ($name -ceq 'AppxManifest.xml') { '<manifest version="1.2.999.0" />' } else { $content }
+            [IO.File]::WriteAllText($fixturePath, $fixtureContent, [Text.UTF8Encoding]::new($false))
+            $sourceFiles[$name] = Get-CnMonMsixSha256 -Path $candidatePath
+        }
+        $binaryHash = [string]$sourceFiles['cn-mon.exe']
+        $manifestHash = Get-CnMonMsixSha256 -Path (Join-Path $fixtureRoot 'AppxManifest.xml')
+        $configContent = "[ping]`nhistory_file = fixture-history.db`n[logging]`nlogfile = fixture.log`n"
+        [IO.File]::WriteAllText((Join-Path $fixtureRoot '.cn'), $configContent, [Text.UTF8Encoding]::new($false))
+        $configHash = Get-CnMonMsixSha256 -Path (Join-Path $fixtureRoot '.cn')
+        $expected = Get-CnMonMsixFixtureFiles -SourceFiles $sourceFiles -BinaryHash $binaryHash -ManifestHash $manifestHash -ConfigHash $configHash
+
+        Assert-Equal $sourceFiles.Count 9 'source candidate fixture does not represent all nine package files'
+        Assert-Equal $expected.Count 10 'fixture allowlist does not preserve nine source files plus .cn'
+        foreach ($name in $sourceNames) {
+            Assert-True ($expected.Contains($name)) "fixture allowlist omitted candidate file '$name'"
+            if ($name -ceq 'AppxManifest.xml') {
+                Assert-Equal $expected[$name] $manifestHash 'fixture did not override the source manifest hash'
+                Assert-True ($expected[$name] -cne $sourceFiles[$name]) 'fixture retained the original manifest hash after changing its version'
+            }
+            else {
+                Assert-Equal $expected[$name] $sourceFiles[$name] "fixture changed or omitted source payload hash '$name'"
+            }
+        }
+        Assert-Equal $expected['cn-mon.exe'] $binaryHash 'fixture binary provenance changed'
+        Assert-Equal $expected['.cn'] $configHash 'fixture did not add its generated configuration hash'
+
+        Assert-CnMonMsixPayload -Root $fixtureRoot -ExpectedFiles $expected
+        $unexpected = Join-Path $fixtureRoot 'unexpected.bin'
+        [IO.File]::WriteAllText($unexpected, 'unexpected')
+        Assert-ThrowsMatching { Assert-CnMonMsixPayload -Root $fixtureRoot -ExpectedFiles $expected } 'payload unexpected file' 'shared payload validation did not reject an unexpected fixture file'
+        Remove-Item -LiteralPath $unexpected -Force
+        $assetPath = Join-Path $fixtureRoot 'Assets/StoreLogo.png'
+        [IO.File]::AppendAllText($assetPath, 'corruption')
+        Assert-ThrowsMatching { Assert-CnMonMsixPayload -Root $fixtureRoot -ExpectedFiles $expected } 'payload hash mismatch' 'shared payload validation did not reject a corrupted retained asset'
+
+        $fixtureWriter = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'New-CnMonMsixFixture'
+        }, $true))[0]
+        $fixtureReader = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Assert-CnMonMsixFixtureReceipt'
+        }, $true))[0]
+        Assert-True ($fixtureWriter.Extent.Text -match "purpose\s*=\s*'test-fixture'") 'fixture receipt writer does not mark its artifact as test-fixture'
+        Assert-True ($fixtureReader.Extent.Text -match "purpose\s*-cne\s*'test-fixture'") 'fixture receipt validator accepts a non-test purpose'
     }
 
     Invoke-Check 'ordinary-user guard rejects Administrators SID even when token membership is deny-only' {
