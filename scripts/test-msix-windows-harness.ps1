@@ -395,8 +395,10 @@ exit 0
             Assert-True (-not [string]::IsNullOrWhiteSpace([string]$targets.$field)) "cleanup target '$field' is empty"
         }
         Assert-Equal ([IO.Path]::GetFullPath($targets.ProfileConfig)) ([IO.Path]::GetFullPath((Join-Path $profile '.cn'))) 'profile config path was not derived from the actual profile root'
-        Assert-Equal ([IO.Path]::GetFullPath($targets.ProfileHistory)) ([IO.Path]::GetFullPath((Join-Path $local 'msix-profile-history.db'))) 'profile history path was not derived from LocalAppData'
-        Assert-Equal ([IO.Path]::GetFullPath($targets.CliHistory)) ([IO.Path]::GetFullPath((Join-Path $local 'msix-cli-history.db'))) 'CLI history override path is wrong'
+        Assert-Equal ([IO.Path]::GetFullPath($targets.ProfileHistory)) ([IO.Path]::GetFullPath((Join-Path $profile 'msix-profile-history.db'))) 'profile history path was not derived from the actual user profile'
+        Assert-Equal ([IO.Path]::GetFullPath($targets.ProfileLog)) ([IO.Path]::GetFullPath((Join-Path $profile 'msix-profile.log'))) 'profile log path was not derived from the actual user profile'
+        Assert-Equal ([IO.Path]::GetFullPath($targets.CliHistory)) ([IO.Path]::GetFullPath((Join-Path $profile 'msix-cli-history.db'))) 'CLI history override path was not derived from the actual user profile'
+        Assert-Equal ([IO.Path]::GetFullPath($targets.CliLog)) ([IO.Path]::GetFullPath((Join-Path $profile 'msix-cli.log'))) 'CLI log override path was not derived from the actual user profile'
         Assert-Equal $targets.All.Count 9 'cleanup preflight omitted an owned path'
         Assert-True (@($targets.All | Select-Object -Unique).Count -eq 9) 'cleanup target list contains duplicate destinations'
 
@@ -423,6 +425,89 @@ exit 0
         Assert-Equal $preflightCalls.Count 1 'User mode must preflight the derived target set once'
         Assert-True ($targetSetupFunctions[0].Extent.Text -match '\$env:USERPROFILE' -and $targetSetupFunctions[0].Extent.Text -match '\$env:LOCALAPPDATA') 'User mode does not derive targets from the loaded profile environment'
         Assert-True ($preflightCalls[0].Extent.Text -match '\.All\b') 'User mode does not preflight the complete owned target list'
+
+        $runEnvFunctions = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Invoke-CnMonMsixUserRun'
+        }, $true))
+        Assert-Equal $runEnvFunctions.Count 1 'User runner environment helper is missing or ambiguous'
+        $runEnvText = $runEnvFunctions[0].Extent.Text
+        foreach ($assignment in @(
+            "CNMON_MSIX_PROFILE_HISTORY = (Join-Path `$profile 'msix-profile-history.db')",
+            "CNMON_MSIX_PROFILE_LOG = (Join-Path `$profile 'msix-profile.log')",
+            "CNMON_MSIX_CLI_HISTORY = (Join-Path `$profile 'msix-cli-history.db')",
+            "CNMON_MSIX_CLI_LOG = (Join-Path `$profile 'msix-cli.log')"
+        )) {
+            Assert-True ($runEnvText.Contains($assignment)) "User runner does not direct durable output outside AppData: $assignment"
+        }
+        Assert-True ($targetSetupFunctions[0].Extent.Text.Contains('$profileHistory = Join-Path $env:USERPROFILE')) 'real-profile configuration does not store its history outside AppData'
+        Assert-True ($targetSetupFunctions[0].Extent.Text.Contains('$profileLog = Join-Path $env:USERPROFILE')) 'real-profile configuration does not store its log outside AppData'
+    }
+
+    Invoke-Check 'AppData observations use the staged package lifecycle test without entering durable cleanup targets' {
+        $calls = Get-CommandNodes $sourceAst 'Invoke-CnMonMsixNativeTests'
+        $staged = @($calls | Where-Object {
+            $_.CommandElements.Count -gt 1 -and
+                $_.CommandElements[1] -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+                $_.CommandElements[1].Value -like 'appdata-*'
+        })
+        $expectedStages = @('appdata-seed', 'appdata-upgrade-readback', 'appdata-repair-readback', 'appdata-reinstall-fresh')
+        Assert-Equal $staged.Count $expectedStages.Count 'AppData lifecycle test stage count changed'
+        foreach ($stage in $expectedStages) {
+            $call = @($staged | Where-Object { $_.CommandElements[1].Value -ceq $stage })
+            Assert-Equal $call.Count 1 "AppData lifecycle stage '$stage' is missing or duplicated"
+            Assert-Equal $call[0].CommandElements[3].Value 'NativeMSIXAppDataLifecycle' "AppData stage '$stage' selected a different native test"
+        }
+        $userMode = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq 'Invoke-CnMonMsixUserMode'
+        }, $true))[0]
+        $stageGates = @{
+            'appdata-seed' = 'history_config'
+            'appdata-upgrade-readback' = 'history_config'
+            'appdata-repair-readback' = 'repair'
+            'appdata-reinstall-fresh' = 'uninstall_reinstall'
+        }
+        $userModeCalls = Get-CommandNodes $userMode 'Invoke-CnMonMsixNativeTests'
+        foreach ($stage in $expectedStages) {
+            $stageCall = @($userModeCalls | Where-Object {
+                $_.CommandElements.Count -gt 1 -and
+                    $_.CommandElements[1] -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+                    $_.CommandElements[1].Value -ceq $stage
+            })[0]
+            $priorGate = @($userMode.FindAll({
+                param($candidate)
+                $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                    $candidate.Extent.Text -match '\$script:CurrentGate\s*=\s*'
+            }, $true) | Where-Object { $_.Extent.StartOffset -lt $stageCall.Extent.StartOffset } | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1)
+            Assert-Equal $priorGate.Count 1 "AppData stage '$stage' has no gate assignment before its child test"
+            $gateMatch = [regex]::Match($priorGate[0].Extent.Text, "CurrentGate\s*=\s*'([^']+)'")
+            Assert-True $gateMatch.Success "AppData stage '$stage' gate assignment is not a fixed literal"
+            Assert-Equal $gateMatch.Groups[1].Value $stageGates[$stage] "AppData stage '$stage' failure would be attributed to the wrong gate"
+        }
+        $repairReadback = @($userModeCalls | Where-Object {
+            $_.CommandElements.Count -gt 1 -and $_.CommandElements[1].Value -ceq 'appdata-repair-readback'
+        })[0]
+        $repairRetained = @((Get-CommandNodes $userMode 'Assert-CnMonMsixRetainedFiles') | Where-Object {
+            $_.Extent.StartOffset -lt $repairReadback.Extent.StartOffset -and $_.Extent.Text -match '\$retained\b'
+        } | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1)
+        Assert-Equal $repairRetained.Count 1 'repair no longer checks durable file retention before AppData readback'
+        $repairInstalledCheck = @((Get-CommandNodes $userMode 'Assert-CnMonMsixInstalledPackage') | Where-Object {
+            $_.Extent.StartOffset -lt $repairRetained[0].Extent.StartOffset
+        } | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1)
+        Assert-Equal $repairInstalledCheck.Count 1 'repair package validation is missing before durable retention'
+        $repairGateReset = @($userMode.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $candidate.Extent.Text -match '\$script:CurrentGate\s*=\s*''repair'''
+        }, $true) | Where-Object {
+            $_.Extent.StartOffset -gt $repairInstalledCheck[0].Extent.StartOffset -and
+                $_.Extent.StartOffset -lt $repairRetained[0].Extent.StartOffset
+        } | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1)
+        Assert-Equal $repairGateReset.Count 1 'repair gate is not reset after package validation and before durable retention assertion'
+        $targetHelper = $functionAsts | Where-Object Name -eq 'Get-CnMonMsixProfileTargets' | Select-Object -First 1
+        Assert-True ($targetHelper.Extent.Text -notmatch 'msix-appdata') 'test-only AppData outputs were added to durable profile cleanup targets'
     }
 
     Invoke-Check 'Certify overlays touched gates without erasing Hosted failures' {
@@ -1097,7 +1182,7 @@ stderr:
         $rawOutput = @"
 --- FAIL: TestNativeMSIXRealProfileLayers (0.02s)
     native_msix_windows_test.go:324: private failure at $secretPath CN=Actual Publisher, O=Private
-    C:\Users\private\profile\native_msix_windows_test.go:711: unrelated helper frame
+    C:\Users\private\profile\native_other_test.go:711: unrelated helper frame
 panic: test timed out after 10m0s
 "@
         $childFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase 'real-profile-config' -FailureKind child_exit -ExitCode 1 -Output $rawOutput -ProfileHistoryPath $history -ProfileLogPath $log -LocalAppData $localAppData -PackageFamilyName 'Example.CnMon_518g7wxbxvqf6'
@@ -1108,8 +1193,7 @@ panic: test timed out after 10m0s
         Assert-True $childFailure.timeout 'native test timeout marker was not reduced to a boolean'
         Assert-Equal (@($childFailure.source_lines) -join ',') '324' 'native failure evidence did not keep only bounded assertion source lines'
         Assert-True (-not $childFailure.profile_history_exists -and -not $childFailure.profile_log_exists) 'expected profile output existence was misreported'
-        Assert-True $childFailure.package_localcache_history_exists 'known package-local cache witness was not reported'
-        Assert-True (-not $childFailure.package_localcache_log_exists) 'missing package-local cache output was misreported'
+        Assert-True (-not $childFailure.appdata_package_localcache_history_exists -and -not $childFailure.appdata_package_localcache_log_exists) 'profile-only diagnostic inferred AppData cache outputs without paths'
         $safeJson = ConvertTo-Json -InputObject $childFailure -Depth 5
         foreach ($sensitive in @($secretPath, 'C:\Users\private', 'Actual Publisher', 'CN=')) {
             Assert-True ($safeJson -notmatch [regex]::Escape($sensitive)) 'native failure evidence retained raw output, identity, or path data'
@@ -1173,6 +1257,99 @@ panic: test timed out after 10m0s
             $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and $candidate.Extent.Text -match "CurrentGate\s*=\s*'history_config'"
         }, $true) | Where-Object { $_.Extent.StartOffset -lt $profileTest.Extent.StartOffset } | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1)
         Assert-True ($historyGate.Count -eq 1) 'real-profile test failure is still attributed to the prior alias gate'
+    }
+
+    Invoke-Check 'AppData failure evidence keeps exact stages, bounded Go lines, and gated summaries' {
+        $privateRoot = Join-Path $tempRoot 'appdata-native-failure-private'
+        $profile = Join-Path $privateRoot 'profile'
+        $localAppData = Join-Path $privateRoot 'local'
+        $cache = Join-Path $localAppData 'Packages/Example.CnMon_518g7wxbxvqf6/LocalCache/Local'
+        $null = New-Item -ItemType Directory -Force -Path $profile, $cache
+        $history = Join-Path $localAppData 'cn-mon-msix-appdata-unique.db'
+        $log = Join-Path $localAppData 'cn-mon-msix-appdata-unique.log'
+        $cacheHistory = Join-Path $cache (Split-Path -Leaf $history)
+        [IO.File]::WriteAllText($cacheHistory, 'synthetic appdata witness', [Text.UTF8Encoding]::new($false))
+        $secretPath = Join-Path $privateRoot 'private-profile'
+        $rawOutput = @"
+--- FAIL: TestNativeMSIXAppDataLifecycle (0.02s)
+    native_msix_windows_test.go:431: private failure at $secretPath CN=Actual Publisher, O=Private
+    C:\Users\private\profile\native_msix_windows_test.go:9999: bounded source witness
+    native_msix_windows_test.go:432: second source witness
+    native_msix_windows_test.go:433: third source witness
+    native_msix_windows_test.go:434: fourth source witness
+    native_msix_windows_test.go:435: fifth source witness
+    native_msix_windows_test.go:436: sixth source witness
+    native_msix_windows_test.go:437: seventh source witness
+    native_msix_windows_test.go:438: eighth source witness
+    native_msix_windows_test.go:439: beyond source bound
+    other_native_test.go:7: unrelated source
+"@
+        $phases = @('appdata-seed', 'appdata-upgrade-readback', 'appdata-repair-readback', 'appdata-reinstall-fresh')
+        $phaseGates = @{
+            'appdata-seed' = 'history_config'
+            'appdata-upgrade-readback' = 'history_config'
+            'appdata-repair-readback' = 'repair'
+            'appdata-reinstall-fresh' = 'uninstall_reinstall'
+        }
+        $identityKeys = @(
+            'GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS',
+            'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN'
+        )
+        $oldIdentity = @{}
+        foreach ($key in $identityKeys) { $oldIdentity[$key] = [Environment]::GetEnvironmentVariable($key) }
+        $oldNativeFailure = $script:NativeTestFailure
+        $oldPublicDiagnostic = $script:PublicDiagnosticWritten
+        try {
+            $env:GITHUB_ACTIONS = 'true'
+            $env:GITHUB_EVENT_NAME = 'pull_request'
+            $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'
+            $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+            $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+            $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $syntheticIdentity = [pscustomobject]@{
+                Name = 'Example.CnMon'
+                Publisher = 'CN=Example, O=Example'
+                PublisherDisplayName = 'Example Publisher'
+                ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+            }
+            foreach ($phase in $phases) {
+                $native = Get-CnMonMsixNativeTestFailureDiagnostic -Phase $phase -FailureKind child_exit -ExitCode 1 -Output $rawOutput -AppDataHistoryPath $history -AppDataLogPath $log -LocalAppData $localAppData -PackageFamilyName 'Example.CnMon_518g7wxbxvqf6'
+                Assert-Equal $native.phase $phase 'AppData diagnostic lost its exact fixed stage'
+                Assert-Equal $native.test_name 'NativeMSIXAppDataLifecycle' 'AppData phase mapped to an arbitrary Go test'
+                Assert-Equal (@($native.source_lines) -join ',') '431,9999,432,433,434,435,436,437' 'AppData diagnostic did not keep only bounded numeric lines from the known Go test file'
+                Assert-True (-not $native.appdata_external_history_exists -and -not $native.appdata_external_log_exists) 'AppData diagnostic misreported external targets'
+                Assert-True $native.appdata_package_localcache_history_exists 'AppData diagnostic missed the exact package-local history witness'
+                Assert-True (-not $native.appdata_package_localcache_log_exists) 'AppData diagnostic misreported the absent LocalCache log'
+                $safeJson = ConvertTo-Json -InputObject $native -Depth 5
+                foreach ($sensitive in @($secretPath, 'C:\Users\private', 'Actual Publisher', 'CN=')) {
+                    Assert-True ($safeJson -notmatch [regex]::Escape($sensitive)) 'AppData diagnostic retained raw output, identity, or path data'
+                }
+
+                $gate = $phaseGates[$phase]
+                $directory = Join-Path $tempRoot "appdata-public-$phase"
+                $null = New-Item -ItemType Directory -Path $directory
+                $script:NativeTestFailure = $native
+                $script:PublicDiagnosticWritten = $false
+                $errorRecord = [System.Management.Automation.ErrorRecord]::new([InvalidOperationException]::new('private child failure'), 'NativeTestFailure', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null)
+                Save-CnMonMsixQualificationFailureEvidence -Mode User -Gate $gate -Operation user_mode_native_qualification -ArtifactDirectory $directory -Identity $syntheticIdentity -ErrorRecord $errorRecord
+                $publicText = [IO.File]::ReadAllText((Join-Path $directory 'msix-signature-diagnostic.json'))
+                $publicFailure = (ConvertFrom-Json -InputObject $publicText -AsHashtable).qualification_failure
+                Assert-Equal $publicFailure.gate $gate 'AppData child failure was attributed to the wrong gate'
+                Assert-Equal $publicFailure.native_test.phase $phase 'public diagnostic omitted the exact AppData stage'
+                Assert-Equal $publicFailure.native_test.test_name 'NativeMSIXAppDataLifecycle' 'public diagnostic omitted the fixed AppData test name'
+                foreach ($sensitive in @($secretPath, 'C:\Users\private', 'Actual Publisher', 'CN=')) {
+                    Assert-True ($publicText -notmatch [regex]::Escape($sensitive)) 'public AppData diagnostic leaked raw child output'
+                }
+            }
+        }
+        finally {
+            $script:NativeTestFailure = $oldNativeFailure
+            $script:PublicDiagnosticWritten = $oldPublicDiagnostic
+            foreach ($key in $identityKeys) { [Environment]::SetEnvironmentVariable($key, $oldIdentity[$key], 'Process') }
+        }
     }
 
     Invoke-Check 'account failure diagnostics are closed, guarded, and privately retained' {

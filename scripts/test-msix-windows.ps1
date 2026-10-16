@@ -186,7 +186,7 @@ function Save-CnMonMsixQualificationFailureEvidence {
             $public.schema_version = 1
             $script:PublicDiagnosticWritten = $true
         }
-        if ($Mode -eq 'User' -and $Gate -eq 'history_config' -and
+        if ($Mode -eq 'User' -and $Gate -in @('history_config', 'repair', 'uninstall_reinstall') -and
             $Operation -eq 'user_mode_native_qualification' -and $null -ne $script:NativeTestFailure) {
             $diagnostic.native_test = $script:NativeTestFailure
         }
@@ -499,10 +499,10 @@ function Get-CnMonMsixProfileTargets {
         ProfileConfig = Join-Path $ProfilePath '.cn'
         ProfileHistoryDefault = Join-Path $ProfilePath '.cn-ping-history.db'
         ProfileLogDefault = Join-Path $ProfilePath 'cn.log'
-        ProfileHistory = Join-Path $LocalAppData 'msix-profile-history.db'
-        ProfileLog = Join-Path $LocalAppData 'msix-profile.log'
-        CliHistory = Join-Path $LocalAppData 'msix-cli-history.db'
-        CliLog = Join-Path $LocalAppData 'msix-cli.log'
+        ProfileHistory = Join-Path $ProfilePath 'msix-profile-history.db'
+        ProfileLog = Join-Path $ProfilePath 'msix-profile.log'
+        CliHistory = Join-Path $ProfilePath 'msix-cli-history.db'
+        CliLog = Join-Path $ProfilePath 'msix-cli.log'
         FixtureHistory = $FixtureHistory
         FixtureLog = $FixtureLog
     }
@@ -940,7 +940,8 @@ function Assert-CnMonMsixInstalledPackage {
 
 function Invoke-CnMonMsixNativeTests {
     param([string]$Name, [string]$TestExe, [string]$Pattern, [string[]]$RequiredMarkers)
-    if ($Name -ceq 'real-profile-config') { $script:NativeTestFailure = $null }
+    $diagnosticPhases = @('real-profile-config', 'appdata-seed', 'appdata-upgrade-readback', 'appdata-repair-readback', 'appdata-reinstall-fresh')
+    if ($Name -in $diagnosticPhases) { $script:NativeTestFailure = $null }
     $stdout = Join-Path $ArtifactDirectory "msix-$Name.stdout.log"
     $stderr = Join-Path $ArtifactDirectory "msix-$Name.stderr.log"
     $listStdout = Join-Path $ArtifactDirectory "msix-$Name.tests.log"
@@ -960,15 +961,15 @@ function Invoke-CnMonMsixNativeTests {
     if (Test-Path -LiteralPath $stdout) { $output += Get-Content -LiteralPath $stdout -Raw }
     if (Test-Path -LiteralPath $stderr) { $output += Get-Content -LiteralPath $stderr -Raw }
     if ($exit -ne 0) {
-        if ($Name -ceq 'real-profile-config') {
-            $script:NativeTestFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase $Name -FailureKind child_exit -ExitCode $exit -Output $output -ProfileHistoryPath $env:CNMON_MSIX_PROFILE_HISTORY -ProfileLogPath $env:CNMON_MSIX_PROFILE_LOG -LocalAppData $env:LOCALAPPDATA -PackageFamilyName $env:CNMON_MSIX_EXPECTED_PFN
+        if ($Name -in $diagnosticPhases) {
+            $script:NativeTestFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase $Name -FailureKind child_exit -ExitCode $exit -Output $output -ProfileHistoryPath $env:CNMON_MSIX_PROFILE_HISTORY -ProfileLogPath $env:CNMON_MSIX_PROFILE_LOG -AppDataHistoryPath $env:CNMON_MSIX_APPDATA_HISTORY -AppDataLogPath $env:CNMON_MSIX_APPDATA_LOG -LocalAppData $env:LOCALAPPDATA -PackageFamilyName $env:CNMON_MSIX_EXPECTED_PFN
         }
         throw "native Windows qualification phase '$Name' failed; private output was retained"
     }
     foreach ($marker in $RequiredMarkers) {
         if ($output -notmatch [regex]::Escape($marker)) {
-            if ($Name -ceq 'real-profile-config') {
-                $script:NativeTestFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase $Name -FailureKind missing_marker -ExitCode $exit -Output $output -ProfileHistoryPath $env:CNMON_MSIX_PROFILE_HISTORY -ProfileLogPath $env:CNMON_MSIX_PROFILE_LOG -LocalAppData $env:LOCALAPPDATA -PackageFamilyName $env:CNMON_MSIX_EXPECTED_PFN
+            if ($Name -in $diagnosticPhases) {
+                $script:NativeTestFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase $Name -FailureKind missing_marker -ExitCode $exit -Output $output -ProfileHistoryPath $env:CNMON_MSIX_PROFILE_HISTORY -ProfileLogPath $env:CNMON_MSIX_PROFILE_LOG -AppDataHistoryPath $env:CNMON_MSIX_APPDATA_HISTORY -AppDataLogPath $env:CNMON_MSIX_APPDATA_LOG -LocalAppData $env:LOCALAPPDATA -PackageFamilyName $env:CNMON_MSIX_EXPECTED_PFN
             }
             throw "native Windows qualification phase '$Name' omitted a required witness"
         }
@@ -978,12 +979,14 @@ function Invoke-CnMonMsixNativeTests {
 
 function Get-CnMonMsixNativeTestFailureDiagnostic {
     param(
-        [ValidateSet('real-profile-config')][string]$Phase,
+        [ValidateSet('real-profile-config', 'appdata-seed', 'appdata-upgrade-readback', 'appdata-repair-readback', 'appdata-reinstall-fresh')][string]$Phase,
         [ValidateSet('child_exit', 'missing_marker')][string]$FailureKind,
         [int]$ExitCode,
         [string]$Output,
         [string]$ProfileHistoryPath,
         [string]$ProfileLogPath,
+        [string]$AppDataHistoryPath,
+        [string]$AppDataLogPath,
         [string]$LocalAppData,
         [string]$PackageFamilyName
     )
@@ -993,34 +996,43 @@ function Get-CnMonMsixNativeTestFailureDiagnostic {
     }
 
     $sourceLines = [Collections.Generic.List[int]]::new()
-    foreach ($match in [regex]::Matches($Output, '(?im)^\s*native_msix_windows_test\.go:(\d+):')) {
+    foreach ($match in [regex]::Matches($Output, '(?im)^\s*(?:.*[\\/])?native_msix_windows_test\.go:(\d+):')) {
         $lineNumber = 0
         if ([int]::TryParse($match.Groups[1].Value, [ref]$lineNumber) -and
-            $lineNumber -ge 280 -and $lineNumber -le 365 -and
+            $lineNumber -ge 1 -and $lineNumber -le 10000 -and
             -not $sourceLines.Contains($lineNumber)) {
             $sourceLines.Add($lineNumber)
         }
         if ($sourceLines.Count -ge 8) { break }
     }
 
-    $cacheHistoryExists = $false
-    $cacheLogExists = $false
+    $appDataExternalHistoryExists = [bool]($AppDataHistoryPath -and (Test-Path -LiteralPath $AppDataHistoryPath -PathType Leaf -ErrorAction SilentlyContinue))
+    $appDataExternalLogExists = [bool]($AppDataLogPath -and (Test-Path -LiteralPath $AppDataLogPath -PathType Leaf -ErrorAction SilentlyContinue))
+    $appDataCacheHistoryExists = $false
+    $appDataCacheLogExists = $false
     if ($LocalAppData -and $PackageFamilyName) {
         $cacheRoot = Join-Path $LocalAppData (Join-Path 'Packages' (Join-Path $PackageFamilyName 'LocalCache/Local'))
-        $cacheHistoryExists = Test-Path -LiteralPath (Join-Path $cacheRoot 'msix-profile-history.db') -PathType Leaf -ErrorAction SilentlyContinue
-        $cacheLogExists = Test-Path -LiteralPath (Join-Path $cacheRoot 'msix-profile.log') -PathType Leaf -ErrorAction SilentlyContinue
+        if ($AppDataHistoryPath) {
+            $appDataCacheHistoryExists = Test-Path -LiteralPath (Join-Path $cacheRoot (Split-Path -Leaf $AppDataHistoryPath)) -PathType Leaf -ErrorAction SilentlyContinue
+        }
+        if ($AppDataLogPath) {
+            $appDataCacheLogExists = Test-Path -LiteralPath (Join-Path $cacheRoot (Split-Path -Leaf $AppDataLogPath)) -PathType Leaf -ErrorAction SilentlyContinue
+        }
     }
+    $testName = if ($Phase -eq 'real-profile-config') { 'NativeMSIXRealProfileLayers' } else { 'NativeMSIXAppDataLifecycle' }
     return [ordered]@{
-        phase = 'real-profile-config'
-        test_name = 'NativeMSIXRealProfileLayers'
+        phase = $Phase
+        test_name = $testName
         failure_kind = $FailureKind
         exit_code = $ExitCode
         timeout = [bool]($Output -match '(?im)(?:panic:\s*)?test timed out after\b|context deadline exceeded')
         source_lines = @($sourceLines.ToArray())
         profile_history_exists = [bool]($ProfileHistoryPath -and (Test-Path -LiteralPath $ProfileHistoryPath -PathType Leaf -ErrorAction SilentlyContinue))
         profile_log_exists = [bool]($ProfileLogPath -and (Test-Path -LiteralPath $ProfileLogPath -PathType Leaf -ErrorAction SilentlyContinue))
-        package_localcache_history_exists = [bool]$cacheHistoryExists
-        package_localcache_log_exists = [bool]$cacheLogExists
+        appdata_external_history_exists = $appDataExternalHistoryExists
+        appdata_external_log_exists = $appDataExternalLogExists
+        appdata_package_localcache_history_exists = [bool]$appDataCacheHistoryExists
+        appdata_package_localcache_log_exists = [bool]$appDataCacheLogExists
     }
 }
 
@@ -1261,10 +1273,10 @@ function Invoke-CnMonMsixUserRun {
         CNMON_MSIX_FIXTURE_HISTORY = (Join-Path $ArtifactDirectory '.msix-fixture-history.db')
         CNMON_MSIX_FIXTURE_LOG = (Join-Path $ArtifactDirectory '.msix-fixture.log')
         CNMON_MSIX_FIXTURE_RECEIPT = (Join-Path $ArtifactDirectory '.cn-mon-1.2.999.0-fixture-receipt.json')
-        CNMON_MSIX_PROFILE_HISTORY = (Join-Path $local 'msix-profile-history.db')
-        CNMON_MSIX_PROFILE_LOG = (Join-Path $local 'msix-profile.log')
-        CNMON_MSIX_CLI_HISTORY = (Join-Path $local 'msix-cli-history.db')
-        CNMON_MSIX_CLI_LOG = (Join-Path $local 'msix-cli.log')
+        CNMON_MSIX_PROFILE_HISTORY = (Join-Path $profile 'msix-profile-history.db')
+        CNMON_MSIX_PROFILE_LOG = (Join-Path $profile 'msix-profile.log')
+        CNMON_MSIX_CLI_HISTORY = (Join-Path $profile 'msix-cli-history.db')
+        CNMON_MSIX_CLI_LOG = (Join-Path $profile 'msix-cli.log')
         CNMON_NATIVE_COMMAND = '1'
         CNMON_NATIVE_COMMAND_EXPECT_PROBE = 'ordinary'
         CNMON_NATIVE_COMMAND_EXPECT_SID = $User.SID
@@ -1374,6 +1386,18 @@ function Invoke-CnMonMsixUserMode {
     $profileLog = $targets.ProfileLog
     $historyOverride = $targets.CliHistory
     $logOverride = $targets.CliLog
+    $appDataToken = [Guid]::NewGuid().ToString('N')
+    $appDataHistory = Join-Path $env:LOCALAPPDATA "cn-mon-msix-appdata-$appDataToken.db"
+    $appDataLog = Join-Path $env:LOCALAPPDATA "cn-mon-msix-appdata-$appDataToken.log"
+    $appDataBackingRoot = Join-Path $env:LOCALAPPDATA (Join-Path 'Packages' (Join-Path $identity.ExpectedPFN 'LocalCache/Local'))
+    $appDataLogicalTargets = @($appDataHistory, $appDataLog)
+    $appDataBackingTargets = @(
+        (Join-Path $appDataBackingRoot (Split-Path -Leaf $appDataHistory)),
+        (Join-Path $appDataBackingRoot (Split-Path -Leaf $appDataLog))
+    )
+    $env:CNMON_MSIX_APPDATA_HISTORY = $appDataHistory
+    $env:CNMON_MSIX_APPDATA_LOG = $appDataLog
+    $env:CNMON_MSIX_APPDATA_PHASE = ''
     $envProfileHistory = [Environment]::GetEnvironmentVariable('CNMON_MSIX_PROFILE_HISTORY')
     $envProfileLog = [Environment]::GetEnvironmentVariable('CNMON_MSIX_PROFILE_LOG')
     $envCliHistory = [Environment]::GetEnvironmentVariable('CNMON_MSIX_CLI_HISTORY')
@@ -1388,7 +1412,7 @@ function Invoke-CnMonMsixUserMode {
         throw 'profile output paths do not match the fresh qualification profile'
     }
     try {
-        Assert-CnMonMsixTargetsAbsent $targets.All
+        Assert-CnMonMsixTargetsAbsent (@($targets.All) + @($appDataLogicalTargets) + @($appDataBackingTargets))
     }
     catch {
         $script:CurrentGate = 'history_config'
@@ -1442,6 +1466,17 @@ function Invoke-CnMonMsixUserMode {
 
         $env:CNMON_MSIX_FIXTURE_CONFIG = '1'
         Invoke-CnMonMsixNativeTests 'fixture-config' $testExe 'TestNativeMSIXFixtureAdjacentConfig' @('CNMON_NATIVE_MSIX_CONFIG adjacent-fixture=selected history=external log=external') | Out-Null
+        $script:CurrentGate = 'history_config'
+        $env:CNMON_MSIX_APPDATA_PHASE = 'seed'
+        Invoke-CnMonMsixNativeTests 'appdata-seed' $testExe 'NativeMSIXAppDataLifecycle' @('CNMON_NATIVE_MSIX_APPDATA phase=seed create=pass readback=pass external=absent localcache=present') | Out-Null
+        $appDataRetained = @{}
+        foreach ($path in $appDataBackingTargets) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw 'packaged AppData seed did not create its actual LocalCache outputs'
+            }
+            $appDataRetained[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $env:CNMON_MSIX_APPDATA_PHASE = ''
         Set-CnMonMsixGate 'history_config' 'pass'
 
         $script:CurrentGate = 'package_registration'
@@ -1452,6 +1487,12 @@ function Invoke-CnMonMsixUserMode {
             Set-CnMonMsixGate 'fail_injection' 'pass'
             throw 'controlled post-install failure'
         }
+
+        $script:CurrentGate = 'history_config'
+        $env:CNMON_MSIX_APPDATA_PHASE = 'upgrade-readback'
+        Invoke-CnMonMsixNativeTests 'appdata-upgrade-readback' $testExe 'NativeMSIXAppDataLifecycle' @('CNMON_NATIVE_MSIX_APPDATA phase=upgrade-readback create=preserved readback=pass external=absent localcache=present') | Out-Null
+        Assert-CnMonMsixRetainedFiles $appDataRetained
+        $env:CNMON_MSIX_APPDATA_PHASE = ''
 
         $script:CurrentGate = 'alias_identity'
         $portableDirectory = Join-Path $script:PrivateRoot 'portable'
@@ -1494,8 +1535,8 @@ function Invoke-CnMonMsixUserMode {
         Set-CnMonMsixGate 'icmp' 'pass'
 
         $script:CurrentGate = 'history_config'
-        $profileHistory = Join-Path $env:LOCALAPPDATA 'msix-profile-history.db'
-        $profileLog = Join-Path $env:LOCALAPPDATA 'msix-profile.log'
+        $profileHistory = Join-Path $env:USERPROFILE 'msix-profile-history.db'
+        $profileLog = Join-Path $env:USERPROFILE 'msix-profile.log'
         $profileText = "[ping]`nhistory_file = $profileHistory`nhistory_days = 90`n[logging]`nlogfile = $profileLog`nlevel = INFO`n"
         [IO.File]::WriteAllText($profileConfig, $profileText, [Text.UTF8Encoding]::new($false))
         $env:CNMON_MSIX_PROFILE_DEFAULTS = ''
@@ -1585,7 +1626,12 @@ function Invoke-CnMonMsixUserMode {
         else {
             $null = & $repair -Package $installed.PackageFullName -ErrorAction Stop
             $null = Assert-CnMonMsixInstalledPackage $receipt $identity
+            $script:CurrentGate = 'repair'
             Assert-CnMonMsixRetainedFiles $retained
+            $env:CNMON_MSIX_APPDATA_PHASE = 'repair-readback'
+            Invoke-CnMonMsixNativeTests 'appdata-repair-readback' $testExe 'NativeMSIXAppDataLifecycle' @('CNMON_NATIVE_MSIX_APPDATA phase=repair-readback create=preserved readback=pass external=absent localcache=present') | Out-Null
+            Assert-CnMonMsixRetainedFiles $appDataRetained
+            $env:CNMON_MSIX_APPDATA_PHASE = ''
             Set-CnMonMsixGate 'repair' 'pass'
         }
 
@@ -1593,10 +1639,27 @@ function Invoke-CnMonMsixUserMode {
         $null = Remove-AppxPackage -Package $installed.PackageFullName -ErrorAction Stop
         Remove-CnMonMsixOwnedPackages $script:OwnedPackageSpecs
         if ($null -ne (Get-CnMonMsixPackage $identity)) { throw 'candidate uninstall left a registered package' }
+        $remainingAppData = @($appDataBackingTargets | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+        $appDataDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        while ($remainingAppData.Count -gt 0 -and [DateTime]::UtcNow -lt $appDataDeadline) {
+            Start-Sleep -Milliseconds 200
+            $remainingAppData = @($appDataBackingTargets | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+        }
+        if ($remainingAppData.Count -gt 0 -or @($appDataLogicalTargets | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).Count -gt 0) {
+            throw 'AppData outputs remained after package uninstall'
+        }
+        Write-CnMonMsixStatus 'AppData outputs were removed on uninstall'
+        foreach ($path in @($appDataLogicalTargets) + @($appDataBackingTargets)) {
+            if (Test-Path -LiteralPath $path -PathType Leaf) { throw 'AppData reinstall preflight found pre-existing output' }
+        }
         Assert-CnMonMsixExpectedNativeRejection 'uninstalled-alias' $testExe 'NativeMSIXInstalledAlias'
         Add-CnMonMsixOwnedPackage $identity ([string]$receipt.package_version) $PackagePath $script:OwnedPackageSpecs
         $reinstalled = Assert-CnMonMsixInstalledPackage $receipt $identity
         if ($null -eq $reinstalled) { throw 'candidate reinstall failed' }
+        $script:CurrentGate = 'uninstall_reinstall'
+        $env:CNMON_MSIX_APPDATA_PHASE = 'reinstall-fresh'
+        Invoke-CnMonMsixNativeTests 'appdata-reinstall-fresh' $testExe 'NativeMSIXAppDataLifecycle' @('CNMON_NATIVE_MSIX_APPDATA phase=reinstall-fresh create=pass readback=pass external=absent localcache=present') | Out-Null
+        $env:CNMON_MSIX_APPDATA_PHASE = ''
         $null = Invoke-CnMonMsixNativeTests 'reinstalled-alias' $testExe 'TestNativeMSIXInstalledAlias' @(
             'CNMON_NATIVE_MSIX_ALIAS package-identity=verified ordinary-token=medium expected-sid=verified version=exact',
             'CNMON_NATIVE_MSIX_CHILD pid='

@@ -297,6 +297,12 @@ func TestNativeMSIXRealProfileLayers(t *testing.T) {
 	if profileHistory == "" || profileLog == "" {
 		t.Fatal("profile configuration output paths are not configured")
 	}
+	expectedProfileHistory := filepath.Join(profile, "msix-profile-history.db")
+	expectedProfileLog := filepath.Join(profile, "msix-profile.log")
+	if !strings.EqualFold(filepath.Clean(profileHistory), filepath.Clean(expectedProfileHistory)) ||
+		!strings.EqualFold(filepath.Clean(profileLog), filepath.Clean(expectedProfileLog)) {
+		t.Fatal("profile configuration outputs do not target the actual user profile")
+	}
 	before, err := os.ReadFile(profileConfig)
 	if err != nil {
 		t.Fatal("read initialized real-profile configuration")
@@ -337,8 +343,8 @@ func TestNativeMSIXRealProfileLayers(t *testing.T) {
 	if localAppData == "" || !filepath.IsAbs(localAppData) || cliHistory == "" || cliLog == "" {
 		t.Fatal("CLI override output paths are not configured for the ordinary user's profile")
 	}
-	expectedCLIHistory := filepath.Join(localAppData, "msix-cli-history.db")
-	expectedCILog := filepath.Join(localAppData, "msix-cli.log")
+	expectedCLIHistory := filepath.Join(profile, "msix-cli-history.db")
+	expectedCILog := filepath.Join(profile, "msix-cli.log")
 	if !strings.EqualFold(filepath.Clean(cliHistory), filepath.Clean(expectedCLIHistory)) ||
 		!strings.EqualFold(filepath.Clean(cliLog), filepath.Clean(expectedCILog)) {
 		t.Fatal("CLI override output paths do not match the configured ordinary-user profile paths")
@@ -363,6 +369,105 @@ func TestNativeMSIXRealProfileLayers(t *testing.T) {
 		t.Fatal("installed command changed the caller's real-profile configuration")
 	}
 	t.Log("CNMON_NATIVE_MSIX_CONFIG real-profile=selected explicit-config=selected cli-overrides=selected relative-paths=resolved")
+}
+
+func TestNativeMSIXAppDataLifecycle(t *testing.T) {
+	if os.Getenv("CNMON_MSIX_TEST") != "1" {
+		t.Skip("AppData lifecycle is an explicit hosted Windows gate")
+	}
+	phase := os.Getenv("CNMON_MSIX_APPDATA_PHASE")
+	if phase != "seed" && phase != "upgrade-readback" && phase != "repair-readback" && phase != "reinstall-fresh" {
+		t.Skip("AppData lifecycle phase is not selected")
+	}
+	alias, err := nativeMSIXInstalledAlias()
+	if err != nil {
+		t.Fatal("select installed AppData lifecycle alias")
+	}
+	if err := nativeMSIXRequireOrdinaryToken(); err != nil {
+		t.Fatal("AppData lifecycle is not running as the ordinary user")
+	}
+	profile := os.Getenv("USERPROFILE")
+	localAppData := os.Getenv("LOCALAPPDATA")
+	packageFamily := os.Getenv("CNMON_MSIX_EXPECTED_PFN")
+	history := os.Getenv("CNMON_MSIX_APPDATA_HISTORY")
+	logPath := os.Getenv("CNMON_MSIX_APPDATA_LOG")
+	if profile == "" || localAppData == "" || packageFamily == "" || history == "" || logPath == "" ||
+		!filepath.IsAbs(profile) || !filepath.IsAbs(localAppData) || !filepath.IsAbs(history) || !filepath.IsAbs(logPath) ||
+		!strings.EqualFold(filepath.Clean(filepath.Dir(history)), filepath.Clean(localAppData)) ||
+		!strings.EqualFold(filepath.Clean(filepath.Dir(logPath)), filepath.Clean(localAppData)) {
+		t.Fatal("AppData lifecycle paths are not configured under the ordinary user's LocalAppData")
+	}
+	backingRoot := filepath.Join(localAppData, "Packages", packageFamily, "LocalCache", "Local")
+	backingHistory := filepath.Join(backingRoot, filepath.Base(history))
+	backingLog := filepath.Join(backingRoot, filepath.Base(logPath))
+	for _, logicalPath := range []string{history, logPath} {
+		if _, err := os.Stat(logicalPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("AppData file escaped its package-local backing location")
+		}
+	}
+
+	newFiles := phase == "seed" || phase == "reinstall-fresh"
+	var retainedHistory, retainedLog []byte
+	if newFiles {
+		for _, path := range []string{backingHistory, backingLog} {
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("fresh AppData lifecycle target already exists")
+			}
+		}
+		root := t.TempDir()
+		code, stdout, stderr := nativeMSIXRun(t, alias, root, nil,
+			"127.0.0.1", "--format", "json", "--history-file", history, "--log-file", logPath)
+		if code != 0 || len(stderr) != 0 {
+			t.Fatalf("packaged AppData creation command exit=%d stderr=%q", code, stderr)
+		}
+		nativeMSIXRequireLoopbackJSON(t, stdout)
+	} else {
+		var readErr error
+		retainedHistory, readErr = os.ReadFile(backingHistory)
+		if readErr != nil || len(retainedHistory) == 0 {
+			t.Fatal("AppData history is absent from the package-local backing location")
+		}
+		retainedLog, readErr = os.ReadFile(backingLog)
+		if readErr != nil || len(retainedLog) == 0 {
+			t.Fatal("AppData log is absent from the package-local backing location")
+		}
+	}
+
+	readbackDirectory, err := os.MkdirTemp(profile, "cn-mon-msix-appdata-readback-")
+	if err != nil {
+		t.Fatal("create temporary readback log directory")
+	}
+	defer os.RemoveAll(readbackDirectory)
+	readbackLog := filepath.Join(readbackDirectory, "readback.log")
+	code, stdout, stderr := nativeMSIXRun(t, alias, readbackDirectory, nil,
+		"--list", "--format", "json", "--history-file", history, "--log-file", readbackLog)
+	if code != 0 || len(stderr) != 0 {
+		t.Fatalf("packaged AppData readback command exit=%d stderr=%q", code, stderr)
+	}
+	var report struct {
+		Requests []json.RawMessage `json:"requests"`
+	}
+	if err := json.Unmarshal(stdout, &report); err != nil || len(report.Requests) == 0 || !bytes.Contains(stdout, []byte("127.0.0.1")) {
+		t.Fatal("packaged AppData readback did not return the previously stored loopback request")
+	}
+	for _, logicalPath := range []string{history, logPath} {
+		if _, err := os.Stat(logicalPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("AppData output is visible outside the package-local backing location")
+		}
+	}
+	for _, path := range []string{backingHistory, backingLog} {
+		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
+			t.Fatal("packaged AppData output is missing from the expected LocalCache location")
+		}
+	}
+	if !newFiles {
+		afterHistory, historyErr := os.ReadFile(backingHistory)
+		afterLog, logErr := os.ReadFile(backingLog)
+		if historyErr != nil || logErr != nil || !bytes.Equal(retainedHistory, afterHistory) || !bytes.Equal(retainedLog, afterLog) {
+			t.Fatal("packaged AppData readback modified retained output bytes")
+		}
+	}
+	t.Logf("CNMON_NATIVE_MSIX_APPDATA phase=%s create=%s readback=pass external=absent localcache=present", phase, map[bool]string{true: "pass", false: "preserved"}[newFiles])
 }
 
 func nativeMSIXRequireLoopbackJSON(t *testing.T, stdout []byte) {
