@@ -47,6 +47,72 @@ function Write-WackFixture {
     [IO.File]::WriteAllText($Path, $xml, [Text.UTF8Encoding]::new($false))
 }
 
+$script:KnownWackTupleFixture = @(
+    '3:2:TRUE',
+    '6:11:TRUE',
+    '12:77:TRUE', '12:31:FALSE', '12:87:TRUE', '12:86:TRUE', '12:91:FALSE', '12:90:FALSE',
+    '14:70:FALSE', '14:62:FALSE',
+    '19:45:TRUE', '19:61:FALSE',
+    '20:46:TRUE',
+    '23:52:FALSE',
+    '24:56:FALSE', '24:57:FALSE', '24:55:FALSE', '24:54:FALSE', '24:58:TRUE', '24:53:FALSE',
+    '25:89:TRUE', '25:88:TRUE', '25:63:TRUE',
+    '26:92:FALSE'
+)
+
+function New-KnownWackFixtureXml {
+    param(
+        [string]$Overall = 'PASS',
+        [string]$Partial = 'FALSE',
+        [string]$Name = 'Example.CnMon',
+        [string]$Version = '1.3.0.0',
+        [string]$ReportVersion = '10.0.26100.8249',
+        [string]$ResultKey,
+        [string]$ResultValue = 'PASS',
+        [string]$OptionalKey,
+        [string]$OptionalValue,
+        [string]$OmitKey,
+        [string]$DuplicateKey,
+        [string]$ReplaceKey,
+        [string]$ReplacementKey,
+        [switch]$DuplicateRequirementNumber,
+        [switch]$NestedTest,
+        [switch]$Reverse
+    )
+    $xml = [Text.StringBuilder]::new()
+    $null = $xml.Append('<REPORT VERSION="').Append($ReportVersion).Append('" APP_NAME="').Append($Name).Append('" APP_VERSION="').Append($Version).Append('" OVERALL_RESULT="').Append($Overall).Append('" PARTIAL_RUN="').Append($Partial).Append('"><REQUIREMENTS>')
+    $requirementNumbers = @($script:KnownWackTupleFixture | ForEach-Object { ($_ -split ':')[0] } | Select-Object -Unique)
+    if ($Reverse) { [array]::Reverse($requirementNumbers) }
+    foreach ($expectedNumber in $requirementNumbers) {
+        $writtenNumber = if ($DuplicateRequirementNumber -and $expectedNumber -ceq '6') { '3' } else { $expectedNumber }
+        $null = $xml.Append('<REQUIREMENT NUMBER="').Append($writtenNumber).Append('">')
+        $rows = @($script:KnownWackTupleFixture | Where-Object { $_.StartsWith("$expectedNumber`:", [StringComparison]::Ordinal) })
+        if ($Reverse) { [array]::Reverse($rows) }
+        foreach ($row in $rows) {
+            $parts = $row.Split(':')
+            $key = "$($parts[0]):$($parts[1])"
+            if ($OmitKey -ceq $key -or $ReplaceKey -ceq $key) { continue }
+            $index = $parts[1]
+            $optional = $parts[2]
+            if ($OptionalKey -ceq $key -and -not [string]::IsNullOrWhiteSpace($OptionalValue)) { $optional = $OptionalValue }
+            $value = if ($ResultKey -ceq $key) { $ResultValue } else { 'PASS' }
+            $null = $xml.Append('<TEST INDEX="').Append($index).Append('" OPTIONAL="').Append($optional).Append('"><RESULT>').Append($value).Append('</RESULT></TEST>')
+            if ($DuplicateKey -ceq $key) {
+                $null = $xml.Append('<TEST INDEX="').Append($index).Append('" OPTIONAL="').Append($optional).Append('"><RESULT>PASS</RESULT></TEST>')
+            }
+        }
+        if ($ReplaceKey -and $ReplacementKey -and $ReplacementKey.StartsWith("$expectedNumber`:", [StringComparison]::Ordinal)) {
+            $replacementParts = $ReplacementKey.Split(':')
+            $null = $xml.Append('<TEST INDEX="').Append($replacementParts[1]).Append('" OPTIONAL="').Append($replacementParts[2]).Append('"><RESULT>PASS</RESULT></TEST>')
+        }
+        $null = $xml.Append('</REQUIREMENT>')
+    }
+    $null = $xml.Append('</REQUIREMENTS>')
+    if ($NestedTest) { $null = $xml.Append('<METADATA><TEST INDEX="999" OPTIONAL="TRUE"><RESULT>PASS</RESULT></TEST></METADATA>') }
+    $null = $xml.Append('</REPORT>')
+    return $xml.ToString()
+}
+
 function Invoke-MockedCertificateCleanup {
     param([bool]$RemoveTrustedCopy, [bool]$DeletePrivateKey, [bool]$FailTrustedCopy)
     $script:certificateRemovalCalls = [Collections.Generic.List[object]]::new()
@@ -329,6 +395,7 @@ $requiredFunctions = @(
     'Get-CnMonMsixPackage',
     'Assert-CnMonMsixInstalledPackage',
     'Get-CnMonMsixWackStatus',
+    'Get-CnMonMsixKnownWackEvaluation',
     'Get-CnMonMsixWackStructureDiagnostic',
     'ConvertTo-CnMonMsixNumericToolVersion',
     'ConvertFrom-CnMonMsixDesktopSurfaceReport',
@@ -1356,6 +1423,94 @@ exit 0
         Assert-Equal (Get-CnMonMsixWackStatus $report 1 'Example.CnMon' '1.3.0.0') 'fail' 'nonzero WACK exit was accepted'
         [IO.File]::WriteAllText($report, '<REPORT OVERALL_RESULT="PASS"')
         Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'incomplete' 'malformed WACK XML was accepted'
+    }
+
+    Invoke-Check 'constructed all-pass fixture from measured WACK tuples is accepted independent of order' {
+        $report = Join-Path $tempRoot 'wack-measured-all-pass-constructed.xml'
+        [IO.File]::WriteAllText($report, (New-KnownWackFixtureXml -Reverse), [Text.UTF8Encoding]::new($false))
+        Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'pass' 'constructed exact measured tuple set with all PASS results was not accepted'
+        Assert-Equal (Get-CnMonMsixWackStatus -Path $report -ExitCode $null -ExpectedName 'Example.CnMon' -ExpectedVersion '1.3.0.0') 'incomplete' 'missing AppCert exit code passed through the status wrapper'
+        $passedXml = (New-KnownWackFixtureXml -Overall 'PASSED').Replace('<RESULT>PASS</RESULT>', '<RESULT>PASSED</RESULT>', [StringComparison]::Ordinal)
+        [IO.File]::WriteAllText($report, $passedXml, [Text.UTF8Encoding]::new($false))
+        Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'pass' 'constructed PASSED/PASSED alias fixture was not accepted'
+        [IO.File]::WriteAllText($report, (New-KnownWackFixtureXml -Reverse), [Text.UTF8Encoding]::new($false))
+        $evaluation = Get-CnMonMsixKnownWackEvaluation $report 0 'Example.CnMon' '1.3.0.0'
+        Assert-True $evaluation.schema_known 'exact measured WACK structure was left unknown'
+
+        $keys = @('GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS', 'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER', 'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN')
+        $old = @{}
+        foreach ($key in $keys) { $old[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+        try {
+            $env:GITHUB_ACTIONS = 'true'; $env:GITHUB_EVENT_NAME = 'pull_request'; $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'; $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'; $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'; $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $identity = [pscustomobject]@{ Name = 'Example.CnMon'; Publisher = 'CN=Example, O=Example'; PublisherDisplayName = 'Example Publisher'; ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6' }
+            $diagnostic = Get-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0'
+            Assert-True (-not $diagnostic.unknown_schema) 'known measured report was still marked as an unknown schema'
+        }
+        finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') } }
+    }
+
+    Invoke-Check 'measured WACK evaluator rejects unknown tuples and preserves explicit failures' {
+        $report = Join-Path $tempRoot 'wack-measured-variant-constructed.xml'
+        function Assert-WackFixtureStatus {
+            param([string]$Xml, [string]$Expected, [string]$Reason)
+            [IO.File]::WriteAllText($report, $Xml, [Text.UTF8Encoding]::new($false))
+            Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') $Expected $Reason
+        }
+
+        $warningXml = New-KnownWackFixtureXml -Overall 'WARNING' -ResultKey '26:92' -ResultValue 'WARNING'
+        Assert-WackFixtureStatus $warningXml 'fail' 'measured baseline warning was accepted'
+        [IO.File]::WriteAllText($report, $warningXml, [Text.UTF8Encoding]::new($false))
+        $warningEvaluation = Get-CnMonMsixKnownWackEvaluation $report 0 'Example.CnMon' '1.3.0.0'
+        Assert-True $warningEvaluation.schema_known 'recognized warning report was still marked as an unknown structure'
+
+        $keys = @('GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS', 'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER', 'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN')
+        $old = @{}
+        foreach ($key in $keys) { $old[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+        try {
+            $env:GITHUB_ACTIONS = 'true'; $env:GITHUB_EVENT_NAME = 'pull_request'; $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'; $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'; $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'; $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $identity = [pscustomobject]@{ Name = 'Example.CnMon'; Publisher = 'CN=Example, O=Example'; PublisherDisplayName = 'Example Publisher'; ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6' }
+            $diagnostic = Get-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0'
+            Assert-True (-not $diagnostic.unknown_schema) 'known warning report did not clear unknown_schema'
+        }
+        finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') } }
+
+        foreach ($warningAlias in @('PASS WITH WARNINGS', 'PASS_WITH_WARNINGS', 'PASSWITHWARNINGS', 'PASSED WITH WARNINGS', 'PASSED_WITH_WARNINGS', 'PASSEDWITHWARNINGS')) {
+            Assert-WackFixtureStatus (New-KnownWackFixtureXml -Overall $warningAlias) 'fail' "root warning alias '$warningAlias' was accepted"
+        }
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -Overall 'FAIL') 'fail' 'known-schema root failure was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -ResultKey '12:31' -ResultValue 'WARNING') 'fail' 'warning on an OPTIONAL=false test was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -ResultKey '12:31' -ResultValue 'FAIL') 'fail' 'explicit test failure was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -Name 'Other.Package') 'fail' 'candidate name mismatch was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -Version '9.9.9.9') 'fail' 'candidate version mismatch was accepted'
+        [IO.File]::WriteAllText($report, (New-KnownWackFixtureXml), [Text.UTF8Encoding]::new($false))
+        Assert-Equal (Get-CnMonMsixWackStatus $report 1 'Example.CnMon' '1.3.0.0') 'fail' 'nonzero AppCert exit was accepted'
+
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -ReportVersion '10.0.26100.9999') 'incomplete' 'unknown WACK report version was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -Partial 'TRUE') 'incomplete' 'partial WACK report was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -ResultKey '12:31' -ResultValue 'UNKNOWN') 'incomplete' 'unknown result token was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -ResultKey '12:31' -ResultValue 'NOT_APPLICABLE') 'incomplete' 'not-applicable result was treated as a passing test'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -OmitKey '26:92') 'incomplete' 'missing measured tuple was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -DuplicateKey '26:92') 'incomplete' 'duplicate measured tuple was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -ReplaceKey '26:92' -ReplacementKey '26:93') 'incomplete' 'replaced test index was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -OptionalKey '26:92' -OptionalValue 'TRUE') 'incomplete' 'changed measured OPTIONAL value was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -DuplicateRequirementNumber) 'incomplete' 'duplicate requirement number was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -NestedTest) 'incomplete' 'nested metadata test was counted as measured qualification evidence'
+        $nestedResult = (New-KnownWackFixtureXml).Replace('<RESULT>PASS</RESULT>', '<RESULT><STATUS>PASS</STATUS></RESULT>', [StringComparison]::Ordinal)
+        Assert-WackFixtureStatus $nestedResult 'incomplete' 'nested result text was accepted as a text-only direct result'
+        $duplicateResult = (New-KnownWackFixtureXml).Replace('<RESULT>PASS</RESULT>', '<RESULT>PASS</RESULT><RESULT>PASS</RESULT>', [StringComparison]::Ordinal)
+        Assert-WackFixtureStatus $duplicateResult 'incomplete' 'duplicate direct result was accepted'
+        Assert-WackFixtureStatus (New-KnownWackFixtureXml -ResultKey '12:31' -ResultValue '') 'incomplete' 'empty direct result was accepted'
+        $noExitEvaluation = Get-CnMonMsixKnownWackEvaluation $report $null 'Example.CnMon' '1.3.0.0'
+        Assert-Equal $noExitEvaluation.status 'incomplete' 'missing AppCert exit code was treated as success'
+
+        [IO.File]::WriteAllText($report, '<!DOCTYPE REPORT [<!ENTITY x "PASS">]><REPORT>&x;</REPORT>', [Text.UTF8Encoding]::new($false))
+        Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'incomplete' 'DTD-bearing WACK report was accepted for qualification'
+        [IO.File]::WriteAllText($report, '<REPORT>' + ('x' * 1048577) + '</REPORT>', [Text.UTF8Encoding]::new($false))
+        Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'incomplete' 'oversized WACK report was accepted for qualification'
     }
 
     Invoke-Check 'Certify reads a valid WACK gate before applying pass-only acceptance' {

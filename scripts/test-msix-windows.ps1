@@ -492,6 +492,193 @@ function ConvertTo-CnMonMsixNumericToolVersion {
     catch { return $null }
 }
 
+function Get-CnMonMsixKnownWackEvaluation {
+    param([string]$Path, [object]$ExitCode, [string]$ExpectedName, [string]$ExpectedVersion)
+
+    $evaluation = [ordered]@{ status = 'incomplete'; schema_known = $false }
+    $exitKnown = ($null -eq $ExitCode) -or ($ExitCode -is [int]) -or ($ExitCode -is [long])
+    $exitFailed = $exitKnown -and $null -ne $ExitCode -and [long]$ExitCode -ne 0
+    $exitAvailable = $null -ne $ExitCode
+    if (-not $exitKnown) { return [pscustomobject]$evaluation }
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        if ($exitFailed) { $evaluation.status = 'fail' }
+        return [pscustomobject]$evaluation
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        if ($exitFailed) { $evaluation.status = 'fail' }
+        return [pscustomobject]$evaluation
+    }
+    try {
+        if ((Get-Item -LiteralPath $Path -ErrorAction Stop).Length -gt 1048576) {
+            if ($exitFailed) { $evaluation.status = 'fail' }
+            return [pscustomobject]$evaluation
+        }
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $settings.MaxCharactersInDocument = 1048576
+        $settings.MaxCharactersFromEntities = 0
+        $settings.IgnoreComments = $false
+        $settings.IgnoreProcessingInstructions = $false
+        $stream = [IO.File]::OpenRead($Path)
+        try {
+            $reader = [Xml.XmlReader]::Create($stream, $settings)
+            try {
+                $document = [Xml.XmlDocument]::new()
+                $document.PreserveWhitespace = $true
+                $document.XmlResolver = $null
+                $document.Load($reader)
+            }
+            finally { $reader.Dispose() }
+        }
+        finally { $stream.Dispose() }
+    }
+    catch {
+        if ($exitFailed) { $evaluation.status = 'fail' }
+        return [pscustomobject]$evaluation
+    }
+
+    $report = $document.DocumentElement
+    if ($null -eq $report -or $report.LocalName -cne 'REPORT' -or $report.NamespaceURI -cne '') {
+        if ($exitFailed) { $evaluation.status = 'fail' }
+        return [pscustomobject]$evaluation
+    }
+
+    $explicitFailure = $exitFailed
+    $shapeKnown = $true
+    $candidateName = $report.GetAttribute('APP_NAME')
+    $candidateVersion = $report.GetAttribute('APP_VERSION')
+    if ([string]::IsNullOrWhiteSpace($candidateName) -or [string]::IsNullOrWhiteSpace($candidateVersion) -or
+        [string]::IsNullOrWhiteSpace($ExpectedName) -or [string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+        $shapeKnown = $false
+    }
+    elseif ($candidateName -cne $ExpectedName -or $candidateVersion -cne $ExpectedVersion) {
+        $explicitFailure = $true
+    }
+
+    $overall = $report.GetAttribute('OVERALL_RESULT').Trim().ToUpperInvariant()
+    $overallKind = switch ($overall) {
+        { $_ -in @('PASS', 'PASSED') } { 'pass'; break }
+        { $_ -in @('FAIL', 'FAILED', 'WARNING', 'WARN', 'PASS WITH WARNINGS', 'PASS_WITH_WARNINGS', 'PASSWITHWARNINGS', 'PASSED WITH WARNINGS', 'PASSED_WITH_WARNINGS', 'PASSEDWITHWARNINGS') } { 'fail'; break }
+        'NOT_APPLICABLE' { 'not_applicable'; break }
+        default { 'unknown' }
+    }
+    if ($overallKind -eq 'fail') { $explicitFailure = $true }
+    if ($overallKind -eq 'unknown') { $shapeKnown = $false }
+
+    $partialRun = $report.GetAttribute('PARTIAL_RUN').Trim().ToUpperInvariant()
+    if ($partialRun -notin @('TRUE', 'FALSE')) { $shapeKnown = $false }
+    $partial = $partialRun -ceq 'TRUE'
+    if ($report.GetAttribute('VERSION') -cne '10.0.26100.8249') { $shapeKnown = $false }
+
+    $expectedTupleRows = @(
+        '3:2:TRUE',
+        '6:11:TRUE',
+        '12:77:TRUE', '12:31:FALSE', '12:87:TRUE', '12:86:TRUE', '12:91:FALSE', '12:90:FALSE',
+        '14:70:FALSE', '14:62:FALSE',
+        '19:45:TRUE', '19:61:FALSE',
+        '20:46:TRUE',
+        '23:52:FALSE',
+        '24:56:FALSE', '24:57:FALSE', '24:55:FALSE', '24:54:FALSE', '24:58:TRUE', '24:53:FALSE',
+        '25:89:TRUE', '25:88:TRUE', '25:63:TRUE',
+        '26:92:FALSE'
+    )
+    $expectedTuples = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($row in $expectedTupleRows) { $null = $expectedTuples.Add($row) }
+    $actualTuples = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $requirementNumbers = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $testIndices = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $allTestResults = [Collections.Generic.List[Xml.XmlElement]]::new()
+
+    $requirementsContainers = @($report.ChildNodes | Where-Object { $_ -is [Xml.XmlElement] -and $_.LocalName -ceq 'REQUIREMENTS' })
+    if ($requirementsContainers.Count -ne 1 -or $requirementsContainers[0].NamespaceURI -cne '') {
+        $shapeKnown = $false
+    }
+    else {
+        $requirements = @($requirementsContainers[0].ChildNodes | Where-Object { $_ -is [Xml.XmlElement] })
+        if ($requirements.Count -ne 10 -or @($requirements | Where-Object { $_.LocalName -cne 'REQUIREMENT' -or $_.NamespaceURI -cne '' }).Count -gt 0) {
+            $shapeKnown = $false
+        }
+        foreach ($requirement in $requirements) {
+            $numberText = $requirement.GetAttribute('NUMBER')
+            $numberValue = 0
+            if ($numberText -cnotmatch '^[0-9]{1,4}$' -or -not [int]::TryParse($numberText, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$numberValue) -or
+                $numberValue -le 0 -or -not $requirementNumbers.Add([string]$numberValue)) {
+                $shapeKnown = $false
+            }
+            $tests = @($requirement.ChildNodes | Where-Object { $_ -is [Xml.XmlElement] })
+            if (@($tests | Where-Object { $_.LocalName -cne 'TEST' -or $_.NamespaceURI -cne '' }).Count -gt 0) { $shapeKnown = $false }
+            foreach ($test in $tests) {
+                $allTestResults.Add($test)
+                $indexText = $test.GetAttribute('INDEX')
+                $indexValue = 0
+                $optional = $test.GetAttribute('OPTIONAL').Trim().ToUpperInvariant()
+                if ($indexText -cnotmatch '^[0-9]{1,4}$' -or -not [int]::TryParse($indexText, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$indexValue) -or
+                    $indexValue -le 0 -or -not $testIndices.Add([string]$indexValue) -or $optional -notin @('TRUE', 'FALSE')) {
+                    $shapeKnown = $false
+                }
+                $tuple = "$numberValue`:$indexValue`:$optional"
+                if (-not $actualTuples.Add($tuple)) { $shapeKnown = $false }
+
+                $resultElements = @($test.ChildNodes | Where-Object { $_ -is [Xml.XmlElement] -and $_.LocalName -ceq 'RESULT' })
+                foreach ($observedResult in $resultElements) {
+                    if ($observedResult.InnerText.Trim().ToUpperInvariant() -in @('FAIL', 'FAILED', 'WARNING', 'WARN')) {
+                        $explicitFailure = $true
+                    }
+                }
+                if ($resultElements.Count -ne 1 -or ($resultElements.Count -eq 1 -and $resultElements[0].NamespaceURI -cne '')) {
+                    $shapeKnown = $false
+                    continue
+                }
+                $resultElement = $resultElements[0]
+                $resultText = [Text.StringBuilder]::new()
+                $textOnly = $true
+                foreach ($child in $resultElement.ChildNodes) {
+                    if ($child.NodeType -in @([Xml.XmlNodeType]::Text, [Xml.XmlNodeType]::CDATA, [Xml.XmlNodeType]::Whitespace, [Xml.XmlNodeType]::SignificantWhitespace)) {
+                        $null = $resultText.Append($child.Value)
+                    }
+                    else { $textOnly = $false }
+                }
+                $statusText = $resultText.ToString().Trim().ToUpperInvariant()
+                if (-not $textOnly -or [string]::IsNullOrWhiteSpace($statusText)) {
+                    $shapeKnown = $false
+                    continue
+                }
+                switch ($statusText) {
+                    { $_ -in @('PASS', 'PASSED') } { break }
+                    { $_ -in @('FAIL', 'FAILED', 'WARNING', 'WARN') } { $explicitFailure = $true; break }
+                    'NOT_APPLICABLE' { break }
+                    default { $shapeKnown = $false }
+                }
+            }
+        }
+    }
+
+    if ($allTestResults.Count -ne 24 -or $actualTuples.Count -ne $expectedTuples.Count -or
+        @($expectedTuples | Where-Object { -not $actualTuples.Contains($_) }).Count -gt 0 -or
+        @($report.SelectNodes(".//*[local-name()='REQUIREMENT']")).Count -ne 10 -or
+        @($report.SelectNodes(".//*[local-name()='TEST']")).Count -ne 24 -or
+        @($report.SelectNodes(".//*[local-name()='RESULT']")).Count -ne 24) {
+        $shapeKnown = $false
+    }
+
+    $evaluation.schema_known = [bool]$shapeKnown
+    if ($explicitFailure) { $evaluation.status = 'fail' }
+    elseif (-not $exitAvailable -or -not $shapeKnown -or $partial -or $overallKind -ne 'pass') { $evaluation.status = 'incomplete' }
+    else {
+        $hasNonPassResult = $false
+        foreach ($test in $allTestResults) {
+            $results = @($test.ChildNodes | Where-Object { $_ -is [Xml.XmlElement] -and $_.LocalName -ceq 'RESULT' })
+            if ($results.Count -ne 1 -or $results[0].InnerText.Trim().ToUpperInvariant() -notin @('PASS', 'PASSED')) {
+                $hasNonPassResult = $true
+                break
+            }
+        }
+        if (-not $hasNonPassResult) { $evaluation.status = 'pass' }
+    }
+    return [pscustomobject]$evaluation
+}
+
 function Get-CnMonMsixWackStructureDiagnostic {
     param(
         [string]$ReportPath,
@@ -800,6 +987,7 @@ function Get-CnMonMsixWackStructureDiagnostic {
         }
     }
     $safeVersion = if ($ToolVersion -cmatch '^[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}$' -and $ToolVersion.Length -le 23) { $ToolVersion } else { $null }
+    $knownEvaluation = Get-CnMonMsixKnownWackEvaluation -Path $ReportPath -ExitCode $safeExitCode -ExpectedName ([string]$Identity.Name) -ExpectedVersion $ExpectedVersion
     return [ordered]@{
         schema_version = 1
         phase = $Phase
@@ -807,7 +995,7 @@ function Get-CnMonMsixWackStructureDiagnostic {
         exit_code = $safeExitCode
         report_present = [bool]$present
         xml_parse_success = [bool]$xmlParsed
-        unknown_schema = $true
+        unknown_schema = [bool](-not $knownEvaluation.schema_known)
         truncated = [bool]$truncated
         report_sha256 = $reportHash
         identity_value_matches = [bool]$identityMatches
@@ -912,50 +1100,9 @@ function Read-CnMonMsixHostedResultSnapshot {
 }
 
 function Get-CnMonMsixWackStatus {
-    param([string]$Path, [int]$ExitCode, [string]$ExpectedName, [string]$ExpectedVersion)
-    if ($ExitCode -ne 0) { return 'fail' }
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return 'incomplete' }
-    try {
-        $settings = [Xml.XmlReaderSettings]::new()
-        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
-        $settings.XmlResolver = $null
-        $reader = [Xml.XmlReader]::Create($Path, $settings)
-        try {
-            $document = [Xml.XmlDocument]::new()
-            $document.XmlResolver = $null
-            $document.Load($reader)
-        }
-        finally { $reader.Dispose() }
-    }
-    catch { return 'incomplete' }
-
-    $report = $document.DocumentElement
-    if ($null -eq $report -or $report.LocalName -cne 'REPORT') { return 'incomplete' }
-    $overall = $report.GetAttribute('OVERALL_RESULT').Trim().ToUpperInvariant()
-    if ($overall -in @('FAIL', 'FAILED', 'WARNING', 'WARN')) { return 'fail' }
-    if ($overall -cne 'PASS') { return 'incomplete' }
-    if ([string]::IsNullOrWhiteSpace($ExpectedName) -or [string]::IsNullOrWhiteSpace($ExpectedVersion) -or
-        [string]::IsNullOrWhiteSpace($report.GetAttribute('APP_NAME')) -or
-        [string]::IsNullOrWhiteSpace($report.GetAttribute('APP_VERSION'))) { return 'incomplete' }
-    if ($report.GetAttribute('APP_NAME') -cne $ExpectedName -or $report.GetAttribute('APP_VERSION') -cne $ExpectedVersion) { return 'fail' }
-    if ($report.GetAttribute('PARTIAL_RUN').Trim().ToUpperInvariant() -cne 'FALSE') { return 'incomplete' }
-
-    $tests = @($report.SelectNodes(".//*[local-name()='TEST']"))
-    if ($tests.Count -eq 0) { return 'incomplete' }
-    foreach ($test in $tests) {
-        $results = @($test.SelectNodes(".//*[local-name()='RESULT']"))
-        if ($results.Count -eq 0) { return 'incomplete' }
-        foreach ($result in $results) {
-            $value = $result.InnerText.Trim().ToUpperInvariant()
-            if ($value -in @('FAIL', 'FAILED', 'WARNING', 'WARN')) { return 'fail' }
-            if ($value -notin @('PASS', 'PASSED')) { return 'incomplete' }
-        }
-    }
-
-    # The installed WACK report schema has not yet been measured on a supported
-    # Windows host. Inspect explicit failures, but do not treat guessed result
-    # node names as sufficient evidence for a complete qualification.
-    return 'incomplete'
+    param([string]$Path, [object]$ExitCode, [string]$ExpectedName, [string]$ExpectedVersion)
+    $evaluation = Get-CnMonMsixKnownWackEvaluation -Path $Path -ExitCode $ExitCode -ExpectedName $ExpectedName -ExpectedVersion $ExpectedVersion
+    return [string]$evaluation.status
 }
 
 function Get-CnMonMsixTrustAction {

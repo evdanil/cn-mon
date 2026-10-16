@@ -1,6 +1,6 @@
 # Microsoft Store listing draft
 
-Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Current synthetic qualification passes all 16 core gates but fails WACK on the required `dpi_awareness` warning; repair and command-conflict/Settings alias recovery remain incomplete. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
+Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. The latest synthetic sidecar run passed all 16 core gates and all 24 WACK tests, but formal WACK acceptance remains incomplete pending exact-schema parser support; repair and command-conflict/Settings alias recovery remain incomplete. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
 
 ## Copy-ready English listing
 
@@ -77,7 +77,7 @@ The following capability justification is ready for certification notes:
 
 > The package declares the `runFullTrust` restricted capability to run the existing native command-line executable as a full-trust desktop process. This allows the invoking command-line session to pass arguments and standard streams and lets cn-mon resolve hostnames, send native ICMP probes, make TCP connection attempts for user-selected targets, and use configuration, history, and log files. The package installs no service or driver.
 
-This capability justification describes intended desktop execution; it does not establish successful installation, alias behavior, package-identity ICMP, WACK acceptance or Store eligibility. Continue testing command conflicts and Settings alias-disable recovery with the signed synthetic MSIX in a disposable ordinary-user profile; do not substitute a portable archive binary for the installed package. Repair and command-conflict/alias recovery remain incomplete, and WACK fails on the required DPI-awareness warning under the strict policy. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for run details.
+This capability justification describes intended desktop execution; it does not establish successful installation, alias behavior, package-identity ICMP, formal WACK acceptance or Store eligibility. Continue testing command conflicts and Settings alias-disable recovery with the signed synthetic MSIX in a disposable ordinary-user profile; do not substitute a portable archive binary for the installed package. Repair and command-conflict/alias recovery remain incomplete. All 24 WACK tests passed in the latest synthetic sidecar run, but formal acceptance remains incomplete pending exact-schema parser support. The desktop-surface probe could not inspect Settings or Repair, and runtime DPI state is unmeasured. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for run details.
 
 ~~~powershell
 $reviewDir = Join-Path $env:TEMP ("cn-mon-store-review-" + [guid]::NewGuid().ToString("N"))
