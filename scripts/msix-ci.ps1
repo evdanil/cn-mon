@@ -139,20 +139,65 @@ function Assert-CandidateReceipt([string]$PackagePath, [string]$ReceiptPath) {
     }
 }
 
+function Get-SignedEvidenceBinding([string]$PackagePath, [string]$ReceiptPath) {
+    Assert-CandidateReceipt -PackagePath $PackagePath -ReceiptPath $ReceiptPath
+    $receipt = Get-Content -LiteralPath $ReceiptPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    $packageHash = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($receipt.signing.status -cne 'test' -or
+        [string]$receipt.signing.signed_package_sha256 -cne $packageHash -or
+        [string]$receipt.package_sha256 -cne $packageHash) {
+        throw 'signed result evidence does not match the signed package'
+    }
+    return [ordered]@{
+        signed_package_sha256 = $packageHash
+        signed_receipt_sha256 = (Get-FileHash -LiteralPath $ReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        packaging_revision = [string]$receipt.packaging_revision
+    }
+}
+
+function Assert-NativeResultEvidence($Actual, $Expected) {
+    $expectedNames = @('packaging_revision', 'signed_package_sha256', 'signed_receipt_sha256')
+    if ($null -eq $Actual -or $null -eq $Expected -or
+        (@($Actual.PSObject.Properties.Name | Sort-Object) -join "`n") -cne ($expectedNames -join "`n") -or
+        (@($Expected.Keys | Sort-Object) -join "`n") -cne ($expectedNames -join "`n") -or
+        [string]$Actual.signed_package_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Actual.signed_receipt_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        [string]$Actual.packaging_revision -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$Actual.signed_package_sha256 -cne [string]$Expected.signed_package_sha256 -or
+        [string]$Actual.signed_receipt_sha256 -cne [string]$Expected.signed_receipt_sha256 -or
+        [string]$Actual.packaging_revision -cne [string]$Expected.packaging_revision) {
+        throw 'native result evidence does not match signed package, receipt, and source revision'
+    }
+}
+
 function Read-NativeResults(
     [string]$ResultsPath,
-    [ValidateSet('Hosted', 'Certify')][string]$ExpectedMode
+    [ValidateSet('Hosted', 'Certify')][string]$ExpectedMode,
+    [string]$RawJson
 ) {
-    $results = Get-Content -LiteralPath $ResultsPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $json = if ($PSBoundParameters.ContainsKey('RawJson')) { $RawJson } else { Get-Content -LiteralPath $ResultsPath -Raw -ErrorAction Stop }
+    $results = ConvertFrom-Json -InputObject $json -ErrorAction Stop
     $propertyNames = @($results.PSObject.Properties.Name | Sort-Object)
-    $expectedProperties = @('gates', 'mode', 'overall', 'schema_version')
+    $expectedProperties = @('evidence', 'gates', 'mode', 'overall', 'schema_version')
     $expectedProperties = @($expectedProperties | Sort-Object)
     if (($propertyNames -join "`n") -cne ($expectedProperties -join "`n") -or
-        $results.schema_version -ne 1 -or
+        $results.schema_version -isnot [long] -or $results.schema_version -ne 2 -or
         $results.mode -cne $ExpectedMode -or
-        $results.overall -notin $allowedGateStatuses -or
+        $results.overall -cnotin $allowedGateStatuses -or
         $null -eq $results.gates) {
         throw 'native qualification results have an invalid schema'
+    }
+    if ($null -ne $results.evidence) {
+        $evidenceNames = @($results.evidence.PSObject.Properties.Name | Sort-Object)
+        if (($evidenceNames -join "`n") -cne (@('packaging_revision', 'signed_package_sha256', 'signed_receipt_sha256') -join "`n") -or
+            $results.evidence.signed_package_sha256 -isnot [string] -or
+            $results.evidence.signed_receipt_sha256 -isnot [string] -or
+            $results.evidence.packaging_revision -isnot [string] -or
+            [string]$results.evidence.signed_package_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$results.evidence.signed_receipt_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$results.evidence.packaging_revision -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'native qualification results contain invalid evidence'
+        }
     }
 
     $actualNames = @($results.gates.PSObject.Properties.Name | Sort-Object)
@@ -161,7 +206,7 @@ function Read-NativeResults(
         throw 'native qualification results have an invalid gate set'
     }
     foreach ($name in $actualNames) {
-        if ($results.gates.$name -notin $allowedGateStatuses) {
+        if ($results.gates.$name -cnotin $allowedGateStatuses) {
             throw 'native qualification results contain an invalid gate status'
         }
     }
@@ -173,6 +218,9 @@ function Assert-NativeResults(
     [ValidateSet('Hosted', 'Certify')][string]$ExpectedMode
 ) {
     $results = Read-NativeResults -ResultsPath $ResultsPath -ExpectedMode $ExpectedMode
+    if ($results.overall -ceq 'pass' -and $null -eq $results.evidence) {
+        throw 'passing native qualification results require signed evidence'
+    }
     if ($results.overall -cne 'pass') {
         throw 'native qualification results did not pass'
     }
@@ -192,21 +240,33 @@ function Assert-NativeResults(
 function Read-NativeSummaryResults([string]$ResultsPath) {
     $results = Get-Content -LiteralPath $ResultsPath -Raw | ConvertFrom-Json
     $propertyNames = @($results.PSObject.Properties.Name | Sort-Object)
-    $expectedProperties = @('gates', 'mode', 'overall', 'schema_version')
+    $expectedProperties = @('evidence', 'gates', 'mode', 'overall', 'schema_version')
     $expectedProperties = @($expectedProperties | Sort-Object)
     if (($propertyNames -join "`n") -cne ($expectedProperties -join "`n") -or
-        $results.schema_version -ne 1 -or
-        $results.mode -notin @('Hosted', 'Certify') -or
-        $results.overall -notin $allowedGateStatuses -or
+        $results.schema_version -isnot [long] -or $results.schema_version -ne 2 -or
+        $results.mode -cnotin @('Hosted', 'Certify') -or
+        $results.overall -cnotin $allowedGateStatuses -or
         $null -eq $results.gates) {
         throw 'native summary results have an invalid schema'
     }
+    if ($null -ne $results.evidence) {
+        $evidenceNames = @($results.evidence.PSObject.Properties.Name | Sort-Object)
+        if (($evidenceNames -join "`n") -cne (@('packaging_revision', 'signed_package_sha256', 'signed_receipt_sha256') -join "`n") -or
+            $results.evidence.signed_package_sha256 -isnot [string] -or
+            $results.evidence.signed_receipt_sha256 -isnot [string] -or
+            $results.evidence.packaging_revision -isnot [string] -or
+            [string]$results.evidence.signed_package_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$results.evidence.signed_receipt_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$results.evidence.packaging_revision -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'native summary results contain invalid evidence'
+        }
+    }
     $actualNames = @($results.gates.PSObject.Properties.Name)
-    if (@($actualNames | Where-Object { $_ -notin $gateNames }).Count -ne 0) {
+    if (@($actualNames | Where-Object { $_ -cnotin $gateNames }).Count -ne 0) {
         throw 'native summary results have an invalid gate set'
     }
     foreach ($name in $actualNames) {
-        if ($results.gates.$name -notin $allowedGateStatuses) {
+        if ($results.gates.$name -cnotin $allowedGateStatuses) {
             throw 'native summary results contain an invalid gate status'
         }
     }
@@ -214,7 +274,7 @@ function Read-NativeSummaryResults([string]$ResultsPath) {
 }
 
 function Write-GateOutput([string]$Status) {
-    if ($Status -notin $allowedGateStatuses) {
+    if ($Status -cnotin $allowedGateStatuses) {
         throw 'WACK gate status is invalid'
     }
     [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "gate_status=$Status`n", [Text.UTF8Encoding]::new($false))
@@ -351,6 +411,9 @@ switch ($Mode) {
             $signed.package_sha256 -cne $signedHash) {
             throw 'signed MSIX receipt failed identity or package hash validation'
         }
+        $expectedEvidence = Get-SignedEvidenceBinding -PackagePath $signedPackage -ReceiptPath $signedReceipt
+        $nativeResults = Read-NativeResults -ResultsPath $resultsPath -ExpectedMode Hosted
+        Assert-NativeResultEvidence -Actual $nativeResults.evidence -Expected $expectedEvidence
         $null = Assert-NativeResults -ResultsPath $resultsPath -ExpectedMode Hosted
     }
     'Certify' {
@@ -359,12 +422,27 @@ switch ($Mode) {
         $packagePath = Join-Path $evidenceDirectory 'cn-mon_1.3.0.0_x64-signed.msix'
         $receiptPath = Join-Path $evidenceDirectory 'msix-signed-receipt.json'
         $resultsPath = Join-Path $evidenceDirectory 'msix-native-results.json'
+        if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf) -or -not (Test-Path -LiteralPath $receiptPath -PathType Leaf) -or
+            -not (Test-Path -LiteralPath $resultsPath -PathType Leaf)) {
+            throw 'signed package, receipt, and Hosted results are required before WACK certification'
+        }
+        $expectedEvidence = Get-SignedEvidenceBinding -PackagePath $packagePath -ReceiptPath $receiptPath
+        $hostedBytes = [IO.File]::ReadAllBytes($resultsPath)
+        $hostedJson = [Text.UTF8Encoding]::new($false, $true).GetString($hostedBytes)
+        $hostedResults = Read-NativeResults -ResultsPath $resultsPath -ExpectedMode Hosted -RawJson $hostedJson
+        Assert-NativeResultEvidence -Actual $hostedResults.evidence -Expected $expectedEvidence
+        $snapshotPath = Join-Path $directory 'hosted-results.snapshot.json'
+        if (Test-Path -LiteralPath $snapshotPath) { throw 'Hosted result snapshot already exists' }
+        [IO.File]::WriteAllBytes($snapshotPath, $hostedBytes)
         $tester = Join-Path $repositoryRoot 'scripts/test-msix-windows.ps1'
         $log = Join-Path $directory 'wack-certification.log'
-        & pwsh -NoProfile -File $tester -Mode Certify -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory *> $log
+        & pwsh -NoProfile -File $tester -Mode Certify -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory -HostedResultsPath $snapshotPath *> $log
         $exitCode = $LASTEXITCODE
         if (Test-Path -LiteralPath $resultsPath -PathType Leaf) {
             $results = Read-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify
+            if ($null -ne $results.evidence) {
+                Assert-NativeResultEvidence -Actual $results.evidence -Expected $expectedEvidence
+            }
             $gateStatus = [string]$results.gates.wack
         } else {
             $gateStatus = 'incomplete'
@@ -415,10 +493,11 @@ switch ($Mode) {
                 $hasFailure = $results.overall -eq 'fail' -or
                     @($gates.Values | Where-Object { $_ -eq 'fail' }).Count -gt 0
                 $completePassMap = if ($results.mode -eq 'Hosted') {
-                    $gates.wack -eq 'incomplete' -and
+                    $null -ne $results.evidence -and $gates.wack -eq 'incomplete' -and
                         @($gateNames | Where-Object { $_ -ne 'wack' -and $gates[$_] -ne 'pass' }).Count -eq 0
                 } else {
-                    @($gateNames | Where-Object { $gates[$_] -ne 'pass' }).Count -eq 0
+                    $null -ne $results.evidence -and
+                        @($gateNames | Where-Object { $gates[$_] -ne 'pass' }).Count -eq 0
                 }
                 if ($hasFailure) {
                     $overall = 'fail'

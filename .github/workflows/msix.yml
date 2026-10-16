@@ -153,7 +153,7 @@ jobs:
           -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
       - name: Run WACK certification gate
         id: certify
-        if: steps.qualify.outcome == 'success'
+        if: always() && !cancelled()
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
       - name: Upload synthetic qualification evidence
@@ -166,6 +166,7 @@ jobs:
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-wack-structure.json
           if-no-files-found: ignore
           retention-days: 14
       - name: Write sanitized qualification summary
@@ -278,7 +279,7 @@ jobs:
           -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
       - name: Run WACK certification gate
         id: certify
-        if: steps.qualify.outcome == 'success'
+        if: always() && !cancelled()
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
       - name: Write sanitized trusted-run summary

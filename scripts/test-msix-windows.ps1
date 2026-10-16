@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ReceiptPath,
     [Parameter(Mandatory = $true)][string]$SdkBinDirectory,
     [Parameter(Mandatory = $true)][string]$ArtifactDirectory,
+    [string]$HostedResultsPath,
     [string]$ExpectedSid,
     [switch]$FailAfterInstall
 )
@@ -12,9 +13,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $script:Result = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     mode = $Mode
     overall = 'incomplete'
+    evidence = $null
     gates = [ordered]@{}
 }
 $script:AllowResultWrite = $true
@@ -50,6 +52,8 @@ $script:SignedCatalogFootprintPresent = $false
 $script:TrustPresenceChecked = $false
 $script:TrustedCertificatePresent = $false
 $script:LastSignatureLogPath = $null
+$script:HostedResultSnapshot = $null
+$script:AllowResultWrite = $true
 $script:CurrentSourceOperation = 'script_entry'
 $script:FailureSourceOperation = $null
 $script:PublicDiagnosticWritten = $false
@@ -432,8 +436,299 @@ function Merge-CnMonMsixResultGates {
     param([System.Collections.IDictionary]$HostedGates, [System.Collections.IDictionary]$CertifyUpdates)
     $merged = [ordered]@{}
     foreach ($key in $HostedGates.Keys) { $merged[$key] = [string]$HostedGates[$key] }
-    foreach ($key in $CertifyUpdates.Keys) { $merged[$key] = [string]$CertifyUpdates[$key] }
+    $statusRank = @{ pass = 0; incomplete = 1; fail = 2 }
+    $sharedGates = @('identity', 'package_hash', 'signature', 'cleanup')
+    foreach ($key in $CertifyUpdates.Keys) {
+        $update = [string]$CertifyUpdates[$key]
+        if ($key -ceq 'wack') {
+            $merged[$key] = $update
+        }
+        elseif ($key -in $sharedGates -and $statusRank[$update] -gt $statusRank[[string]$merged[$key]]) {
+            $merged[$key] = $update
+        }
+    }
     return $merged
+}
+
+function Get-CnMonMsixSourceRevision {
+    $output = @(& git -C $repositoryRoot rev-parse --verify HEAD 2>&1)
+    if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) { throw 'checked-out source revision could not be verified' }
+    $revision = ([string]$output[0]).Trim()
+    if ($revision -cnotmatch '^[0-9a-f]{40}$') { throw 'checked-out source revision is invalid' }
+    return $revision
+}
+
+function Get-CnMonMsixResultEvidence {
+    param([string]$PackagePath, [string]$ReceiptPath, [System.Collections.IDictionary]$Receipt, [string]$SourceRevision)
+    if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf) -or -not (Test-Path -LiteralPath $ReceiptPath -PathType Leaf) -or
+        $SourceRevision -cnotmatch '^[0-9a-f]{40}$' -or [string]$Receipt.purpose -cne 'candidate' -or
+        [string]$Receipt.packaging_revision -cne $SourceRevision) {
+        throw 'signed result evidence inputs are invalid'
+    }
+    $packageHash = (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($packageHash -cne ([string]$Receipt.package_sha256).ToLowerInvariant() -or
+        $null -eq $Receipt.signing -or [string]$Receipt.signing.status -cne 'test' -or
+        ([string]$Receipt.signing.signed_package_sha256).ToLowerInvariant() -cne $packageHash) {
+        throw 'signed result evidence does not match package bytes'
+    }
+    return [ordered]@{
+        signed_package_sha256 = $packageHash
+        signed_receipt_sha256 = (Get-FileHash -LiteralPath $ReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        packaging_revision = $SourceRevision
+    }
+}
+
+function Get-CnMonMsixWackStructureDiagnostic {
+    param(
+        [string]$ReportPath,
+        [object]$ExitCode,
+        [string]$ToolVersion,
+        [object]$Identity,
+        [string]$ExpectedVersion,
+        [ValidateSet('reset', 'test', 'report_missing')][string]$Phase = 'test',
+        [ValidateSet('pull_request', 'workflow_dispatch')][string]$Mode = 'pull_request'
+    )
+    if ($Mode -cne 'pull_request' -or -not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'Hosted' -Identity $Identity)) {
+        return $null
+    }
+    $safeExitCode = $null
+    if ($null -ne $ExitCode) {
+        if (($ExitCode -isnot [int]) -and ($ExitCode -isnot [long])) {
+            throw 'WACK diagnostic exit code must be an integer or null'
+        }
+        if ([long]$ExitCode -lt [int]::MinValue -or [long]$ExitCode -gt [int]::MaxValue) {
+            throw 'WACK diagnostic exit code is outside the supported range'
+        }
+        $safeExitCode = [int]$ExitCode
+    }
+
+    $maxBytes = 1048576
+    $maxDepth = 32
+    $maxElements = 256
+    $maxAttributes = 512
+    $maxStatuses = 64
+    $suppressedNameTokens = @(
+        [string]$Identity.Name, [string]$Identity.Publisher, [string]$Identity.PublisherDisplayName,
+        [string]$Identity.ExpectedPFN, [string]$env:USERNAME, [string]$env:COMPUTERNAME,
+        [string][Environment]::UserName, [string][Environment]::MachineName
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $present = Test-Path -LiteralPath $ReportPath -PathType Leaf
+    $length = if ($present) { (Get-Item -LiteralPath $ReportPath).Length } else { 0 }
+    $truncated = $length -gt $maxBytes
+    $reportHash = if ($present) { (Get-FileHash -LiteralPath $ReportPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+    $xmlParsed = $false
+    $identityMatches = $false
+    $versionMatches = $false
+    $hierarchy = [Collections.Generic.List[object]]::new()
+    $attributeNames = [Collections.Generic.List[string]]::new()
+    $statusObservations = [Collections.Generic.List[object]]::new()
+    $elementCount = 0
+    $attributeCount = 0
+    $maximumDepth = 0
+    $stack = [Collections.Generic.List[string]]::new()
+    if ($present -and -not $truncated) {
+        $reader = $null
+        $stream = $null
+        try {
+            $settings = [Xml.XmlReaderSettings]::new()
+            $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+            $settings.XmlResolver = $null
+            $settings.MaxCharactersInDocument = $maxBytes
+            $settings.MaxCharactersFromEntities = 0
+            $settings.IgnoreComments = $true
+            $settings.IgnoreProcessingInstructions = $true
+            $stream = [IO.File]::OpenRead($ReportPath)
+            $reader = [Xml.XmlReader]::Create($stream, $settings)
+            while ($reader.Read()) {
+                if ($reader.NodeType -in @([Xml.XmlNodeType]::Text, [Xml.XmlNodeType]::CDATA) -and $stack.Count -gt 0 -and $stack[$stack.Count - 1] -match '(?i)^(RESULT|STATUS)$') {
+                    $statusText = $reader.Value.Trim().ToUpperInvariant()
+                    if ($statusText) {
+                        $token = switch ($statusText) {
+                            { $_ -in @('PASS', 'PASSED') } { 'pass'; break }
+                            { $_ -in @('FAIL', 'FAILED') } { 'fail'; break }
+                            { $_ -in @('WARNING', 'WARN') } { 'warning'; break }
+                            'NOT_APPLICABLE' { 'not_applicable'; break }
+                            default { 'other' }
+                        }
+                        if ($statusObservations.Count -lt $maxStatuses) {
+                            $statusObservations.Add([ordered]@{ source = 'element'; status = $token; depth = $stack.Count })
+                        } else { $truncated = $true }
+                    }
+                    continue
+                }
+                if ($reader.NodeType -eq [Xml.XmlNodeType]::EndElement) {
+                    while ($stack.Count -gt $reader.Depth) { $stack.RemoveAt($stack.Count - 1) }
+                    continue
+                }
+                if ($reader.NodeType -ne [Xml.XmlNodeType]::Element) { continue }
+                $depth = [int]$reader.Depth
+                if ($depth -ge $maxDepth -or $elementCount -ge $maxElements) { $truncated = $true; break }
+                while ($stack.Count -gt $depth) { $stack.RemoveAt($stack.Count - 1) }
+                $localName = [string]$reader.LocalName
+                $stack.Add($localName)
+                $elementCount++
+                $maximumDepth = [Math]::Max($maximumDepth, $depth + 1)
+                if ($hierarchy.Count -lt $maxElements) {
+                    $safePath = [Collections.Generic.List[string]]::new()
+                    foreach ($segment in $stack) {
+                        $safeName = $segment -cmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,63}$'
+                        foreach ($tokenValue in $suppressedNameTokens) {
+                            if ($segment.IndexOf([string]$tokenValue, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $safeName = $false; break }
+                        }
+                        if ($safeName) {
+                            $safePath.Add($segment)
+                        } else { $safePath.Add('suppressed') }
+                    }
+                    $hierarchy.Add([ordered]@{ depth = $depth + 1; path = @($safePath.ToArray()) })
+                }
+                if ($localName -ceq 'REPORT') {
+                    $identityMatches = $reader.GetAttribute('APP_NAME') -ceq [string]$Identity.Name
+                    $versionMatches = $reader.GetAttribute('APP_VERSION') -ceq $ExpectedVersion
+                }
+                if ($reader.HasAttributes) {
+                    while ($reader.MoveToNextAttribute()) {
+                        $attributeCount++
+                        if ($attributeNames.Count -lt $maxAttributes) {
+                            $name = [string]$reader.LocalName
+                            $safeName = $name -cmatch '^[A-Za-z_][A-Za-z0-9_.-]{0,63}$'
+                            foreach ($tokenValue in $suppressedNameTokens) {
+                                if ($name.IndexOf([string]$tokenValue, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $safeName = $false; break }
+                            }
+                            if ($safeName) {
+                                $attributeNames.Add($name)
+                            } else { $attributeNames.Add('suppressed') }
+                        } else { $truncated = $true; break }
+                        if ($reader.LocalName -match '(?i)^(result|status)$') {
+                            $token = switch -Regex ($reader.Value.Trim().ToUpperInvariant()) {
+                                '^(PASS|PASSED)$' { 'pass'; break }
+                                '^(FAIL|FAILED)$' { 'fail'; break }
+                                '^(WARNING|WARN)$' { 'warning'; break }
+                                '^NOT_APPLICABLE$' { 'not_applicable'; break }
+                                default { 'other' }
+                            }
+                            if ($statusObservations.Count -lt $maxStatuses) {
+                                $statusObservations.Add([ordered]@{ source = 'attribute'; status = $token; depth = $depth + 1 })
+                            } else { $truncated = $true }
+                        }
+                    }
+                    $reader.MoveToElement() | Out-Null
+                    if ($truncated) { break }
+                }
+            }
+            if (-not $truncated) { $xmlParsed = $true }
+        }
+        catch { $xmlParsed = $false }
+        finally {
+            if ($null -ne $reader) { $reader.Dispose() }
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
+    }
+    $safeVersion = if ($ToolVersion -match '^\d+(?:\.\d+){1,3}$') { $ToolVersion } else { $null }
+    return [ordered]@{
+        schema_version = 1
+        phase = $Phase
+        tool_version = $safeVersion
+        exit_code = $safeExitCode
+        report_present = [bool]$present
+        xml_parse_success = [bool]$xmlParsed
+        unknown_schema = $true
+        truncated = [bool]$truncated
+        report_sha256 = $reportHash
+        identity_value_matches = [bool]$identityMatches
+        version_value_matches = [bool]$versionMatches
+        element_count = $elementCount
+        attribute_count = $attributeCount
+        maximum_depth = $maximumDepth
+        element_hierarchy = @($hierarchy.ToArray())
+        attribute_local_names = @($attributeNames.ToArray())
+        status_observations = @($statusObservations.ToArray())
+    }
+}
+
+function Save-CnMonMsixWackStructureDiagnostic {
+    param(
+        [string]$ReportPath,
+        [object]$ExitCode,
+        [string]$ToolVersion,
+        [object]$Identity,
+        [string]$ExpectedVersion,
+        [ValidateSet('reset', 'test', 'report_missing')][string]$Phase
+    )
+    $diagnostic = Get-CnMonMsixWackStructureDiagnostic -ReportPath $ReportPath -ExitCode $ExitCode -ToolVersion $ToolVersion -Identity $Identity -ExpectedVersion $ExpectedVersion -Phase $Phase
+    if ($null -eq $diagnostic) { return }
+    $diagnosticPath = Join-Path $ArtifactDirectory 'msix-wack-structure.json'
+    [IO.File]::WriteAllText($diagnosticPath, (ConvertTo-Json -InputObject $diagnostic -Depth 12) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+}
+
+function Assert-CnMonMsixResultEvidence {
+    param([System.Collections.IDictionary]$Evidence, [System.Collections.IDictionary]$ExpectedEvidence)
+    $expectedKeys = @('packaging_revision', 'signed_package_sha256', 'signed_receipt_sha256')
+    if ($null -eq $Evidence -or $null -eq $ExpectedEvidence -or
+        (@($Evidence.Keys | Sort-Object) -join "`n") -cne ($expectedKeys -join "`n") -or
+        (@($ExpectedEvidence.Keys | Sort-Object) -join "`n") -cne ($expectedKeys -join "`n") -or
+        $Evidence.signed_package_sha256 -isnot [string] -or
+        $Evidence.signed_receipt_sha256 -isnot [string] -or
+        $Evidence.packaging_revision -isnot [string] -or
+        $ExpectedEvidence.signed_package_sha256 -isnot [string] -or
+        $ExpectedEvidence.signed_receipt_sha256 -isnot [string] -or
+        $ExpectedEvidence.packaging_revision -isnot [string] -or
+        $Evidence.signed_package_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $Evidence.signed_receipt_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+        $Evidence.packaging_revision -cnotmatch '^[0-9a-f]{40}$' -or
+        $Evidence.signed_package_sha256 -cne $ExpectedEvidence.signed_package_sha256 -or
+        $Evidence.signed_receipt_sha256 -cne $ExpectedEvidence.signed_receipt_sha256 -or
+        $Evidence.packaging_revision -cne $ExpectedEvidence.packaging_revision) {
+        throw 'native result evidence does not match signed package, receipt, and source revision'
+    }
+}
+
+function Assert-CnMonMsixUserResultBinding {
+    param([System.Collections.IDictionary]$Result, [System.Collections.IDictionary]$ExpectedEvidence)
+    $expectedProperties = @('evidence', 'gates', 'mode', 'overall', 'schema_version')
+    if ($null -eq $Result -or
+        (@($Result.Keys | Sort-Object -CaseSensitive) -join "`n") -cne ($expectedProperties -join "`n") -or
+        $Result.schema_version -isnot [long] -or $Result.schema_version -ne 2 -or
+        $Result.mode -isnot [string] -or $Result.mode -cne 'User' -or
+        $Result.overall -isnot [string] -or $Result.overall -cnotin @('pass', 'fail', 'incomplete') -or
+        $null -eq $Result.gates -or -not ($Result.gates -is [System.Collections.IDictionary]) -or
+        (@($Result.gates.Keys | Sort-Object -CaseSensitive) -join "`n") -cne (@($qualificationGates | Sort-Object -CaseSensitive) -join "`n")) {
+        throw 'ordinary-user result has an invalid schema'
+    }
+    foreach ($gate in $qualificationGates) {
+        $status = $Result.gates[$gate]
+        if ($status -isnot [string] -or $status -cnotin @('pass', 'fail', 'incomplete')) {
+            throw 'ordinary-user result has an invalid gate status'
+        }
+    }
+    if (-not ($Result.evidence -is [System.Collections.IDictionary])) {
+        throw 'ordinary-user result is missing signed evidence'
+    }
+    Assert-CnMonMsixResultEvidence -Evidence $Result.evidence -ExpectedEvidence $ExpectedEvidence
+}
+
+function Read-CnMonMsixHostedResultSnapshot {
+    param([string]$ResultsPath, [string]$PackagePath, [string]$ReceiptPath, [string]$SourceRevision)
+    $bytes = [IO.File]::ReadAllBytes($ResultsPath)
+    $json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    $hosted = ConvertFrom-Json -InputObject $json -AsHashtable -ErrorAction Stop
+    $expectedProperties = @('evidence', 'gates', 'mode', 'overall', 'schema_version')
+    if ($null -eq $hosted -or -not ($hosted -is [System.Collections.IDictionary]) -or
+        (@($hosted.Keys | Sort-Object -CaseSensitive) -join "`n") -cne ($expectedProperties -join "`n") -or
+        $hosted.schema_version -isnot [long] -or $hosted.schema_version -ne 2 -or
+        $hosted.mode -isnot [string] -or $hosted.mode -cne 'Hosted' -or
+        $hosted.overall -isnot [string] -or $hosted.overall -cnotin @('pass', 'fail', 'incomplete') -or
+        $null -eq $hosted.gates -or -not ($hosted.gates -is [System.Collections.IDictionary]) -or
+        (@($hosted.gates.Keys | Sort-Object -CaseSensitive) -join "`n") -cne (@($qualificationGates | Sort-Object -CaseSensitive) -join "`n")) {
+        throw 'Hosted result snapshot has an invalid schema'
+    }
+    foreach ($gate in $qualificationGates) {
+        $status = $hosted.gates[$gate]
+        if ($status -isnot [string] -or $status -cnotin @('pass', 'fail', 'incomplete')) { throw 'Hosted result snapshot has an invalid gate status' }
+    }
+    $receipt = Get-Content -LiteralPath $ReceiptPath -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    $expectedEvidence = Get-CnMonMsixResultEvidence -PackagePath $PackagePath -ReceiptPath $ReceiptPath -Receipt $receipt -SourceRevision $SourceRevision
+    Assert-CnMonMsixResultEvidence -Evidence $hosted.evidence -ExpectedEvidence $expectedEvidence
+    return [pscustomobject]@{ Results = $hosted; JsonBytes = $bytes }
 }
 
 function Get-CnMonMsixWackStatus {
@@ -1345,6 +1640,7 @@ function Invoke-CnMonMsixUserMode {
     $script:CurrentSourceOperation = 'receipt_validation'
     $receipt = Get-CnMonMsixReceipt $ReceiptPath
     $identity = Assert-CnMonMsixReceipt $receipt $PackagePath 'test' -RequireCandidate
+    $script:Result.evidence = Get-CnMonMsixResultEvidence -PackagePath $PackagePath -ReceiptPath $ReceiptPath -Receipt $receipt -SourceRevision (Get-CnMonMsixSourceRevision)
     $script:DiagnosticIdentity = $identity
     $script:IdentityName = [string]$identity.Name
     $script:CurrentGate = 'signature'
@@ -1789,6 +2085,7 @@ function Invoke-CnMonMsixHostedMode {
     $signedReceiptJson = ConvertTo-Json -InputObject $signedReceipt -Depth 12
     $script:CurrentDiagnosticOperation = 'signed_receipt_write'
     [IO.File]::WriteAllText($signedReceiptPath, $signedReceiptJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    $script:Result.evidence = Get-CnMonMsixResultEvidence -PackagePath $candidate -ReceiptPath $signedReceiptPath -Receipt $signedReceipt -SourceRevision ([string]$signedReceipt.packaging_revision)
     $script:CreatedReceipt = $true
     $script:SignedOutputsReady = $true
     Set-CnMonMsixGate 'signature' 'pass'
@@ -1828,6 +2125,7 @@ function Invoke-CnMonMsixHostedMode {
     $script:CurrentSourceOperation = 'user_run_process_start'
     $failureResult = Invoke-CnMonMsixUserRun $failureUser $candidate $signedReceiptPath $fixturePath -InjectFailure
     $failureJson = Get-Content -LiteralPath $failureResult.ResultPath -Raw | ConvertFrom-Json -AsHashtable
+    Assert-CnMonMsixUserResultBinding -Result $failureJson -ExpectedEvidence $script:Result.evidence
     if ($failureResult.ExitCode -eq 0 -or $failureJson.gates.fail_injection -cne 'pass' -or $failureJson.gates.cleanup -cne 'pass') {
         throw 'post-install failure injection did not prove nonzero exit and cleanup'
     }
@@ -1842,6 +2140,7 @@ function Invoke-CnMonMsixHostedMode {
     $script:CurrentSourceOperation = 'user_run_process_start'
     $userResult = Invoke-CnMonMsixUserRun $user $candidate $signedReceiptPath $fixturePath
     $userJson = Get-Content -LiteralPath $userResult.ResultPath -Raw | ConvertFrom-Json -AsHashtable
+    Assert-CnMonMsixUserResultBinding -Result $userJson -ExpectedEvidence $script:Result.evidence
     foreach ($key in $userJson.gates.Keys) {
         if ($key -cne 'fail_injection') { $script:Result.gates[$key] = $userJson.gates[$key] }
     }
@@ -1863,6 +2162,18 @@ function Invoke-CnMonMsixHostedMode {
 }
 
 function Invoke-CnMonMsixCertifyMode {
+    $script:CurrentGate = 'package_hash'
+    $script:CurrentSourceOperation = 'receipt_validation'
+    try {
+        $sourceRevision = Get-CnMonMsixSourceRevision
+        $hostedResultsPath = if ($HostedResultsPath) { $HostedResultsPath } else { Join-Path $ArtifactDirectory 'msix-native-results.json' }
+        $script:HostedResultSnapshot = Read-CnMonMsixHostedResultSnapshot -ResultsPath $hostedResultsPath -PackagePath $PackagePath -ReceiptPath $ReceiptPath -SourceRevision $sourceRevision
+        $script:Result.evidence = $script:HostedResultSnapshot.Results.evidence
+    }
+    catch {
+        $script:AllowResultWrite = $false
+        throw
+    }
     Assert-CnMonMsixWindows
     $identity = Read-CnMonMsixIdentity
     $script:IdentityName = [string]$identity.Name
@@ -1886,16 +2197,14 @@ function Invoke-CnMonMsixCertifyMode {
     New-Item -ItemType Directory -Path $unpacked | Out-Null
     Invoke-CnMonMsixTool $makeappx @('unpack', '/p', $PackagePath, '/d', $unpacked, '/no') (Join-Path $script:PrivateRoot 'signed-unpack.log')
     Assert-CnMonMsixPackagePayload $unpacked $receipt.files -Signed
-    $script:CurrentGate = 'account'
+    $script:CurrentGate = 'package_hash'
     $certifyIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $certifyPrincipal = [Security.Principal.WindowsPrincipal]::new($certifyIdentity)
     if (-not $certifyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Set-CnMonMsixGate 'account' 'incomplete'
         $script:CurrentGate = 'wack'
         Set-CnMonMsixGate 'wack' 'incomplete'
         throw 'Certify mode requires an elevated administrator session'
     }
-    Set-CnMonMsixGate 'account' 'pass'
     $script:CurrentGate = 'wack'
     $appcert = 'C:\Program Files (x86)\Windows Kits\10\App Certification Kit\appcert.exe'
     if (-not (Test-Path -LiteralPath $appcert -PathType Leaf)) {
@@ -1956,20 +2265,38 @@ public static class CnMonMsixActiveSession
     }
     $script:CurrentGate = 'signature'
     Assert-CnMonMsixSignature $PackagePath (Join-Path $script:PrivateRoot 'certify-signature.log') -Phase 'certify-verify' -Identity $identity
+    $script:CurrentGate = 'wack'
     $helpLog = Join-Path $ArtifactDirectory 'msix-wack-help.log'
-    & $appcert '/?' *> $helpLog
-    if ($LASTEXITCODE -ne 0) {
+    $report = Join-Path $ArtifactDirectory 'wack.xml'
+    if (Test-Path -LiteralPath $report -PathType Leaf) {
         Set-CnMonMsixGate 'wack' 'incomplete'
-        throw 'WACK help preflight failed'
+        throw 'WACK report destination already exists'
     }
-    & $appcert reset *> (Join-Path $ArtifactDirectory 'msix-wack-reset.log')
-    if ($LASTEXITCODE -ne 0) {
+    & $appcert '/?' *> $helpLog
+    $helpExitCode = [int]$LASTEXITCODE
+    $resetExitCode = $null
+    try {
+        & $appcert reset *> (Join-Path $ArtifactDirectory 'msix-wack-reset.log')
+        $resetExitCode = [int]$LASTEXITCODE
+    }
+    catch {
+        try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $null -ToolVersion ([Diagnostics.FileVersionInfo]::GetVersionInfo($appcert).FileVersion) -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase reset } catch { }
+        throw
+    }
+    if ($resetExitCode -ne 0) {
+        try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $resetExitCode -ToolVersion ([Diagnostics.FileVersionInfo]::GetVersionInfo($appcert).FileVersion) -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase reset } catch { }
         Set-CnMonMsixGate 'wack' 'fail'
         throw 'WACK reset failed'
     }
-    $report = Join-Path $ArtifactDirectory 'wack.xml'
-    & $appcert test -appxpackagepath $PackagePath -reportoutputpath $report *> (Join-Path $ArtifactDirectory 'msix-wack.log')
-    $wackExit = $LASTEXITCODE
+    $wackExit = $null
+    try {
+        & $appcert test -appxpackagepath $PackagePath -reportoutputpath $report *> (Join-Path $ArtifactDirectory 'msix-wack.log')
+        $wackExit = [int]$LASTEXITCODE
+    } catch { }
+    $reportPresent = Test-Path -LiteralPath $report -PathType Leaf
+    $diagnosticPhase = if ($reportPresent) { 'test' } else { 'report_missing' }
+    try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $wackExit -ToolVersion ([Diagnostics.FileVersionInfo]::GetVersionInfo($appcert).FileVersion) -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase $diagnosticPhase } catch { }
+    if ($null -eq $wackExit) { throw 'WACK test invocation failed' }
     $wackStatus = Get-CnMonMsixWackStatus $report $wackExit $identity.Name $receipt.package_version
     Set-CnMonMsixGate 'wack' $wackStatus
     if ($wackStatus -ne 'pass') {
@@ -2055,23 +2382,10 @@ finally {
         }
         catch { $script:Failure = $true; Set-CnMonMsixGate 'cleanup' 'fail' }
     }
-    if ($Mode -eq 'Certify' -and $script:Result.gates.Contains('wack')) {
-        $existingPath = Join-Path $ArtifactDirectory 'msix-native-results.json'
-        if (Test-Path -LiteralPath $existingPath -PathType Leaf) {
-            try {
-                $existing = Get-Content -LiteralPath $existingPath -Raw | ConvertFrom-Json -AsHashtable
-                if ($existing.schema_version -ne 1 -or $existing.mode -cne 'Hosted' -or $null -eq $existing.gates) {
-                    throw 'hosted result has an unsupported schema'
-                }
-                $script:Result.gates = Merge-CnMonMsixResultGates $existing.gates $script:GateUpdates
-                $script:Result.mode = 'Certify'
-            }
-            catch { $script:Failure = $true; $script:AllowResultWrite = $false }
-        }
-        else {
-            $script:Failure = $true
-            $script:AllowResultWrite = $false
-        }
+    if ($Mode -eq 'Certify' -and $null -ne $script:HostedResultSnapshot) {
+        $script:Result.gates = Merge-CnMonMsixResultGates $script:HostedResultSnapshot.Results.gates $script:GateUpdates
+        $script:Result.evidence = $script:HostedResultSnapshot.Results.evidence
+        $script:Result.mode = 'Certify'
     }
     Set-CnMonMsixOverall $Mode
     if ($script:AllowResultWrite) {

@@ -197,7 +197,13 @@ $requiredFunctions = @(
     'Set-CnMonMsixGate',
     'Get-CnMonMsixNativeSelector',
     'Merge-CnMonMsixResultGates',
+    'Get-CnMonMsixResultEvidence',
+    'Assert-CnMonMsixResultEvidence',
+    'Assert-CnMonMsixUserResultBinding',
+    'Read-CnMonMsixHostedResultSnapshot',
     'Get-CnMonMsixWackStatus',
+    'Get-CnMonMsixWackStructureDiagnostic',
+    'Save-CnMonMsixWackStructureDiagnostic',
     'Get-CnMonMsixTrustAction',
     'Test-CnMonMsixAdministratorsMembership',
     'Remove-CnMonMsixOwnedCertificate',
@@ -278,6 +284,7 @@ $helperPath = Join-Path $tempRoot 'extracted-helpers.ps1'
 $helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFunctionAsts) + @($ciStatusFunctionAsts) + @($ciResultsFunctionAsts) + @($ciGateOutputFunctionAsts) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
 [IO.File]::WriteAllText($helperPath, $helperText, [Text.UTF8Encoding]::new($false))
 Import-Module $modulePath -Force -ErrorAction Stop
+$qualificationGates = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair', 'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack')
 . $helperPath
 $script:MakeAppxFootprint = @('[Content_Types].xml', 'AppxBlockMap.xml')
 $ArtifactDirectory = $tempRoot
@@ -511,22 +518,232 @@ exit 0
     }
 
     Invoke-Check 'Certify overlays touched gates without erasing Hosted failures' {
-        $hosted = [ordered]@{ identity = 'pass'; signature = 'pass'; cleanup = 'pass'; native_cli = 'pass'; wack = 'incomplete' }
+        $hosted = [ordered]@{ identity = 'pass'; package_hash = 'incomplete'; signature = 'fail'; account = 'fail'; cleanup = 'pass'; native_cli = 'pass'; wack = 'incomplete' }
         $script:Result = [pscustomobject]@{ gates = [ordered]@{} }
         $script:GateUpdates = [ordered]@{}
         Set-CnMonMsixGate 'signature' 'fail'
-        Set-CnMonMsixGate 'cleanup' 'fail'
+        Set-CnMonMsixGate 'signature' 'pass'
+        Set-CnMonMsixGate 'package_hash' 'pass'
+        Set-CnMonMsixGate 'account' 'pass'
+        Set-CnMonMsixGate 'cleanup' 'incomplete'
+        Set-CnMonMsixGate 'native_cli' 'fail'
         Set-CnMonMsixGate 'wack' 'incomplete'
         $mergeCalls = Get-CommandNodes $sourceAst 'Merge-CnMonMsixResultGates'
         Assert-Equal $mergeCalls.Count 1 'Certify finalization must merge the Hosted result exactly once'
-        Assert-True ($mergeCalls[0].Extent.Text -match '\$existing\.gates\s+\$script:GateUpdates') 'Certify does not merge only its touched gates into the Hosted map'
+        Assert-True ($mergeCalls[0].Extent.Text -match '\$script:HostedResultSnapshot\.Results\.gates\s+\$script:GateUpdates') 'Certify does not merge only its touched gates into the snapshotted Hosted map'
         $merged = Merge-CnMonMsixResultGates -HostedGates $hosted -CertifyUpdates $script:GateUpdates
         Assert-Equal $merged.signature 'fail' 'Certify erased a signature failure'
-        Assert-Equal $merged.cleanup 'fail' 'Certify erased a cleanup failure'
+        Assert-Equal $merged.package_hash 'incomplete' 'Certify improved an incomplete package validation gate'
+        Assert-Equal $merged.account 'fail' 'Certify changed the Hosted ordinary-user account result'
+        Assert-Equal $merged.cleanup 'incomplete' 'Certify did not preserve the worse cleanup status'
         Assert-Equal $merged.identity 'pass' 'Certify erased an untouched Hosted gate'
-        Assert-Equal $merged.native_cli 'pass' 'Certify erased an untouched native gate'
-        Assert-Equal $hosted.signature 'pass' 'merge modified the Hosted input map'
+        Assert-Equal $merged.native_cli 'pass' 'Certify changed an unrelated Hosted native gate'
+        Assert-Equal $merged.wack 'incomplete' 'Certify did not merge its actual WACK gate'
+        Assert-Equal $hosted.signature 'fail' 'merge modified the Hosted input map'
         Assert-Equal $hosted.cleanup 'pass' 'merge modified the Hosted input map'
+    }
+
+    Invoke-Check 'result evidence binds both signed files and source revision before certification' {
+        $directory = Join-Path $tempRoot 'result-evidence-binding'
+        $null = New-Item -ItemType Directory -Path $directory
+        $package = Join-Path $directory 'signed.msix'
+        $receiptPath = Join-Path $directory 'signed-receipt.json'
+        $resultsPath = Join-Path $directory 'hosted-results.json'
+        [IO.File]::WriteAllBytes($package, [byte[]](1, 2, 3, 4, 5))
+        $packageHash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
+        $revision = 'a' * 40
+        $receipt = [ordered]@{
+            purpose = 'candidate'; package_sha256 = $packageHash; packaging_revision = $revision
+            signing = [ordered]@{ status = 'test'; signed_package_sha256 = $packageHash }
+        }
+        $receiptJson = ConvertTo-Json -InputObject $receipt -Compress
+        [IO.File]::WriteAllText($receiptPath, $receiptJson, [Text.UTF8Encoding]::new($false))
+        $evidence = Get-CnMonMsixResultEvidence -PackagePath $package -ReceiptPath $receiptPath -Receipt $receipt -SourceRevision $revision
+        Assert-Equal $evidence.signed_package_sha256 $packageHash 'evidence did not bind signed package bytes'
+        Assert-Equal $evidence.signed_receipt_sha256 ((Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant()) 'evidence did not bind signed receipt bytes'
+        Assert-Equal $evidence.packaging_revision $revision 'evidence did not bind the checkout revision'
+
+        $gates = [ordered]@{}
+        foreach ($gate in $qualificationGates) { $gates[$gate] = 'pass' }
+        $gates.repair = 'incomplete'
+        $gates.conflicts = 'incomplete'
+        $hosted = [ordered]@{ schema_version = 2; mode = 'Hosted'; overall = 'incomplete'; evidence = $evidence; gates = $gates }
+        [IO.File]::WriteAllText($resultsPath, (ConvertTo-Json -InputObject $hosted -Depth 5), [Text.UTF8Encoding]::new($false))
+        $snapshot = Read-CnMonMsixHostedResultSnapshot -ResultsPath $resultsPath -PackagePath $package -ReceiptPath $receiptPath -SourceRevision $revision
+        Assert-Equal $snapshot.Results.mode 'Hosted' 'valid bound Hosted result was not snapshotted'
+        Assert-Equal $snapshot.Results.evidence.signed_receipt_sha256 $evidence.signed_receipt_sha256 'snapshot changed the evidence binding'
+        [IO.File]::WriteAllText($resultsPath, '{"mutated":true}', [Text.UTF8Encoding]::new($false))
+        Assert-Equal $snapshot.Results.gates.repair 'incomplete' 'certification snapshot reread the mutated Hosted file'
+
+        $badCases = @(
+            'changed package bytes', 'changed receipt bytes', 'wrong packaging revision', 'null evidence',
+            'schema 1', 'string schema version', 'extra result field', 'extra evidence field',
+            'uppercase mode', 'uppercase overall', 'wrong overall type', 'uppercase gate status', 'wrong gate status type',
+            'array evidence hash'
+        )
+        foreach ($case in $badCases) {
+            [IO.File]::WriteAllBytes($package, [byte[]](1, 2, 3, 4, 5))
+            [IO.File]::WriteAllText($receiptPath, $receiptJson, [Text.UTF8Encoding]::new($false))
+            $caseEvidence = [ordered]@{
+                signed_package_sha256 = $evidence.signed_package_sha256
+                signed_receipt_sha256 = $evidence.signed_receipt_sha256
+                packaging_revision = $evidence.packaging_revision
+            }
+            $caseSchema = 2
+            $caseExtra = $false
+            $caseMode = 'Hosted'
+            $caseOverall = 'incomplete'
+            $caseGateStatus = 'incomplete'
+            switch ($case) {
+                'changed package bytes' { [IO.File]::AppendAllText($package, 'changed') }
+                'changed receipt bytes' { [IO.File]::AppendAllText($receiptPath, ' ') }
+                'wrong packaging revision' { $caseEvidence.packaging_revision = 'b' * 40 }
+                'null evidence' { $caseEvidence = $null }
+                'schema 1' { $caseSchema = 1 }
+                'string schema version' { $caseSchema = '2' }
+                'extra result field' { $caseExtra = $true }
+                'extra evidence field' { $caseEvidence.unexpected = 'value' }
+                'uppercase mode' { $caseMode = 'HOSTED' }
+                'uppercase overall' { $caseOverall = 'PASS' }
+                'wrong overall type' { $caseOverall = 1 }
+                'uppercase gate status' { $caseGateStatus = 'PASS' }
+                'wrong gate status type' { $caseGateStatus = 1 }
+                'array evidence hash' { $caseEvidence.signed_package_sha256 = @($evidence.signed_package_sha256) }
+            }
+            $caseGates = [ordered]@{} + $gates
+            if ($case -in @('uppercase gate status', 'wrong gate status type')) { $caseGates.identity = $caseGateStatus }
+            $hosted = [ordered]@{ schema_version = $caseSchema; mode = $caseMode; overall = $caseOverall; evidence = $caseEvidence; gates = $caseGates }
+            if ($caseExtra) { $hosted.unexpected = 'value' }
+            [IO.File]::WriteAllText($resultsPath, (ConvertTo-Json -InputObject $hosted -Depth 5), [Text.UTF8Encoding]::new($false))
+            $before = [IO.File]::ReadAllBytes($resultsPath)
+            Assert-Throws { Read-CnMonMsixHostedResultSnapshot -ResultsPath $resultsPath -PackagePath $package -ReceiptPath $receiptPath -SourceRevision $revision } "Certify accepted $case"
+            $after = [IO.File]::ReadAllBytes($resultsPath)
+            Assert-Equal ([Convert]::ToBase64String($after)) ([Convert]::ToBase64String($before)) "rejected $case modified the Hosted result bytes"
+        }
+        $wrongChild = [ordered]@{ signed_package_sha256 = $evidence.signed_package_sha256; signed_receipt_sha256 = $evidence.signed_receipt_sha256; packaging_revision = 'c' * 40 }
+        Assert-Throws { Assert-CnMonMsixResultEvidence -Evidence $wrongChild -ExpectedEvidence $evidence } 'Hosted accepted a User child bound to another revision'
+    }
+
+    Invoke-Check 'both User child results require exact schema 2 and signed evidence' {
+        $expectedEvidence = [ordered]@{
+            signed_package_sha256 = 'a' * 64
+            signed_receipt_sha256 = 'b' * 64
+            packaging_revision = 'c' * 40
+        }
+        $userGates = [ordered]@{}
+        foreach ($gate in $qualificationGates) { $userGates[$gate] = 'pass' }
+        $validUser = [ordered]@{ schema_version = [long]2; mode = 'User'; overall = 'pass'; evidence = $expectedEvidence; gates = $userGates }
+        Assert-CnMonMsixUserResultBinding -Result $validUser -ExpectedEvidence $expectedEvidence
+
+        $badKinds = @('unbound evidence', 'schema 1', 'string schema version', 'extra root key', 'uppercase gate status', 'extra gate', 'array evidence hash')
+        foreach ($kind in $badKinds) {
+            $case = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $validUser -Depth 6 -Compress) -AsHashtable
+            switch ($kind) {
+                'unbound evidence' { $case.evidence.signed_receipt_sha256 = 'd' * 64 }
+                'schema 1' { $case.schema_version = [long]1 }
+                'string schema version' { $case.schema_version = '2' }
+                'extra root key' { $case.extra = 'value' }
+                'uppercase gate status' { $case.gates.account = 'PASS' }
+                'extra gate' { $case.gates.extra = 'pass' }
+                'array evidence hash' { $case.evidence.signed_package_sha256 = @($expectedEvidence.signed_package_sha256) }
+            }
+            Assert-Throws { Assert-CnMonMsixUserResultBinding -Result $case -ExpectedEvidence $expectedEvidence } "User child accepted $kind"
+        }
+
+        $hosted = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Invoke-CnMonMsixHostedMode'
+        }, $true))[0]
+        $validators = @(Get-CommandNodes $hosted 'Assert-CnMonMsixUserResultBinding')
+        Assert-Equal $validators.Count 2 'Hosted does not validate both failure-injection and normal User results'
+        Assert-True (@($validators | Where-Object { $_.Extent.Text -match '\$failureJson' }).Count -eq 1) 'failure-injection User result lacks evidence validation'
+        Assert-True (@($validators | Where-Object { $_.Extent.Text -match '\$userJson' }).Count -eq 1) 'ordinary User result lacks evidence validation'
+    }
+
+    Invoke-Check 'Certify source revision failures stay inside the no-overwrite guard' {
+        $certifyFunction = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Invoke-CnMonMsixCertifyMode'
+        }, $true))[0]
+        $guardedTry = @($certifyFunction.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.TryStatementAst] -and
+                $candidate.Extent.Text -match 'Get-CnMonMsixSourceRevision' -and
+                $candidate.Extent.Text -match 'Read-CnMonMsixHostedResultSnapshot' -and
+                $candidate.Extent.Text -match '\$script:AllowResultWrite\s*=\s*\$false'
+        }, $true))
+        Assert-Equal $guardedTry.Count 1 'Certify can fail revision lookup outside the Hosted-file preservation guard'
+        Assert-True ($sourceAst.Extent.Text -match '(?s)if\s*\(\$script:AllowResultWrite\).*?Write-CnMonMsixResult') 'Certify finalization does not honor the no-overwrite guard'
+    }
+
+    Invoke-Check 'synthetic WACK structure evidence is bounded and contains no raw XML values' {
+        $keys = @('GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS', 'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER', 'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN', 'USERNAME', 'COMPUTERNAME')
+        $old = @{}
+        foreach ($key in $keys) { $old[$key] = [Environment]::GetEnvironmentVariable($key) }
+        try {
+            $env:GITHUB_ACTIONS = 'true'; $env:GITHUB_EVENT_NAME = 'pull_request'; $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'; $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'; $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'; $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $env:USERNAME = 'AccountCanary'; $env:COMPUTERNAME = 'HostCanary'
+            $identity = [pscustomobject]@{ Name = 'Example.CnMon'; Publisher = 'CN=Example, O=Example'; PublisherDisplayName = 'Example Publisher'; ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6' }
+            $report = Join-Path $tempRoot 'wack-structure.xml'
+            [IO.File]::WriteAllText($report, '<REPORT OVERALL_RESULT="PASS" PARTIAL_RUN="FALSE" APP_NAME="Example.CnMon" APP_VERSION="1.3.0.0"><GROUP><TEST NAME="Private Test Description"><RESULT>PASS</RESULT><AccountCanaryTag>secret value</AccountCanaryTag><HostCanaryNode>secret host</HostCanaryNode></TEST></GROUP></REPORT>', [Text.UTF8Encoding]::new($false))
+            $diagnostic = Get-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0'
+            Assert-True $diagnostic.report_present 'WACK structure diagnostic omitted report presence'
+            Assert-Equal $diagnostic.phase 'test' 'WACK test report phase was not identified'
+            Assert-True $diagnostic.xml_parse_success 'well-formed WACK report did not parse'
+            Assert-True $diagnostic.unknown_schema 'unmeasured WACK structure was treated as known'
+            Assert-True ($diagnostic.identity_value_matches -and $diagnostic.version_value_matches) 'diagnostic omitted boolean identity/version witnesses'
+            Assert-Equal $diagnostic.report_sha256 ((Get-FileHash -LiteralPath $report -Algorithm SHA256).Hash.ToLowerInvariant()) 'diagnostic report hash did not match the report bytes'
+            Assert-True (@($diagnostic.status_observations | Where-Object { $_.status -eq 'pass' }).Count -gt 0) 'recognized fixed status tokens were omitted'
+            $json = ConvertTo-Json -InputObject $diagnostic -Depth 12
+            foreach ($canary in @('Example.CnMon', 'CN=Example', 'Example Publisher', '518g7wxbxvqf6', '1.3.0.0', 'Private Test Description', 'AccountCanary', 'HostCanary', 'secret value', 'secret host')) {
+                Assert-True (-not $json.Contains($canary)) "WACK diagnostic leaked raw XML or identity/account canary '$canary'"
+            }
+
+            $manual = Get-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0' -Mode workflow_dispatch
+            Assert-Equal $manual $null 'manual WACK run published synthetic-only structure evidence'
+
+            $dtdReport = Join-Path $tempRoot 'wack-dtd.xml'
+            [IO.File]::WriteAllText($dtdReport, '<!DOCTYPE REPORT [<!ENTITY leak SYSTEM "file:///private/CN=Canary">]><REPORT>&leak;</REPORT>', [Text.UTF8Encoding]::new($false))
+            $dtd = Get-CnMonMsixWackStructureDiagnostic $dtdReport 0 '10.0.26100.8249' $identity '1.3.0.0'
+            Assert-True (-not $dtd.xml_parse_success) 'DTD-bearing WACK report was parsed'
+            Assert-True (-not (ConvertTo-Json $dtd -Depth 12).Contains('Canary')) 'DTD parser failure leaked external-entity data'
+
+            $deepReport = Join-Path $tempRoot 'wack-deep.xml'
+            $deep = ('<N>' * 40) + 'PASS' + ('</N>' * 40)
+            [IO.File]::WriteAllText($deepReport, '<REPORT>' + $deep + '</REPORT>', [Text.UTF8Encoding]::new($false))
+            $deepDiagnostic = Get-CnMonMsixWackStructureDiagnostic $deepReport 0 '10.0.26100.8249' $identity '1.3.0.0'
+            Assert-True $deepDiagnostic.truncated 'deep WACK report was not bounded'
+
+            $largeReport = Join-Path $tempRoot 'wack-large.xml'
+            [IO.File]::WriteAllText($largeReport, '<REPORT>' + ('x' * 1048577) + '</REPORT>', [Text.UTF8Encoding]::new($false))
+            $largeDiagnostic = Get-CnMonMsixWackStructureDiagnostic $largeReport 0 '10.0.26100.8249' $identity '1.3.0.0'
+            Assert-True $largeDiagnostic.truncated 'oversized WACK report was not bounded'
+
+            $missingReport = Join-Path $tempRoot 'wack-missing-report.xml'
+            $unknownExit = Get-CnMonMsixWackStructureDiagnostic -ReportPath $missingReport -ExitCode $null -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0' -Phase report_missing
+            Assert-Equal $unknownExit.exit_code $null 'WACK invocation failure with no exit code was coerced to zero'
+            Assert-Throws { Get-CnMonMsixWackStructureDiagnostic -ReportPath $missingReport -ExitCode 'unknown' -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0' -Phase report_missing } 'non-numeric WACK exit code was accepted'
+
+            $structurePath = Join-Path $ArtifactDirectory 'msix-wack-structure.json'
+            Save-CnMonMsixWackStructureDiagnostic -ReportPath $missingReport -ExitCode 7 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0' -Phase reset
+            $resetDiagnostic = Get-Content -LiteralPath $structurePath -Raw | ConvertFrom-Json
+            Assert-Equal $resetDiagnostic.phase 'reset' 'reset failure diagnostic phase was not distinguished'
+            Assert-Equal $resetDiagnostic.exit_code 7 'reset native exit code was not retained numerically'
+            Assert-True (-not $resetDiagnostic.report_present) 'reset failure diagnostic claimed that a report existed'
+            Remove-Item -LiteralPath $structurePath -Force
+            Save-CnMonMsixWackStructureDiagnostic -ReportPath $missingReport -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0' -Phase report_missing
+            $missingDiagnostic = Get-Content -LiteralPath $structurePath -Raw | ConvertFrom-Json
+            Assert-Equal $missingDiagnostic.phase 'report_missing' 'missing report was not distinguished from reset/test'
+            Remove-Item -LiteralPath $structurePath -Force
+            $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+            Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0' -Phase test
+            Assert-True (-not (Test-Path -LiteralPath $structurePath)) 'trusted manual WACK report produced a public structure diagnostic'
+        }
+        finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') } }
     }
 
     Invoke-Check 'trust setup reuses existing trust and rejects non-hosted certificate imports' {
@@ -727,7 +944,7 @@ exit 0
         $gateMap = [ordered]@{}
         foreach ($name in $gateNames) { $gateMap[$name] = 'pass' }
         $gateMap.wack = 'fail'
-        $result = [ordered]@{ schema_version = 1; mode = 'Certify'; overall = 'fail'; gates = $gateMap }
+        $result = [ordered]@{ schema_version = 2; mode = 'Certify'; overall = 'fail'; evidence = [ordered]@{ signed_package_sha256 = ('a' * 64); signed_receipt_sha256 = ('b' * 64); packaging_revision = ('c' * 40) }; gates = $gateMap }
         [IO.File]::WriteAllText($resultsPath, (ConvertTo-Json -InputObject $result -Depth 5), [Text.UTF8Encoding]::new($false))
         $failure = Read-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify
         Assert-Equal $failure.gates.wack 'fail' 'valid WACK failure status was not extracted'
@@ -796,6 +1013,34 @@ exit 0
         }, $true)) | Sort-Object { $_.Extent.StartOffset } | Select-Object -First 1
         Assert-True ($null -ne $certificateLoad) 'Certify does not validate the newly exported public certificate'
         Assert-True ($export.Extent.StartOffset -lt $certificateLoad.Extent.StartOffset) 'certificate file is loaded before Export-Certificate creates it'
+    }
+
+    Invoke-Check 'Certify binds evidence first and attributes AppCert failures only to WACK' {
+        $certifyFunction = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Invoke-CnMonMsixCertifyMode'
+        }, $true))[0]
+        $certifyText = $certifyFunction.Extent.Text
+        $snapshot = Get-CommandNodes $certifyFunction 'Read-CnMonMsixHostedResultSnapshot' | Select-Object -First 1
+        $trustImport = Get-CommandNodes $certifyFunction 'Import-Certificate' | Select-Object -First 1
+        $appcertCall = Get-CommandNodes $certifyFunction 'Save-CnMonMsixWackStructureDiagnostic' | Select-Object -First 1
+        Assert-True ($null -ne $snapshot -and $null -ne $trustImport -and $snapshot.Extent.StartOffset -lt $trustImport.Extent.StartOffset) 'Hosted evidence is not validated before Certify trust-store mutation'
+        $diagnosticWriter = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Save-CnMonMsixWackStructureDiagnostic'
+        }, $true))[0]
+        Assert-True ($null -ne $appcertCall -and $null -ne $diagnosticWriter -and $diagnosticWriter.Extent.Text -match 'msix-wack-structure\.json') 'AppCert report does not use the bounded synthetic structure diagnostic'
+        Assert-True ((Get-CommandNodes $certifyFunction 'Set-CnMonMsixGate' | Where-Object { $_.Extent.Text -match "'account'" }).Count -eq 0) 'Certify administrator/session prerequisites changed the ordinary account gate'
+        Assert-True ($certifyText -match '(?s)Assert-CnMonMsixSignature.*?\$script:CurrentGate\s*=\s*\x27wack\x27') 'Certify did not switch attribution to WACK immediately after signature verification'
+        $helpStart = $certifyText.IndexOf("& `$appcert '/?'")
+        $resetStart = $certifyText.IndexOf('& $appcert reset', $helpStart)
+        Assert-True ($helpStart -ge 0 -and $resetStart -gt $helpStart) 'AppCert help preflight or reset call is missing'
+        $helpBlock = $certifyText.Substring($helpStart, $resetStart - $helpStart)
+        Assert-True ($helpBlock -match '\$helpExitCode\s*=\s*\[int\]\$LASTEXITCODE') 'AppCert help exit was not retained for private diagnostics'
+        Assert-True ($helpBlock -notmatch '(?i)\bif\b|throw|Set-CnMonMsixGate') 'AppCert help exit can block reset/test or determine the WACK gate'
+        Assert-True ($certifyText.IndexOf('Read-CnMonMsixHostedResultSnapshot') -lt $certifyText.IndexOf('Get-AuthenticodeSignature')) 'Hosted snapshot is not captured before signature/trust checks'
     }
 
     Invoke-Check 'signature diagnostics are synthetic-only, sanitized, and retained across cleanup' {

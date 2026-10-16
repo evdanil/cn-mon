@@ -29,6 +29,11 @@ IDENTITY_ENV = {
     'CNMON_MSIX_PUBLISHER_DISPLAY_NAME',
     'CNMON_MSIX_EXPECTED_PFN',
 }
+NATIVE_EVIDENCE = {
+    'signed_package_sha256': 'a' * 64,
+    'signed_receipt_sha256': 'b' * 64,
+    'packaging_revision': 'c' * 40,
+}
 
 
 def workflow_text():
@@ -237,13 +242,18 @@ class MsixWorkflowTests(unittest.TestCase):
     def test_synthetic_qualification_hash_checks_and_certifies_in_same_job(self):
         text = workflow_text()
         qualify = job_block(text, 'synthetic-qualification')
+        manual = job_block(text, 'trusted-manual')
         hosted = named_step(qualify, 'Qualify the downloaded package bytes')
         self.assertIn('scripts/msix-ci.ps1 -Mode Hosted -PackageDirectory input', hosted)
-        certify = named_step(qualify, 'Run WACK certification gate')
-        self.assertIn('scripts/msix-ci.ps1 -Mode Certify', certify)
+        for job in (qualify, manual):
+            certify = named_step(job, 'Run WACK certification gate')
+            self.assertIn('scripts/msix-ci.ps1 -Mode Certify', certify)
+            self.assertIn('if: always() && !cancelled()', certify)
+            self.assertNotIn('steps.qualify.outcome', certify)
         evidence = named_step(qualify, 'Upload synthetic qualification evidence')
         self.assertIn("if: always() && !cancelled()", evidence)
         self.assertNotIn("steps.qualify.outcome", evidence)
+        self.assertIn(r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-wack-structure.json', evidence)
         helper = CI_HELPER_PATH.read_text(encoding='utf-8')
         for requirement in ('scripts/test-msix-windows.ps1', '-Mode Hosted', '-Mode Certify',
                             'package_sha256', 'archive_sha256', 'binary_sha256',
@@ -307,6 +317,7 @@ class MsixWorkflowTests(unittest.TestCase):
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json',
+            r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-wack-structure.json',
         })
         summary = r'${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json'
         self.assertEqual(path_entries(package_uploads[1]), [summary])
@@ -459,7 +470,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'packager-saw-empty
             'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack',
         )
         valid_gates = {name: ('incomplete' if name == 'wack' else 'pass') for name in gate_names}
-        valid = {'schema_version': 1, 'mode': 'Hosted', 'overall': 'pass', 'gates': valid_gates}
+        valid = {'schema_version': 2, 'mode': 'Hosted', 'overall': 'pass', 'evidence': NATIVE_EVIDENCE, 'gates': valid_gates}
         empty = {**valid, 'gates': {}}
         incomplete_gates = dict(valid_gates, native_cli='incomplete')
         incomplete = {**valid, 'gates': incomplete_gates}
@@ -469,7 +480,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'packager-saw-empty
             **valid, 'mode': 'Certify', 'gates': {name: 'pass' for name in gate_names},
         }
         valid_certification = {
-            'schema_version': 1, 'mode': 'Certify', 'overall': 'pass',
+            'schema_version': 2, 'mode': 'Certify', 'overall': 'pass', 'evidence': NATIVE_EVIDENCE,
             'gates': {name: 'pass' for name in gate_names},
         }
         incomplete_certification = {
@@ -481,9 +492,31 @@ if (-not (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'packager-saw-empty
             ('Hosted', 'incomplete', incomplete, False),
             ('Hosted', 'fail', failed, False),
             ('Hosted', 'wrong-mode', wrong_mode, False),
+            ('Hosted', 'schema-1', {**valid, 'schema_version': 1}, False),
+            ('Hosted', 'missing-evidence', {key: value for key, value in valid.items() if key != 'evidence'}, False),
+            ('Hosted', 'extra-root-property', {**valid, 'diagnostic': 'private synthetic detail'}, False),
+            ('Hosted', 'extra-evidence-property', {
+                **valid, 'evidence': {**NATIVE_EVIDENCE, 'runtime_user_id': 'S-1-5-21-private'},
+            }, False),
+            ('Hosted', 'malformed-evidence-hash', {
+                **valid, 'evidence': {**NATIVE_EVIDENCE, 'signed_package_sha256': 'A' * 64},
+            }, False),
             ('Hosted', 'valid-full-map', valid, True),
             ('Certify', 'wrong-mode', valid, False),
             ('Certify', 'incomplete', incomplete_certification, False),
+            ('Certify', 'incomplete-no-evidence', {
+                **valid_certification,
+                'overall': 'incomplete',
+                'evidence': None,
+                'gates': dict(valid_certification['gates'], wack='incomplete'),
+            }, False),
+            ('Certify', 'hosted-incomplete-repair-conflicts', {
+                **valid_certification,
+                'overall': 'incomplete',
+                'gates': dict(valid_certification['gates'], repair='incomplete', conflicts='incomplete'),
+            }, False),
+            ('Certify', 'hosted-binding-mismatch', valid_certification, False),
+            ('Certify', 'hosted-schema-1', valid_certification, False),
             ('Certify', 'valid-full-map', valid_certification, True),
         )
         release = {
@@ -534,9 +567,28 @@ function pwsh {
                 unsigned_package_sha256 = $inputReceipt.package_sha256; signed_package_sha256 = $signedHash
             }
         }
-        [IO.File]::WriteAllText((Join-Path ([string]$args[$artifactIndex + 1]) 'msix-signed-receipt.json'), (ConvertTo-Json $signedReceipt -Depth 4 -Compress))
+        $signedReceiptPath = Join-Path ([string]$args[$artifactIndex + 1]) 'msix-signed-receipt.json'
+        [IO.File]::WriteAllText($signedReceiptPath, (ConvertTo-Json $signedReceipt -Depth 4 -Compress))
     }
-    [IO.File]::WriteAllText((Join-Path ([string]$args[$artifactIndex + 1]) 'msix-native-results.json'), $env:NATIVE_RESULT_JSON)
+    $result = ConvertFrom-Json -InputObject $env:NATIVE_RESULT_JSON -AsHashtable
+    if ($childMode -eq 'Certify') {
+        [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'wack-child-invoked.txt'), 'true')
+    }
+    $placeholderEvidenceNames = @('packaging_revision', 'signed_package_sha256', 'signed_receipt_sha256')
+    if ($childMode -eq 'Hosted' -and $result.Contains('evidence') -and
+        (@($result.evidence.Keys | Sort-Object) -join "`n") -ceq ($placeholderEvidenceNames -join "`n") -and
+        $result.evidence.signed_package_sha256 -ceq ('a' * 64) -and
+        $result.evidence.signed_receipt_sha256 -ceq ('b' * 64) -and
+        $result.evidence.packaging_revision -ceq ('c' * 40)) {
+        $signedPackage = Join-Path ([string]$args[$artifactIndex + 1]) 'cn-mon_1.3.0.0_x64-signed.msix'
+        $signedReceiptPath = Join-Path ([string]$args[$artifactIndex + 1]) 'msix-signed-receipt.json'
+        $result.evidence = [ordered]@{
+            signed_package_sha256 = (Get-FileHash -LiteralPath $signedPackage -Algorithm SHA256).Hash.ToLowerInvariant()
+            signed_receipt_sha256 = (Get-FileHash -LiteralPath $signedReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            packaging_revision = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        }
+    }
+    [IO.File]::WriteAllText((Join-Path ([string]$args[$artifactIndex + 1]) 'msix-native-results.json'), (ConvertTo-Json -InputObject $result -Depth 5))
     $global:LASTEXITCODE = 0
 }
 & (Join-Path $env:FAKE_REPOSITORY 'scripts/msix-ci.ps1') -Mode $env:TEST_MODE -PackageDirectory input
@@ -563,6 +615,50 @@ function pwsh {
                 environment = os.environ.copy()
                 evidence = runner / 'cn-mon-msix-job' / 'evidence'
                 evidence.mkdir()
+                result_fixture = dict(results)
+                hosted_bytes = None
+                if mode == 'Certify':
+                    signed_package_path = evidence / 'cn-mon_1.3.0.0_x64-signed.msix'
+                    signed_package_path.write_bytes(signed_bytes)
+                    signed_hash = hashlib.sha256(signed_bytes).hexdigest()
+                    signed_receipt = {
+                        'purpose': 'candidate', **SYNTHETIC_IDENTITY,
+                        'package_version': release['package_version'],
+                        'cli_version': release['cli_version'],
+                        'cli_revision': release['cli_revision'],
+                        'packaging_revision': source_revision,
+                        'archive_sha256': release['archive_sha256'],
+                        'binary_sha256': release['binary_sha256'],
+                        'package_sha256': signed_hash,
+                        'signing': {'status': 'test', 'signed_package_sha256': signed_hash},
+                    }
+                    signed_receipt_path = evidence / 'msix-signed-receipt.json'
+                    signed_receipt_bytes = json.dumps(signed_receipt, separators=(',', ':')).encode('utf-8')
+                    signed_receipt_path.write_bytes(signed_receipt_bytes)
+                    bound_evidence = {
+                        'signed_package_sha256': signed_hash,
+                        'signed_receipt_sha256': hashlib.sha256(signed_receipt_bytes).hexdigest(),
+                        'packaging_revision': source_revision,
+                    }
+                    hosted_gates = valid_gates
+                    hosted_overall = 'pass'
+                    hosted_schema = 2
+                    hosted_binding = bound_evidence
+                    if fixture_name == 'hosted-incomplete-repair-conflicts':
+                        hosted_overall = 'incomplete'
+                        hosted_gates = dict(valid_gates, repair='incomplete', conflicts='incomplete')
+                    elif fixture_name == 'hosted-binding-mismatch':
+                        hosted_binding = {**bound_evidence, 'signed_package_sha256': 'f' * 64}
+                    elif fixture_name == 'hosted-schema-1':
+                        hosted_schema = 1
+                    hosted = {
+                        'schema_version': hosted_schema, 'mode': 'Hosted', 'overall': hosted_overall,
+                        'evidence': hosted_binding, 'gates': hosted_gates,
+                    }
+                    hosted_bytes = json.dumps(hosted).encode('utf-8')
+                    (evidence / 'msix-native-results.json').write_bytes(hosted_bytes)
+                    if results.get('evidence', 'unset') is not None:
+                        result_fixture['evidence'] = bound_evidence
                 output_path = runner / 'github-output.txt'
                 environment.update({
                     'RUNNER_TEMP': str(runner),
@@ -574,7 +670,7 @@ function pwsh {
                     'CNMON_MSIX_PUBLISHER_DISPLAY_NAME': SYNTHETIC_IDENTITY['publisher_display_name'],
                     'CNMON_MSIX_EXPECTED_PFN': SYNTHETIC_IDENTITY['expected_pfn'],
                     'SIGNED_PACKAGE_BASE64': base64.b64encode(signed_bytes).decode('ascii'),
-                    'NATIVE_RESULT_JSON': json.dumps(results),
+                    'NATIVE_RESULT_JSON': json.dumps(result_fixture),
                 })
                 result = subprocess.run(
                     [pwsh, '-NoProfile', '-File', str(wrapper)],
@@ -587,6 +683,21 @@ function pwsh {
                     self.assertEqual(result.returncode, 0, f'{mode}/{fixture_name}: {result.stderr}')
                 else:
                     self.assertNotEqual(result.returncode, 0, f'{mode}/{fixture_name} was accepted')
+                if mode == 'Certify':
+                    invoked_path = runner / 'wack-child-invoked.txt'
+                    result_path = evidence / 'msix-native-results.json'
+                    snapshot_path = runner / 'cn-mon-msix-job' / 'hosted-results.snapshot.json'
+                    if fixture_name in ('hosted-binding-mismatch', 'hosted-schema-1'):
+                        self.assertFalse(invoked_path.exists(), fixture_name)
+                        self.assertFalse(snapshot_path.exists(), fixture_name)
+                        self.assertEqual(result_path.read_bytes(), hosted_bytes, fixture_name)
+                    else:
+                        self.assertTrue(invoked_path.exists(), fixture_name)
+                        self.assertEqual(snapshot_path.read_bytes(), hosted_bytes, fixture_name)
+                    if fixture_name == 'hosted-incomplete-repair-conflicts':
+                        self.assertIn('gate_status=pass', output_path.read_text(encoding='utf-8'))
+                    elif fixture_name == 'incomplete-no-evidence':
+                        self.assertIn('gate_status=incomplete', output_path.read_text(encoding='utf-8'))
 
     def test_allowlist_accepts_only_verified_synthetic_receipt_and_rejects_pfx(self):
         with tempfile.TemporaryDirectory(prefix='cnmon-msix-summary-') as temporary:
@@ -730,7 +841,10 @@ function pwsh {
                     'conflicts', 'fail_injection', 'cleanup', 'wack',
                 )
             }
-            results = {'schema_version': 1, 'mode': 'Hosted', 'overall': 'pass', 'gates': gates}
+            results = {
+                'schema_version': 2, 'mode': 'Hosted', 'overall': 'pass',
+                'evidence': NATIVE_EVIDENCE, 'gates': gates,
+            }
             (evidence / 'msix-native-results.json').write_text(json.dumps(results), encoding='utf-8')
             environment = os.environ.copy()
             environment.update({
@@ -763,9 +877,10 @@ function pwsh {
             evidence = job / 'evidence'
             evidence.mkdir(parents=True)
             results = {
-                'schema_version': 1,
+                'schema_version': 2,
                 'mode': 'Hosted',
                 'overall': 'pass',
+                'evidence': NATIVE_EVIDENCE,
                 'gates': {'identity': 'pass', 'package_hash': 'pass'},
             }
             (evidence / 'msix-native-results.json').write_text(json.dumps(results), encoding='utf-8')
@@ -792,6 +907,58 @@ function pwsh {
             self.assertEqual(summary['gates']['identity'], 'pass')
             self.assertEqual(summary['gates']['package_hash'], 'pass')
             self.assertEqual(summary['gate_counts'], {'pass': 2, 'fail': 0, 'incomplete': 17})
+
+    def test_summary_preserves_early_incomplete_results_without_evidence(self):
+        pwsh = shutil.which('pwsh')
+        self.assertIsNotNone(pwsh, 'PowerShell 7 is required for the Windows workflow tests')
+        gates = {
+            name: ('incomplete' if name == 'wack' else 'pass')
+            for name in (
+                'identity', 'package_hash', 'signature', 'account', 'package_registration',
+                'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli',
+                'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair',
+                'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack',
+            )
+        }
+        for overall, expected_overall in (('incomplete', 'incomplete'), ('pass', 'incomplete')):
+            with self.subTest(overall=overall), tempfile.TemporaryDirectory(prefix='cnmon-msix-summary-no-evidence-') as temporary:
+                job = Path(temporary) / 'cn-mon-msix-job'
+                evidence = job / 'evidence'
+                evidence.mkdir(parents=True)
+                raw_results = {
+                    'schema_version': 2,
+                    'mode': 'Hosted',
+                    'overall': overall,
+                    'evidence': None,
+                    'gates': gates,
+                }
+                (evidence / 'msix-native-results.json').write_text(json.dumps(raw_results), encoding='utf-8')
+                environment = os.environ.copy()
+                environment.update({
+                    'RUNNER_TEMP': temporary,
+                    'EVENT_NAME': 'pull_request',
+                    'JOB_STATUS': 'failure' if overall == 'incomplete' else 'success',
+                    'PACKAGE_STATUS': 'success',
+                    'QUALIFICATION_STATUS': 'failure' if overall == 'incomplete' else 'success',
+                    'WACK_STATUS': 'incomplete',
+                })
+                result = subprocess.run(
+                    [pwsh, '-NoProfile', '-File', str(CI_HELPER_PATH), '-Mode', 'Summary'],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                summary_path = job / 'summary' / 'msix-public-summary.json'
+                summary_text = summary_path.read_text(encoding='utf-8')
+                summary = json.loads(summary_text)
+                self.assertEqual(summary['schema_version'], 1)
+                self.assertEqual(summary['qualification_overall'], expected_overall)
+                self.assertEqual(summary['native_evidence'], 'validated')
+                self.assertEqual(summary['gate_counts'], {'pass': 18, 'fail': 0, 'incomplete': 1})
+                for key in ('signed_package_sha256', 'signed_receipt_sha256', 'packaging_revision'):
+                    self.assertNotIn(key, summary_text)
 
 
 if __name__ == '__main__':
