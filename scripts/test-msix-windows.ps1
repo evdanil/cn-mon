@@ -1409,6 +1409,17 @@ function Assert-CnMonMsixInstalledPackage {
         (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant() -cne ([string]$Receipt.binary_sha256).ToLowerInvariant()) {
         throw 'installed executable hash does not match the signed receipt'
     }
+    $sidecarKey = 'cn-mon.exe.manifest'
+    $sidecarExpectedHash = $null
+    if ($Receipt.files -is [System.Collections.IDictionary] -and $Receipt.files.Contains($sidecarKey)) {
+        $sidecarExpectedHash = $Receipt.files[$sidecarKey]
+    }
+    $sidecarManifest = Join-Path $package.InstallLocation $sidecarKey
+    if ($sidecarExpectedHash -isnot [string] -or $sidecarExpectedHash -cnotmatch '^[0-9a-f]{64}$' -or
+        -not (Test-Path -LiteralPath $sidecarManifest -PathType Leaf) -or
+        (Get-FileHash -LiteralPath $sidecarManifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne $sidecarExpectedHash) {
+        throw 'installed package sidecar manifest hash does not match the signed receipt'
+    }
     Set-CnMonMsixGate 'installed_binary_hash' 'pass'
     return $package
 }
@@ -1781,6 +1792,111 @@ function Invoke-CnMonMsixUserRun {
     return [pscustomobject]@{ ExitCode = $process.ExitCode; ResultPath = (Join-Path $ArtifactDirectory 'msix-native-results.json') }
 }
 
+function ConvertFrom-CnMonMsixDesktopSurfaceReport {
+    param([string]$Json, [object]$ExitCode, [bool]$TimedOut)
+    $status = if ($TimedOut) { 'timeout' } else { 'ineligible' }
+    $fallback = [ordered]@{
+        schema_version = 1
+        candidate_installed = $false
+        automation_process_session_id = 0
+        settings_opened_by_probe = $false
+        settings_same_sid = $false
+        settings_same_session = $false
+        probe_status = $status
+        repair_button_status = 'not_observed'
+    }
+    if ($TimedOut -or $null -eq $ExitCode -or (($ExitCode -isnot [int]) -and ($ExitCode -isnot [long])) -or [long]$ExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($Json)) {
+        return [pscustomobject]$fallback
+    }
+    try {
+        $report = ConvertFrom-Json -InputObject $Json -AsHashtable -ErrorAction Stop
+        if ($report -isnot [System.Collections.IDictionary]) { return [pscustomobject]$fallback }
+        $expectedKeys = @('schema_version', 'candidate_installed', 'automation_process_session_id', 'settings_opened_by_probe', 'settings_same_sid', 'settings_same_session', 'probe_status', 'repair_button_status')
+        $actualKeys = @($report.Keys | ForEach-Object { [string]$_ } | Sort-Object -CaseSensitive)
+        $sortedExpectedKeys = @($expectedKeys | Sort-Object -CaseSensitive)
+        if (($actualKeys -join "`n") -cne ($sortedExpectedKeys -join "`n")) { return [pscustomobject]$fallback }
+        if ((($report.schema_version -isnot [int]) -and ($report.schema_version -isnot [long])) -or $report.schema_version -ne 1 -or
+            (($report.automation_process_session_id -isnot [int]) -and ($report.automation_process_session_id -isnot [long])) -or
+            [long]$report.automation_process_session_id -lt 0 -or [long]$report.automation_process_session_id -gt 2147483647) {
+            return [pscustomobject]$fallback
+        }
+        foreach ($name in @('candidate_installed', 'settings_opened_by_probe', 'settings_same_sid', 'settings_same_session')) {
+            if ($report[$name] -isnot [bool]) { return [pscustomobject]$fallback }
+        }
+        $probeStatuses = @('not_attempted', 'candidate_not_installed', 'settings_preexisting', 'settings_unavailable', 'wrong_security_context', 'ui_automation_unavailable', 'observed')
+        if ($report.probe_status -isnot [string] -or $report.probe_status -cnotin $probeStatuses -or
+            $report.repair_button_status -isnot [string] -or $report.repair_button_status -cnotin @('not_observed', 'present', 'absent')) {
+            return [pscustomobject]$fallback
+        }
+        if (($report.settings_opened_by_probe -and (-not $report.settings_same_sid -or -not $report.settings_same_session)) -or
+            ($report.repair_button_status -in @('present', 'absent') -and -not $report.settings_opened_by_probe) -or
+            ($report.repair_button_status -in @('present', 'absent') -and $report.probe_status -cne 'observed') -or
+            ($report.probe_status -ceq 'observed' -and (
+                -not $report.candidate_installed -or
+                -not $report.settings_opened_by_probe -or
+                -not $report.settings_same_sid -or
+                -not $report.settings_same_session -or
+                $report.repair_button_status -cnotin @('present', 'absent')
+            ))) {
+            return [pscustomobject]$fallback
+        }
+        return [pscustomobject][ordered]@{
+            schema_version = 1
+            candidate_installed = [bool]$report.candidate_installed
+            automation_process_session_id = [int]$report.automation_process_session_id
+            settings_opened_by_probe = [bool]$report.settings_opened_by_probe
+            settings_same_sid = [bool]$report.settings_same_sid
+            settings_same_session = [bool]$report.settings_same_session
+            probe_status = [string]$report.probe_status
+            repair_button_status = [string]$report.repair_button_status
+        }
+    }
+    catch { return [pscustomobject]$fallback }
+}
+
+function Invoke-CnMonMsixDesktopSurfaceProbe {
+    param([object]$Identity)
+    if (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'User' -Identity $Identity)) { return }
+
+    $publicPath = Join-Path $ArtifactDirectory 'msix-desktop-surface.json'
+    if (Test-Path -LiteralPath $publicPath) { return }
+    $privateJson = Join-Path $script:PrivateRoot 'desktop-surface-report.json'
+    $stdout = Join-Path $script:PrivateRoot 'desktop-surface.stdout.log'
+    $stderr = Join-Path $script:PrivateRoot 'desktop-surface.stderr.log'
+    $probePath = Join-Path $PSScriptRoot 'test-msix-desktop-surface.ps1'
+    $process = $null
+    $exitCode = $null
+    $timedOut = $false
+    $json = $null
+    try {
+        if (-not (Test-Path -LiteralPath $probePath -PathType Leaf)) { throw 'probe_unavailable' }
+        $pwsh = Join-Path $PSHOME 'pwsh.exe'
+        $arguments = @('-NoProfile', '-File', $probePath, '-IdentityName', [string]$Identity.Name, '-ExpectedPackageFamilyName', [string]$Identity.ExpectedPFN)
+        $argumentLine = ($arguments | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' '
+        $process = Start-Process -FilePath $pwsh -ArgumentList $argumentLine -WorkingDirectory $repositoryRoot -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        if (-not $process.WaitForExit(30000)) {
+            $timedOut = $true
+            try {
+                $process.Refresh()
+                if (-not $process.HasExited) { $process.Kill(); $null = $process.WaitForExit(3000) }
+            }
+            catch { }
+        }
+        else {
+            $exitCode = [int]$process.ExitCode
+            if (Test-Path -LiteralPath $stdout -PathType Leaf) { $json = [IO.File]::ReadAllText($stdout) }
+        }
+    }
+    catch { }
+    finally { if ($null -ne $process) { $process.Dispose() } }
+
+    $safeReport = ConvertFrom-CnMonMsixDesktopSurfaceReport -Json $json -ExitCode $exitCode -TimedOut $timedOut
+    try {
+        [IO.File]::WriteAllText($publicPath, (ConvertTo-Json -InputObject $safeReport -Depth 3 -Compress) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    }
+    catch { }
+}
+
 function Remove-CnMonMsixTemporaryUser {
     param([string]$Name, [string]$Sid, [string]$IdentityName)
     if ($Name -and $Sid) {
@@ -2094,6 +2210,7 @@ function Invoke-CnMonMsixUserMode {
             $retained[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
         }
 
+        Invoke-CnMonMsixDesktopSurfaceProbe -Identity $identity
         $script:CurrentGate = 'repair'
         $repair = Get-Command Repair-AppxPackage -ErrorAction SilentlyContinue
         if ($null -eq $repair) {

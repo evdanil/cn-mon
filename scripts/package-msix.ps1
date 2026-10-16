@@ -143,6 +143,7 @@ try {
     foreach ($name in @('cn-mon.exe', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
         Copy-Item -LiteralPath (Join-Path $releasePayload $name) -Destination (Join-Path $stage $name)
     }
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/windows/cn-mon.exe.manifest') -Destination (Join-Path $stage 'cn-mon.exe.manifest')
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/windows/README-MSIX.md') -Destination (Join-Path $stage 'README-MSIX.md')
     foreach ($assetName in @('StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png')) {
         Copy-Item -LiteralPath (Join-Path $repositoryRoot "packaging/windows/Assets/$assetName") -Destination (Join-Path $stage "Assets/$assetName")
@@ -154,6 +155,7 @@ try {
     foreach ($name in $releaseFiles.Keys) {
         $expectedFiles[$name] = $releaseFiles[$name]
     }
+    $expectedFiles['cn-mon.exe.manifest'] = (Get-FileHash -LiteralPath (Join-Path $stage 'cn-mon.exe.manifest') -Algorithm SHA256).Hash.ToLowerInvariant()
     $expectedFiles['README-MSIX.md'] = (Get-FileHash -LiteralPath (Join-Path $stage 'README-MSIX.md') -Algorithm SHA256).Hash.ToLowerInvariant()
     foreach ($assetName in @('StoreLogo.png', 'Square44x44Logo.png', 'Square150x150Logo.png')) {
         $relativePath = "Assets/$assetName"

@@ -294,6 +294,26 @@ class MsixWorkflowTests(unittest.TestCase):
             test_step = named_step(job, 'Test desktop preflight privacy and safety')
             self.assertIn('pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1', test_step)
 
+    def test_desktop_surface_probe_is_synthetic_only_bounded_and_exactly_allowlisted(self):
+        text = workflow_text()
+        package = job_block(text, 'synthetic-package')
+        qualify = job_block(text, 'synthetic-qualification')
+        manual = job_block(text, 'trusted-manual')
+        harness = 'pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1'
+        package_harness = named_step(package, 'Test desktop surface privacy and safety')
+        qualify_harness = named_step(qualify, 'Test desktop surface privacy and safety')
+        self.assertIn(harness, package_harness)
+        self.assertIn(harness, qualify_harness)
+        self.assertLess(package.index('Test desktop surface privacy and safety'),
+                        package.index('Build synthetic unsigned MSIX'))
+        self.assertLess(qualify.index('Test desktop surface privacy and safety'),
+                        qualify.index('Qualify the downloaded package bytes'))
+        self.assertNotIn('test-msix-desktop-surface.ps1', manual)
+        upload = named_step(qualify, 'Upload synthetic qualification evidence')
+        self.assertIn(r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-surface.json',
+                      path_entries(upload))
+        self.assertNotIn('msix-desktop-surface.json', manual)
+
     def test_public_artifact_paths_are_exact_and_manual_uploads_summary_only(self):
         text = workflow_text()
         package = job_block(text, 'synthetic-package')
@@ -317,6 +337,7 @@ class MsixWorkflowTests(unittest.TestCase):
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json',
+            r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-surface.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-wack-structure.json',
         })
         summary = r'${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json'

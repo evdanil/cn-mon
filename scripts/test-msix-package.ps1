@@ -42,7 +42,31 @@ if ($release.binary_sha256 -cne $expectedBinaryHash) {
         throw 'public release metadata contains package identity data'
     }
 
-$testCount = 0
+$sidecarPath = Join-Path $repositoryRoot 'packaging/windows/cn-mon.exe.manifest'
+if (-not (Test-Path -LiteralPath $sidecarPath -PathType Leaf)) {
+    throw 'neutral executable DPI sidecar is missing'
+}
+$sidecarDocument = [Xml.XmlDocument]::new()
+$sidecarDocument.XmlResolver = $null
+$sidecarDocument.Load($sidecarPath)
+$sidecarRoot = $sidecarDocument.DocumentElement
+$sidecarIdentity = $sidecarDocument.SelectSingleNode('/*[local-name()="assembly"]/*[local-name()="assemblyIdentity"]')
+$sidecarApplication = $sidecarDocument.SelectSingleNode('/*[local-name()="assembly"]/*[local-name()="application"]')
+$dpiAwareness = $sidecarDocument.SelectSingleNode('/*[local-name()="assembly"]/*[local-name()="application"]/*[local-name()="windowsSettings"]/*[local-name()="dpiAwareness"]')
+if ($sidecarRoot.LocalName -cne 'assembly' -or $sidecarRoot.NamespaceURI -cne 'urn:schemas-microsoft-com:asm.v1' -or
+    $sidecarRoot.GetAttribute('manifestVersion') -cne '1.0' -or $sidecarRoot.ChildNodes.Count -ne 2 -or
+    $null -eq $sidecarIdentity -or $sidecarIdentity.GetAttribute('type') -cne 'win32' -or
+    $sidecarIdentity.GetAttribute('name') -cne 'CnMon.CLI' -or $sidecarIdentity.GetAttribute('version') -cne '0.3.0.0' -or
+    $sidecarIdentity.GetAttribute('processorArchitecture') -cne 'amd64' -or
+    $null -eq $sidecarApplication -or $sidecarApplication.NamespaceURI -cne 'urn:schemas-microsoft-com:asm.v3' -or
+    $sidecarApplication.ChildNodes.Count -ne 1 -or $null -eq $dpiAwareness -or
+    $dpiAwareness.NamespaceURI -cne 'http://schemas.microsoft.com/SMI/2016/WindowsSettings' -or
+    $dpiAwareness.InnerText -cne 'PerMonitorV2') {
+    throw 'executable DPI sidecar does not match the approved neutral Win32 manifest'
+}
+$testCount = 1
+Write-Host 'PASS neutral Win32 DPI sidecar contract'
+
 function Assert-Rejected {
     param(
         [Parameter(Mandatory = $true)][scriptblock]$Action,
@@ -490,8 +514,10 @@ try {
         }
         $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
         $actualPackageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $expectedSidecarHash = (Get-FileHash -LiteralPath (Join-Path $goodFixture 'packaging/windows/cn-mon.exe.manifest') -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($receipt.purpose -cne 'test-fixture' -or $receipt.package_sha256 -cne $actualPackageHash -or
-            $receipt.binary_sha256 -cne $expectedBinaryHash -or @($receipt.files.PSObject.Properties).Count -ne 9) {
+            $receipt.binary_sha256 -cne $expectedBinaryHash -or @($receipt.files.PSObject.Properties).Count -ne 10 -or
+            $receipt.files.'cn-mon.exe.manifest' -cne $expectedSidecarHash) {
             throw 'package receipt does not match the verified test fixture artifact'
         }
         $testCount++

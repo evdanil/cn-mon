@@ -171,6 +171,131 @@ function Invoke-MockedPartialUserCleanup {
     return @($script:partialUserCleanupCalls)
 }
 
+function Invoke-MockedDesktopSurfaceProbe {
+    param(
+        [bool]$GuardPass,
+        [string]$ChildJson,
+        [bool]$FirstWaitSucceeds,
+        [int]$ChildExitCode = 0
+    )
+
+    $oldArtifactDirectory = $script:ArtifactDirectory
+    $oldPrivateRoot = $script:PrivateRoot
+    $oldRepositoryRoot = $script:repositoryRoot
+    $oldResult = $script:Result
+    $oldGateUpdates = $script:GateUpdates
+    $oldGlobalStartProcess = Get-Item Function:\global:Start-Process -ErrorAction SilentlyContinue
+    $environmentNames = @(
+        'GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS',
+        'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER',
+        'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN'
+    )
+    $oldEnvironment = @{}
+    foreach ($name in $environmentNames) { $oldEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+    $caseRoot = Join-Path $tempRoot ('desktop-surface-runtime-' + [guid]::NewGuid().ToString('N'))
+    $probePathFixture = Join-Path $tempRoot 'test-msix-desktop-surface.ps1'
+    if (-not (Test-Path -LiteralPath $probePathFixture -PathType Leaf)) {
+        [IO.File]::WriteAllText($probePathFixture, '# mocked probe path fixture', [Text.UTF8Encoding]::new($false))
+    }
+    $script:ArtifactDirectory = Join-Path $caseRoot 'artifacts'
+    $script:PrivateRoot = Join-Path $caseRoot 'private'
+    $script:repositoryRoot = $repoRoot
+    $null = New-Item -ItemType Directory -Path $script:ArtifactDirectory -Force
+    $null = New-Item -ItemType Directory -Path $script:PrivateRoot -Force
+    $env:GITHUB_ACTIONS = 'true'
+    $env:GITHUB_EVENT_NAME = if ($GuardPass) { 'pull_request' } else { 'workflow_dispatch' }
+    $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'
+    $env:ImageOS = 'windows-2025'
+    $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+    $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+    $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+    $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+    $global:mockDesktopSurfaceChildJson = $ChildJson
+    $global:mockDesktopSurfaceExitCode = $ChildExitCode
+    $global:mockDesktopSurfaceFirstWaitSucceeds = $FirstWaitSucceeds
+    $global:mockDesktopSurfaceStartCalls = 0
+    $global:mockDesktopSurfaceWaits = [Collections.Generic.List[int]]::new()
+    $global:mockDesktopSurfaceKillCount = 0
+    $global:mockDesktopSurfaceKillTarget = $null
+    $global:mockDesktopSurfaceProcess = [pscustomobject]@{
+        Id = 9876
+        HasExited = $false
+        ExitCode = $ChildExitCode
+        WaitSucceeds = $FirstWaitSucceeds
+    }
+    $global:mockDesktopSurfaceProcess | Add-Member ScriptMethod WaitForExit {
+        param([int]$Milliseconds)
+        $global:mockDesktopSurfaceWaits.Add($Milliseconds)
+        if ($this.HasExited) { return $true }
+        if ($Milliseconds -eq 30000) { return [bool]$this.WaitSucceeds }
+        return $false
+    }
+    $global:mockDesktopSurfaceProcess | Add-Member ScriptMethod Refresh { }
+    $global:mockDesktopSurfaceProcess | Add-Member ScriptMethod Kill {
+        $global:mockDesktopSurfaceKillCount++
+        $global:mockDesktopSurfaceKillTarget = $this
+        $this.HasExited = $true
+    }
+    $global:mockDesktopSurfaceProcess | Add-Member ScriptMethod Dispose { }
+    Set-Item Function:\global:Start-Process -Value {
+        param(
+            [string]$FilePath,
+            [string]$ArgumentList,
+            [string]$WorkingDirectory,
+            [switch]$PassThru,
+            [string]$RedirectStandardOutput,
+            [string]$RedirectStandardError
+        )
+        $global:mockDesktopSurfaceStartCalls++
+        [IO.File]::WriteAllText($RedirectStandardOutput, $global:mockDesktopSurfaceChildJson)
+        [IO.File]::WriteAllText($RedirectStandardError, 'private child stderr canary')
+        return $global:mockDesktopSurfaceProcess
+    }
+
+    try {
+        $identity = [pscustomobject]@{
+            Name = 'Example.CnMon'
+            Publisher = 'CN=Example, O=Example'
+            PublisherDisplayName = 'Example Publisher'
+            ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+        }
+        $script:Result = [ordered]@{ gates = [ordered]@{ repair = 'incomplete'; conflicts = 'pass' } }
+        $script:GateUpdates = [ordered]@{}
+        $gatesBefore = ConvertTo-Json -InputObject $script:Result.gates -Compress
+        Invoke-CnMonMsixDesktopSurfaceProbe -Identity $identity
+        $reportPath = Join-Path $script:ArtifactDirectory 'msix-desktop-surface.json'
+        $report = if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+            ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($reportPath)) -AsHashtable
+        }
+        else { $null }
+        return [pscustomobject]@{
+            StartCalls = $global:mockDesktopSurfaceStartCalls
+            Waits = @($global:mockDesktopSurfaceWaits)
+            KillCount = $global:mockDesktopSurfaceKillCount
+            KillTarget = $global:mockDesktopSurfaceKillTarget
+            Process = $global:mockDesktopSurfaceProcess
+            ArtifactExists = (Test-Path -LiteralPath $reportPath -PathType Leaf)
+            Report = $report
+            GatesBefore = $gatesBefore
+            GatesAfter = ConvertTo-Json -InputObject $script:Result.gates -Compress
+        }
+    }
+    finally {
+        $script:ArtifactDirectory = $oldArtifactDirectory
+        $script:PrivateRoot = $oldPrivateRoot
+        $script:repositoryRoot = $oldRepositoryRoot
+        $script:Result = $oldResult
+        $script:GateUpdates = $oldGateUpdates
+        if ($null -eq $oldGlobalStartProcess) { Remove-Item Function:\global:Start-Process -ErrorAction SilentlyContinue }
+        else { Set-Item Function:\global:Start-Process -Value $oldGlobalStartProcess.ScriptBlock }
+        foreach ($name in @('mockDesktopSurfaceChildJson', 'mockDesktopSurfaceExitCode', 'mockDesktopSurfaceFirstWaitSucceeds', 'mockDesktopSurfaceStartCalls', 'mockDesktopSurfaceWaits', 'mockDesktopSurfaceKillCount', 'mockDesktopSurfaceKillTarget', 'mockDesktopSurfaceProcess')) {
+            Remove-Variable -Name $name -Scope Global -ErrorAction SilentlyContinue
+        }
+        foreach ($name in $environmentNames) { [Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name], 'Process') }
+        Remove-Item -LiteralPath $caseRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetPath = Join-Path $PSScriptRoot 'test-msix-windows.ps1'
 $modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
@@ -201,9 +326,13 @@ $requiredFunctions = @(
     'Assert-CnMonMsixResultEvidence',
     'Assert-CnMonMsixUserResultBinding',
     'Read-CnMonMsixHostedResultSnapshot',
+    'Get-CnMonMsixPackage',
+    'Assert-CnMonMsixInstalledPackage',
     'Get-CnMonMsixWackStatus',
     'Get-CnMonMsixWackStructureDiagnostic',
     'ConvertTo-CnMonMsixNumericToolVersion',
+    'ConvertFrom-CnMonMsixDesktopSurfaceReport',
+    'Invoke-CnMonMsixDesktopSurfaceProbe',
     'Save-CnMonMsixWackStructureDiagnostic',
     'Get-CnMonMsixTrustAction',
     'Test-CnMonMsixAdministratorsMembership',
@@ -829,6 +958,213 @@ exit 0
             }
         }
         finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') } }
+    }
+
+    Invoke-Check 'desktop surface child reports are closed, guarded, and timeout-safe' {
+        $valid = [ordered]@{
+            schema_version = 1
+            candidate_installed = $true
+            automation_process_session_id = 7
+            settings_opened_by_probe = $true
+            settings_same_sid = $true
+            settings_same_session = $true
+            probe_status = 'observed'
+            repair_button_status = 'present'
+        }
+        $accepted = ConvertFrom-CnMonMsixDesktopSurfaceReport -Json (ConvertTo-Json $valid -Compress) -ExitCode 0 -TimedOut:$false
+        Assert-Equal $accepted.probe_status 'observed' 'valid same-session probe report was not accepted'
+        Assert-Equal $accepted.repair_button_status 'present' 'valid Repair observation was lost'
+        Assert-Equal $accepted.automation_process_session_id 7 'safe session ID was not retained numerically'
+
+        $extra = [ordered]@{}
+        foreach ($key in $valid.Keys) { $extra[$key] = $valid[$key] }
+        $extra.private_canary = 'PRIVATE_SURFACE_VALUE'
+        $rejected = ConvertFrom-CnMonMsixDesktopSurfaceReport -Json (ConvertTo-Json $extra -Compress) -ExitCode 0 -TimedOut:$false
+        Assert-Equal $rejected.probe_status 'ineligible' 'report with an unexpected root field was accepted'
+        Assert-True (-not (ConvertTo-Json $rejected -Compress).Contains('PRIVATE_SURFACE_VALUE')) 'invalid child report value escaped into fallback output'
+
+        $badType = [ordered]@{}
+        foreach ($key in $valid.Keys) { $badType[$key] = $valid[$key] }
+        $badType.settings_same_sid = 'true'
+        $rejected = ConvertFrom-CnMonMsixDesktopSurfaceReport -Json (ConvertTo-Json $badType -Compress) -ExitCode 0 -TimedOut:$false
+        Assert-Equal $rejected.probe_status 'ineligible' 'string boolean was accepted as child evidence'
+
+        $timeout = ConvertFrom-CnMonMsixDesktopSurfaceReport -Json $null -ExitCode $null -TimedOut:$true
+        Assert-Equal $timeout.probe_status 'timeout' 'bounded probe timeout was not represented as an ineligible observation'
+        Assert-Equal $timeout.repair_button_status 'not_observed' 'timeout falsely reported the Repair state'
+        Assert-Equal $timeout.settings_opened_by_probe $false 'timeout falsely claimed that Settings was opened'
+        $nonzero = ConvertFrom-CnMonMsixDesktopSurfaceReport -Json (ConvertTo-Json $valid -Compress) -ExitCode 3 -TimedOut:$false
+        Assert-Equal $nonzero.probe_status 'ineligible' 'nonzero probe child exit was accepted'
+
+        $probe = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Invoke-CnMonMsixDesktopSurfaceProbe'
+        }, $true))[0]
+        $guardCalls = @(Get-CommandNodes $probe 'Test-CnMonMsixSyntheticPrDiagnostic')
+        $startCalls = @(Get-CommandNodes $probe 'Start-Process')
+        Assert-Equal $guardCalls.Count 1 'desktop surface invocation is not protected by the existing synthetic identity guard'
+        Assert-Equal $startCalls.Count 1 'desktop surface helper does not launch one isolated probe child'
+        Assert-True ($guardCalls[0].Extent.StartOffset -lt $startCalls[0].Extent.StartOffset) 'desktop surface child can launch before synthetic guard acceptance'
+        Assert-True ($probe.Extent.Text.Contains("'msix-desktop-surface.json'")) 'desktop surface report does not use the exact artifact filename'
+        Assert-True ($probe.Extent.Text -match 'WaitForExit\(30000\)') 'desktop surface child has no hard bounded wait'
+        Assert-True ($probe.Extent.Text -match '\.Kill\(') 'timeout does not stop the exact probe child process'
+        Assert-True ($probe.Extent.Text -notmatch 'Get-Process.*SystemSettings|Stop-Process.*SystemSettings') 'timeout cleanup enumerates or kills Settings processes'
+        Assert-True ($probe.Extent.Text -notmatch 'Set-CnMonMsixGate|GateUpdates|Result\.gates') 'surface observation can mutate qualification gate state'
+
+        $userMode = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $candidate.Name -eq 'Invoke-CnMonMsixUserMode'
+        }, $true))[0]
+        $probeCall = @(Get-CommandNodes $userMode 'Invoke-CnMonMsixDesktopSurfaceProbe')
+        $repairAssignments = @($userMode.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                $candidate.Extent.Text -match '\$script:CurrentGate\s*=\s*''repair'''
+        }, $true) | Sort-Object { $_.Extent.StartOffset })
+        $candidateInstalls = @(Get-CommandNodes $userMode 'Add-CnMonMsixOwnedPackage' | Where-Object { $_.Extent.Text.Contains('$PackagePath') })
+        $injectedFailureOffset = $userMode.Extent.Text.IndexOf("throw 'controlled post-install failure'", [StringComparison]::Ordinal) + $userMode.Extent.StartOffset
+        Assert-Equal $probeCall.Count 1 'normal User mode does not invoke the feasibility probe exactly once'
+        Assert-True ($repairAssignments.Count -gt 0) 'repair stage assignment was not found'
+        Assert-True ($candidateInstalls.Count -gt 0 -and $candidateInstalls[0].Extent.StartOffset -lt $probeCall[0].Extent.StartOffset) 'surface probe can run before candidate registration'
+        Assert-True ($injectedFailureOffset -gt $userMode.Extent.StartOffset -and $injectedFailureOffset -lt $probeCall[0].Extent.StartOffset) 'failure-injection User child can run the UI probe'
+        Assert-True ($probeCall[0].Extent.StartOffset -lt $repairAssignments[0].Extent.StartOffset) 'surface probe does not run before repair'
+        Assert-True (-not $probeCall[0].Extent.Text.Contains('Set-CnMonMsixGate')) 'surface probe result is allowed to mutate qualification gates'
+    }
+
+    Invoke-Check 'desktop surface child projection rejects contradictory observations' {
+        $invalidObservations = @(
+            [ordered]@{
+                schema_version = 1
+                candidate_installed = $false
+                automation_process_session_id = 7
+                settings_opened_by_probe = $true
+                settings_same_sid = $true
+                settings_same_session = $true
+                probe_status = 'observed'
+                repair_button_status = 'present'
+            },
+            [ordered]@{
+                schema_version = 1
+                candidate_installed = $true
+                automation_process_session_id = 7
+                settings_opened_by_probe = $true
+                settings_same_sid = $true
+                settings_same_session = $true
+                probe_status = 'ui_automation_unavailable'
+                repair_button_status = 'absent'
+            },
+            [ordered]@{
+                schema_version = 1
+                candidate_installed = $true
+                automation_process_session_id = 7
+                settings_opened_by_probe = $false
+                settings_same_sid = $false
+                settings_same_session = $false
+                probe_status = 'observed'
+                repair_button_status = 'present'
+            }
+        )
+        foreach ($invalid in $invalidObservations) {
+            $rejected = ConvertFrom-CnMonMsixDesktopSurfaceReport -Json (ConvertTo-Json $invalid -Compress) -ExitCode 0 -TimedOut:$false
+            Assert-Equal $rejected.probe_status 'ineligible' 'contradictory child observation was accepted'
+            Assert-Equal $rejected.repair_button_status 'not_observed' 'invalid child report retained a Repair claim'
+        }
+    }
+
+    Invoke-Check 'desktop surface runtime orchestration is guarded, bounded, and gate-neutral' {
+        $validJson = ConvertTo-Json ([ordered]@{
+            schema_version = 1
+            candidate_installed = $true
+            automation_process_session_id = 7
+            settings_opened_by_probe = $true
+            settings_same_sid = $true
+            settings_same_session = $true
+            probe_status = 'observed'
+            repair_button_status = 'absent'
+        }) -Compress
+
+        $guardOff = Invoke-MockedDesktopSurfaceProbe -GuardPass:$false -ChildJson $validJson -FirstWaitSucceeds:$true
+        Assert-Equal $guardOff.StartCalls 0 'synthetic guard rejection launched the child process'
+        Assert-True (-not $guardOff.ArtifactExists) 'guard rejection wrote a public artifact'
+
+        $success = Invoke-MockedDesktopSurfaceProbe -GuardPass:$true -ChildJson $validJson -FirstWaitSucceeds:$true
+        Assert-Equal $success.StartCalls 1 'authorized probe did not launch exactly one child process'
+        Assert-True $success.ArtifactExists 'authorized successful observation did not write the exact public report'
+        Assert-Equal $success.Report.probe_status 'observed' 'runtime wrapper did not promote the validated report'
+        Assert-Equal $success.Report.repair_button_status 'absent' 'runtime wrapper changed the validated Repair observation'
+        Assert-Equal $success.GatesAfter $success.GatesBefore 'successful observation changed qualification gates'
+
+        $timeout = Invoke-MockedDesktopSurfaceProbe -GuardPass:$true -ChildJson $validJson -FirstWaitSucceeds:$false
+        Assert-Equal $timeout.StartCalls 1 'timed-out probe child launch count changed'
+        Assert-Equal $timeout.Waits.Count 2 'timeout did not perform its bounded wait and post-kill wait'
+        Assert-Equal $timeout.Waits[0] 30000 'probe wait was not bounded to 30 seconds'
+        Assert-Equal $timeout.Waits[1] 3000 'post-kill wait was not bounded'
+        Assert-Equal $timeout.KillCount 1 'timeout did not kill exactly one child process'
+        Assert-True ([object]::ReferenceEquals($timeout.KillTarget, $timeout.Process)) 'timeout killed a process other than the exact returned child'
+        Assert-Equal $timeout.Report.probe_status 'timeout' 'runtime timeout was not projected as timeout'
+        Assert-Equal $timeout.Report.repair_button_status 'not_observed' 'timed-out child retained its untrusted Repair claim'
+        Assert-Equal $timeout.GatesAfter $timeout.GatesBefore 'timeout changed qualification gates'
+    }
+
+    Invoke-Check 'installed sidecar manifest hash is bound to the signed receipt' {
+        $installPath = Join-Path $tempRoot 'installed-sidecar-fixture'
+        $null = New-Item -ItemType Directory -Path $installPath -Force
+        $executable = Join-Path $installPath 'cn-mon.exe'
+        $sidecar = Join-Path $installPath 'cn-mon.exe.manifest'
+        [IO.File]::WriteAllText($executable, 'candidate executable bytes', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($sidecar, 'approved sidecar bytes', [Text.UTF8Encoding]::new($false))
+        $oldGetAppxPackage = Get-Item Function:\global:Get-AppxPackage -ErrorAction SilentlyContinue
+        $oldResult = $script:Result
+        $oldGateUpdates = $script:GateUpdates
+        $oldCurrentGate = $script:CurrentGate
+        $global:mockInstalledPackage = [pscustomobject]@{
+            Name = 'Example.CnMon'
+            Publisher = 'CN=Example, O=Example'
+            Architecture = 'X64'
+            Version = '1.3.0.0'
+            PackageFamilyName = 'Example.CnMon_518g7wxbxvqf6'
+            InstallLocation = $installPath
+        }
+        Set-Item Function:\global:Get-AppxPackage -Value {
+            param([string]$Name, [string]$User, [string]$PackageTypeFilter, [string]$ErrorAction)
+            return $global:mockInstalledPackage
+        }
+        $script:Result = [ordered]@{ gates = [ordered]@{ package_registration = 'incomplete'; exact_identity = 'incomplete'; installed_binary_hash = 'incomplete' } }
+        $script:GateUpdates = [ordered]@{}
+        $script:CurrentGate = 'identity'
+        $identity = [pscustomobject]@{
+            Name = 'Example.CnMon'
+            Publisher = 'CN=Example, O=Example'
+            ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+        }
+        $receipt = [ordered]@{
+            package_version = '1.3.0.0'
+            binary_sha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+            files = [ordered]@{ 'cn-mon.exe.manifest' = (Get-FileHash -LiteralPath $sidecar -Algorithm SHA256).Hash.ToLowerInvariant() }
+        }
+        try {
+            $installed = Assert-CnMonMsixInstalledPackage -Receipt $receipt -Identity $identity
+            Assert-True ([object]::ReferenceEquals($installed, $global:mockInstalledPackage)) 'verified installed package object changed'
+
+            Remove-Item -LiteralPath $sidecar -Force
+            Assert-ThrowsMatching { $null = Assert-CnMonMsixInstalledPackage -Receipt $receipt -Identity $identity } 'sidecar manifest hash' 'missing installed sidecar manifest was accepted'
+
+            [IO.File]::WriteAllText($sidecar, 'changed sidecar bytes', [Text.UTF8Encoding]::new($false))
+            Assert-ThrowsMatching { $null = Assert-CnMonMsixInstalledPackage -Receipt $receipt -Identity $identity } 'sidecar manifest hash' 'sidecar manifest hash mismatch was accepted'
+
+            $receipt.files.Remove('cn-mon.exe.manifest')
+            Assert-ThrowsMatching { $null = Assert-CnMonMsixInstalledPackage -Receipt $receipt -Identity $identity } 'sidecar manifest hash' 'receipt without the exact sidecar hash key was accepted'
+        }
+        finally {
+            $script:Result = $oldResult
+            $script:GateUpdates = $oldGateUpdates
+            $script:CurrentGate = $oldCurrentGate
+            if ($null -eq $oldGetAppxPackage) { Remove-Item Function:\global:Get-AppxPackage -ErrorAction SilentlyContinue }
+            else { Set-Item Function:\global:Get-AppxPackage -Value $oldGetAppxPackage.ScriptBlock }
+            Remove-Variable -Name mockInstalledPackage -Scope Global -ErrorAction SilentlyContinue
+        }
     }
 
     Invoke-Check 'trust setup reuses existing trust and rejects non-hosted certificate imports' {

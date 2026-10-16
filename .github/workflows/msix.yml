@@ -28,6 +28,9 @@ jobs:
       - name: Test native MSIX harness safety
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/test-msix-windows-harness.ps1
+      - name: Test desktop surface privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1
       - name: Configure synthetic identity
         shell: pwsh
         run: |
@@ -109,6 +112,9 @@ jobs:
       - name: Test desktop preflight privacy and safety
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
+      - name: Test desktop surface privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1
       - name: Download exact synthetic package artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -166,6 +172,7 @@ jobs:
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-surface.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-wack-structure.json
           if-no-files-found: ignore
           retention-days: 14
