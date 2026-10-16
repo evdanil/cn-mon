@@ -64,6 +64,54 @@ Assert-True ($sourceText.Contains("'-w', 'new'", [StringComparison]::Ordinal)) '
 Assert-True ($sourceText.Contains("'--title', `$terminalTitle, '--suppressApplicationTitle'", [StringComparison]::Ordinal)) 'owned Windows Terminal title can be overridden by the application title'
 Assert-True ($sourceText.Contains('Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $before', [StringComparison]::Ordinal)) 'repair activation is not gated by the observed button shape'
 Assert-True ($sourceText.Contains('Export-Clixml', [StringComparison]::Ordinal)) 'private desktop failure diagnostics are not preserved before cleanup'
+
+# Execute the generated runner's real argument selection and splatting. A one-item
+# switch result otherwise becomes a string, which PowerShell splats as characters.
+$runnerAssignmentAst = $sourceAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $candidate.Left.Extent.Text -ceq '$runner'
+}, $true)
+Assert-True ($null -ne $runnerAssignmentAst) 'generated Terminal runner is missing'
+$runnerText = $runnerAssignmentAst.Right.Expression.Value
+$runnerErrors = $null
+$runnerAst = [System.Management.Automation.Language.Parser]::ParseInput($runnerText, [ref]$null, [ref]$runnerErrors)
+Assert-Equal $runnerErrors.Count 0 'generated Terminal runner does not parse'
+$runnerArgumentsAst = $runnerAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $candidate.Left.Extent.Text -match '\$arguments$'
+}, $true)
+$runnerInvokeAst = $runnerAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.CommandAst] -and
+        $candidate.Extent.Text -ceq '& $AliasPath @arguments'
+}, $true)
+Assert-True ($null -ne $runnerArgumentsAst -and $null -ne $runnerInvokeAst) 'generated Terminal argument construction or invocation is missing'
+function Save-CnMonMsixHarnessTerminalArguments {
+    $script:CapturedTerminalArguments = @($args)
+}
+$runnerArgumentProbe = [scriptblock]::Create($runnerArgumentsAst.Extent.Text + [Environment]::NewLine + $runnerInvokeAst.Extent.Text)
+foreach ($case in @(
+    @{ Mode = 'help'; Expected = @('--help') },
+    @{ Mode = 'table'; Expected = @('127.0.0.1', '--format', 'table', '--history-file', 'C:\private work\history.db', '--log-file', 'C:\private work\cn.log') },
+    @{ Mode = 'json-tcp'; Expected = @('127.0.0.1', '--format', 'json', '--tcp', '12345', '--history-file', 'C:\private work\history.db', '--log-file', 'C:\private work\cn.log') },
+    @{ Mode = 'history-list'; Expected = @('--list', '--history-file', 'C:\private work\history.db', '--log-file', 'C:\private work\cn.log') },
+    @{ Mode = 'history-detail'; Expected = @('--show', 'abcd1234', '--history-file', 'C:\private work\history.db', '--log-file', 'C:\private work\cn.log') }
+)) {
+    $Mode = $case.Mode
+    $AliasPath = 'Save-CnMonMsixHarnessTerminalArguments'
+    $HistoryPath = 'C:\private work\history.db'
+    $LogPath = 'C:\private work\cn.log'
+    $Port = '12345'
+    $RequestId = 'abcd1234'
+    & $runnerArgumentProbe
+    Assert-Equal $script:CapturedTerminalArguments.Count $case.Expected.Count "Terminal $Mode command has the wrong argument count"
+    for ($index = 0; $index -lt $case.Expected.Count; $index++) {
+        Assert-Equal $script:CapturedTerminalArguments[$index] $case.Expected[$index] "Terminal $Mode argument $index changed during splatting"
+    }
+}
+Remove-Item Function:Save-CnMonMsixHarnessTerminalArguments
 $repairObservationAst = $sourceAst.Find({
     param($candidate)
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and

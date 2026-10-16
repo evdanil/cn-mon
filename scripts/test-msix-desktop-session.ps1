@@ -1309,7 +1309,7 @@ function Invoke-CnMonMsixSessionListingScreenshots {
     $runner = @'
 param([string]$Mode, [string]$AliasPath, [string]$HistoryPath, [string]$LogPath, [string]$Port, [string]$RequestId, [string]$ChildToken, [string]$ChildReportPath)
 $ErrorActionPreference = 'Stop'
-$arguments = switch ($Mode) {
+[string[]]$arguments = switch ($Mode) {
     'help' { @('--help') }
     'table' { @('127.0.0.1', '--format', 'table', '--history-file', $HistoryPath, '--log-file', $LogPath) }
     'json-tcp' { @('127.0.0.1', '--format', 'json', '--tcp', $Port, '--history-file', $HistoryPath, '--log-file', $LogPath) }
