@@ -173,6 +173,14 @@ jobs:
           path: ${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json
           if-no-files-found: error
           retention-days: 14
+      - name: Upload synthetic signature diagnostic
+        if: always() && steps.qualify.outcome == 'failure'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-signature-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signature-diagnostic.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   trusted-manual:
     if: github.event_name == 'workflow_dispatch' && github.repository == 'evdanil/cn-mon'

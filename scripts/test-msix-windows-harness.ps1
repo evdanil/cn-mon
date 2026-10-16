@@ -165,7 +165,11 @@ $requiredFunctions = @(
     'Remove-CnMonMsixOwnedPackages',
     'Assert-CnMonMsixTargetsAbsent',
     'Get-CnMonMsixProfileTargets',
-    'Invoke-CnMonMsixNativeTests'
+    'Invoke-CnMonMsixNativeTests',
+    'Assert-CnMonMsixSignature',
+    'Test-CnMonMsixSyntheticPrDiagnostic',
+    'Get-CnMonMsixSignatureDiagnostic',
+    'Save-CnMonMsixSignatureDiagnostic'
 )
 $functionAsts = @($sourceAst.FindAll({
     param($candidate)
@@ -553,6 +557,113 @@ exit 0
         }, $true)) | Sort-Object { $_.Extent.StartOffset } | Select-Object -First 1
         Assert-True ($null -ne $certificateLoad) 'Certify does not validate the newly exported public certificate'
         Assert-True ($export.Extent.StartOffset -lt $certificateLoad.Extent.StartOffset) 'certificate file is loaded before Export-Certificate creates it'
+    }
+
+    Invoke-Check 'signature diagnostics are synthetic-only, sanitized, and retained across cleanup' {
+        $keys = @(
+            'GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS',
+            'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN'
+        )
+        $old = @{}
+        foreach ($key in $keys) { $old[$key] = [Environment]::GetEnvironmentVariable($key) }
+        try {
+            $env:GITHUB_ACTIONS = 'true'
+            $env:GITHUB_EVENT_NAME = 'pull_request'
+            $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'
+            $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+            $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+            $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $syntheticIdentity = [pscustomobject]@{
+                Name = 'Example.CnMon'
+                Publisher = 'CN=Example, O=Example'
+                PublisherDisplayName = 'Example Publisher'
+                ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+            }
+            Assert-True (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'Hosted' -Identity $syntheticIdentity) 'exact golden PR identity was not authorized for a safe diagnostic'
+
+            $privateRoot = Join-Path $tempRoot 'signature-diagnostic-source'
+            $privateArtifactDirectory = Join-Path $tempRoot 'signature-diagnostic-private-artifacts'
+            $null = New-Item -ItemType Directory -Path $privateRoot, $privateArtifactDirectory
+            $privateLog = Join-Path $privateRoot 'candidate-verify.log'
+            $rawLog = @'
+stdout:
+SignTool Error: Certificate chain failed with HRESULT 0x800B0109.
+Private path: C:\runner\temp\cn-mon-msix-private\candidate.msix
+Identity: Example.CnMon; CN=Example, O=Example; Example Publisher; Example.CnMon_518g7wxbxvqf6
+Thumbprint: 0123456789ABCDEF0123456789ABCDEF01234567
+-----BEGIN PRIVATE KEY-----
+mock PFX payload must stay private
+stderr:
+'@
+            $script:mockSignatureLog = $rawLog
+            function Invoke-CnMonMsixTool {
+                [CmdletBinding()]
+                param([string]$Executable, [string[]]$Arguments, [string]$LogPath)
+                [IO.File]::WriteAllText($LogPath, $script:mockSignatureLog, [Text.UTF8Encoding]::new($false))
+                $script:LastSdkToolExitCode = 1
+                throw 'mock SDK child failed'
+            }
+            $sdkDirectory = Join-Path $tempRoot 'signature-sdk'
+            $null = New-Item -ItemType Directory -Path $sdkDirectory
+            [IO.File]::WriteAllText((Join-Path $sdkDirectory 'signtool.exe'), 'mock executable')
+            $SdkBinDirectory = $sdkDirectory
+            $ArtifactDirectory = $privateArtifactDirectory
+            $Mode = 'Hosted'
+            $script:LastSdkToolExitCode = $null
+            $failedChild = $false
+            try { Assert-CnMonMsixSignature -Path 'candidate.msix' -LogPath $privateLog -Identity $syntheticIdentity }
+            catch { $failedChild = $true }
+            Assert-True $failedChild 'nonzero mocked SignTool verify child was not reported as a failure'
+            Assert-Equal $script:LastSdkToolExitCode 1 'failed SignTool child exit code was not retained'
+
+            $diagnostic = Get-CnMonMsixSignatureDiagnostic -LogPath $privateLog -ExitCode 1 -Phase 'candidate-verify'
+            Assert-Equal $diagnostic.exit_code 1 'SDK failure exit code was not retained'
+            Assert-Equal $diagnostic.reason 'untrusted_root' 'known HRESULT did not map to a fixed reason category'
+            Assert-True ($diagnostic.hresults -contains '0x800B0109') 'SDK HRESULT was not retained'
+            Assert-Equal $diagnostic.phase 'candidate-verify' 'signature phase was not retained'
+
+            $publicPath = Join-Path $privateArtifactDirectory 'msix-signature-diagnostic.json'
+            $retainedPrivateLog = Join-Path (Join-Path $privateArtifactDirectory 'private-signature-diagnostics') 'candidate-verify.log'
+            Assert-True (Test-Path -LiteralPath $publicPath -PathType Leaf) 'golden synthetic PR did not receive its allowlisted diagnostic'
+            Assert-True (Test-Path -LiteralPath $retainedPrivateLog -PathType Leaf) 'failed-child SDK log was not retained privately'
+            Assert-Equal ([IO.File]::ReadAllText($retainedPrivateLog)) $rawLog 'private SDK log was modified while being retained'
+            $publicText = [IO.File]::ReadAllText($publicPath)
+            foreach ($sensitive in @('CN=Example, O=Example', 'Example Publisher', 'Example.CnMon_518g7wxbxvqf6', '0123456789ABCDEF0123456789ABCDEF01234567', 'C:\runner\temp', 'BEGIN PRIVATE KEY', 'mock PFX payload')) {
+                Assert-True ($publicText -notmatch [regex]::Escape($sensitive)) "synthetic diagnostic leaked '$sensitive'"
+            }
+            Remove-Item -LiteralPath $privateRoot -Recurse -Force
+            Assert-True (Test-Path -LiteralPath $retainedPrivateLog -PathType Leaf) 'private SDK evidence did not survive PrivateRoot cleanup'
+
+            $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Private Example, O=Example'
+            $nonGoldenIdentity = [pscustomobject]@{
+                Name = 'Example.CnMon'
+                Publisher = 'CN=Private Example, O=Example'
+                PublisherDisplayName = 'Private Example Publisher'
+                ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+            }
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Private Example Publisher'
+            Assert-True (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'Hosted' -Identity $nonGoldenIdentity)) 'non-golden identity was authorized for public diagnostics'
+            $realArtifactDirectory = Join-Path $tempRoot 'real-signature-diagnostic-artifacts'
+            $realPrivateRoot = Join-Path $tempRoot 'real-signature-diagnostic-source'
+            $null = New-Item -ItemType Directory -Path $realArtifactDirectory, $realPrivateRoot
+            $realLog = Join-Path $realPrivateRoot 'candidate-verify.log'
+            [IO.File]::WriteAllText($realLog, $rawLog, [Text.UTF8Encoding]::new($false))
+            Save-CnMonMsixSignatureDiagnostic -LogPath $realLog -ArtifactDirectory $realArtifactDirectory -ExitCode 1 -Phase 'candidate-verify' -Mode 'Hosted' -Identity $nonGoldenIdentity
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $realArtifactDirectory 'msix-signature-diagnostic.json'))) 'non-golden identity produced a public diagnostic'
+            Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $realArtifactDirectory 'private-signature-diagnostics') 'candidate-verify.log')) 'real-run SDK failure was not retained privately'
+
+            $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+            $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
+            Assert-True (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'Hosted' -Identity $syntheticIdentity)) 'manual job was authorized for public signature diagnostics'
+            Assert-True (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'User' -Identity $syntheticIdentity)) 'non-Hosted mode was authorized for public signature diagnostics'
+        }
+        finally {
+            foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') }
+        }
     }
 
     if ($failures.Count -gt 0) {

@@ -257,7 +257,7 @@ class MsixWorkflowTests(unittest.TestCase):
         qualify_uploads = upload_steps(qualify)
         manual_uploads = upload_steps(manual)
         self.assertEqual(len(package_uploads), 2)
-        self.assertEqual(len(qualify_uploads), 2)
+        self.assertEqual(len(qualify_uploads), 3)
         self.assertEqual(len(manual_uploads), 1)
         artifact_names = [upload_name(upload) for upload in
                           package_uploads + qualify_uploads + manual_uploads]
@@ -283,6 +283,32 @@ class MsixWorkflowTests(unittest.TestCase):
             self.assertIn("if: steps.", upload)
         for upload in package_uploads + qualify_uploads + manual_uploads:
             self.assertNotRegex(upload.lower(), r'\.pfx|\.p12|\.key|wack\.xml|wack\.html|\.log')
+
+    def test_synthetic_signature_diagnostic_is_guarded_and_exactly_allowlisted(self):
+        text = workflow_text()
+        qualify = job_block(text, 'synthetic-qualification')
+        diagnostic = named_step(qualify, 'Upload synthetic signature diagnostic')
+        self.assertIn("if: always() && steps.qualify.outcome == 'failure'", diagnostic)
+        self.assertEqual(path_entries(diagnostic), [
+            r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signature-diagnostic.json',
+        ])
+        self.assertIn('if-no-files-found: ignore', diagnostic)
+        self.assertNotRegex(diagnostic.lower(), r'\.pfx|\.p12|\.key|\.log|private')
+
+        for golden_value in SYNTHETIC_IDENTITY.values():
+            self.assertIn(golden_value, qualify)
+        windows_test = (ROOT / 'scripts' / 'test-msix-windows.ps1').read_text(encoding='utf-8')
+        for golden_value in SYNTHETIC_IDENTITY.values():
+            self.assertIn(golden_value, windows_test)
+        for guard in ('Test-CnMonMsixSyntheticPrDiagnostic', 'GITHUB_EVENT_NAME', 'pull_request',
+                      'GITHUB_ACTIONS', 'ImageOS', 'msix-signature-diagnostic.json'):
+            self.assertIn(guard, windows_test)
+
+        manual = job_block(text, 'trusted-manual')
+        self.assertEqual(len(upload_steps(manual)), 1)
+        self.assertEqual(path_entries(upload_steps(manual)[0]), [
+            r'${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json',
+        ])
 
     def test_build_creates_an_empty_output_directory_and_rejects_stale_contents(self):
         pwsh = shutil.which('pwsh')

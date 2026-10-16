@@ -38,6 +38,7 @@ $script:OriginalArtifactAcl = $null
 $script:PrivateRoot = $null
 $script:IdentityName = $null
 $script:OwnedProfileFiles = @()
+$script:LastSdkToolExitCode = $null
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
@@ -162,12 +163,14 @@ function Assert-CnMonMsixReceipt {
 
 function Invoke-CnMonMsixTool {
     param([string]$Executable, [string[]]$Arguments, [string]$LogPath)
+    $script:LastSdkToolExitCode = $null
     $module = Get-Module -Name 'msix-package'
     $exit = & $module {
         param([string]$Path, [string[]]$ToolArguments, [string]$PrivateLog)
         Invoke-CnMonMsixTool -ExecutablePath $Path -Arguments $ToolArguments -LogPath $PrivateLog
     } $Executable $Arguments $LogPath
     if ($exit -ne 0) {
+        $script:LastSdkToolExitCode = [int]$exit
         throw 'a Windows SDK packaging tool failed; private output was retained'
     }
 }
@@ -403,15 +406,103 @@ function Remove-CnMonMsixOwnedCertificate {
     if ($cleanupErrors.Count -gt 0) { throw 'one or more owned certificate objects could not be removed' }
 }
 
+function Test-CnMonMsixSyntheticPrDiagnostic {
+    param([string]$Mode, [object]$Identity)
+    return $Mode -ceq 'Hosted' -and
+        $env:GITHUB_ACTIONS -ceq 'true' -and
+        $env:GITHUB_EVENT_NAME -ceq 'pull_request' -and
+        $env:GITHUB_REPOSITORY -ceq 'evdanil/cn-mon' -and
+        $env:ImageOS -cmatch '^win' -and
+        $env:CNMON_MSIX_IDENTITY_NAME -ceq 'Example.CnMon' -and
+        $env:CNMON_MSIX_IDENTITY_PUBLISHER -ceq 'CN=Example, O=Example' -and
+        $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME -ceq 'Example Publisher' -and
+        $env:CNMON_MSIX_EXPECTED_PFN -ceq 'Example.CnMon_518g7wxbxvqf6' -and
+        [string]$Identity.Name -ceq 'Example.CnMon' -and
+        [string]$Identity.Publisher -ceq 'CN=Example, O=Example' -and
+        [string]$Identity.PublisherDisplayName -ceq 'Example Publisher' -and
+        [string]$Identity.ExpectedPFN -ceq 'Example.CnMon_518g7wxbxvqf6'
+}
+
+function Get-CnMonMsixSignatureDiagnostic {
+    param(
+        [string]$LogPath,
+        [int]$ExitCode,
+        [ValidateSet('candidate-verify', 'user-verify', 'certify-verify')][string]$Phase
+    )
+    $raw = if (Test-Path -LiteralPath $LogPath -PathType Leaf) { [IO.File]::ReadAllText($LogPath) } else { '' }
+    $hresults = @([regex]::Matches($raw, '(?i)\b0x[0-9a-f]{8}\b') | ForEach-Object { $_.Value.ToUpperInvariant() } | Sort-Object -Unique | Select-Object -First 4)
+    $reason = 'sdk_error_unclassified'
+    foreach ($hresult in $hresults) {
+        switch ($hresult) {
+            '0X800B0109' { $reason = 'untrusted_root'; break }
+            '0X800B0100' { $reason = 'no_signature'; break }
+            '0X800B010A' { $reason = 'certificate_chain_failure'; break }
+            '0X800B0101' { $reason = 'certificate_expired'; break }
+            '0X800B0110' { $reason = 'wrong_certificate_usage'; break }
+            '0X80096010' { $reason = 'signature_digest_mismatch'; break }
+        }
+        if ($reason -cne 'sdk_error_unclassified') { break }
+    }
+    return [ordered]@{
+        schema_version = 1
+        phase = $Phase
+        tool = 'signtool'
+        exit_code = $ExitCode
+        hresults = $hresults
+        reason = $reason
+    }
+}
+
+function Save-CnMonMsixSignatureDiagnostic {
+    param(
+        [string]$LogPath,
+        [string]$ArtifactDirectory,
+        [int]$ExitCode,
+        [ValidateSet('candidate-verify', 'user-verify', 'certify-verify')][string]$Phase,
+        [string]$Mode,
+        [object]$Identity
+    )
+    $privateDirectory = Join-Path $ArtifactDirectory 'private-signature-diagnostics'
+    New-Item -ItemType Directory -Force -Path $privateDirectory | Out-Null
+    $privateLog = Join-Path $privateDirectory "$Phase.log"
+    if (Test-Path -LiteralPath $privateLog) { throw 'private signature diagnostic already exists' }
+    if (Test-Path -LiteralPath $LogPath -PathType Leaf) {
+        Copy-Item -LiteralPath $LogPath -Destination $privateLog -ErrorAction Stop
+    }
+
+    if (Test-CnMonMsixSyntheticPrDiagnostic -Mode $Mode -Identity $Identity) {
+        $publicPath = Join-Path $ArtifactDirectory 'msix-signature-diagnostic.json'
+        if (Test-Path -LiteralPath $publicPath) { throw 'public signature diagnostic already exists' }
+        $diagnostic = Get-CnMonMsixSignatureDiagnostic -LogPath $LogPath -ExitCode $ExitCode -Phase $Phase
+        $json = ConvertTo-Json -InputObject $diagnostic -Depth 4
+        [IO.File]::WriteAllText($publicPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    }
+}
+
 function Assert-CnMonMsixSignature {
-    param([string]$Path, [string]$LogPath)
+    param(
+        [string]$Path,
+        [string]$LogPath,
+        [ValidateSet('candidate-verify', 'user-verify', 'certify-verify')][string]$Phase = 'candidate-verify',
+        [object]$Identity
+    )
     $script:CurrentGate = 'signature'
     $signtool = Join-Path $SdkBinDirectory 'signtool.exe'
     if (-not (Test-Path -LiteralPath $signtool -PathType Leaf)) {
         Set-CnMonMsixGate 'signature' 'incomplete'
         throw 'SignTool is unavailable'
     }
-    Invoke-CnMonMsixTool $signtool @('verify', '/pa', '/v', $Path) $LogPath
+    try {
+        Invoke-CnMonMsixTool $signtool @('verify', '/pa', '/v', $Path) $LogPath
+    }
+    catch {
+        if ($null -ne $script:LastSdkToolExitCode) {
+            try {
+                Save-CnMonMsixSignatureDiagnostic -LogPath $LogPath -ArtifactDirectory $ArtifactDirectory -ExitCode $script:LastSdkToolExitCode -Phase $Phase -Mode $Mode -Identity $Identity
+            } catch { }
+        }
+        throw
+    }
     Set-CnMonMsixGate 'signature' 'pass'
 }
 
@@ -803,7 +894,7 @@ function Invoke-CnMonMsixUserMode {
         Set-CnMonMsixGate 'signature' 'incomplete'
         throw 'test certificate is not already trusted for the current user'
     }
-    Assert-CnMonMsixSignature $PackagePath (Join-Path $ArtifactDirectory 'msix-user-signature.log')
+    Assert-CnMonMsixSignature $PackagePath (Join-Path $ArtifactDirectory 'msix-user-signature.log') -Phase 'user-verify' -Identity $identity
     if (-not (Get-Command Add-AppxPackage -ErrorAction SilentlyContinue) -or -not (Get-Command Remove-AppxPackage -ErrorAction SilentlyContinue)) {
         $script:CurrentGate = 'package_registration'
         Set-CnMonMsixGate 'package_registration' 'incomplete'
@@ -1135,7 +1226,7 @@ function Invoke-CnMonMsixHostedMode {
 
     $signtool = Join-Path $SdkBinDirectory 'signtool.exe'
     Invoke-CnMonMsixTool $signtool @('sign', '/fd', 'SHA256', '/s', 'My', '/sm', '/sha1', $cert.Thumbprint, $candidate) (Join-Path $script:PrivateRoot 'candidate-sign.log')
-    Assert-CnMonMsixSignature $candidate (Join-Path $script:PrivateRoot 'candidate-verify.log')
+    Assert-CnMonMsixSignature $candidate (Join-Path $script:PrivateRoot 'candidate-verify.log') -Phase 'candidate-verify' -Identity $identity
     $signedUnpacked = Join-Path $script:PrivateRoot 'signed-unpacked'
     New-Item -ItemType Directory -Path $signedUnpacked | Out-Null
     Invoke-CnMonMsixTool $makeappx @('unpack', '/p', $candidate, '/d', $signedUnpacked, '/no') (Join-Path $script:PrivateRoot 'signed-unpack.log')
@@ -1308,7 +1399,7 @@ public static class CnMonMsixActiveSession
         $script:CreatedCertificate = $thumb
     }
     $script:CurrentGate = 'signature'
-    Assert-CnMonMsixSignature $PackagePath (Join-Path $script:PrivateRoot 'certify-signature.log')
+    Assert-CnMonMsixSignature $PackagePath (Join-Path $script:PrivateRoot 'certify-signature.log') -Phase 'certify-verify' -Identity $identity
     $helpLog = Join-Path $ArtifactDirectory 'msix-wack-help.log'
     & $appcert '/?' *> $helpLog
     if ($LASTEXITCODE -ne 0) {
