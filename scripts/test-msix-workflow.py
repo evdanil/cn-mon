@@ -304,6 +304,18 @@ class MsixWorkflowTests(unittest.TestCase):
                       'GITHUB_ACTIONS', 'ImageOS', 'msix-signature-diagnostic.json'):
             self.assertIn(guard, windows_test)
 
+        self.assertNotIn('msix-signature-diagnostic-status.json', text)
+        helper = CI_HELPER_PATH.read_text(encoding='utf-8')
+        self.assertIn('function Write-CnMonMsixSignatureDiagnosticStatus', helper)
+        for field in ('identity_publisher_env_matches', 'expected_pfn_matches',
+                      'sdk_exit_captured', 'private_log_retained', 'save_error_kind',
+                      'public_diagnostic_written'):
+            self.assertIn(field, helper)
+        self.assertIn('MSIX signature diagnostic status: invalid', helper)
+        hosted = re.search(r"(?ms)^    'Hosted' \{(.*?)^    'Certify' \{", helper).group(1)
+        self.assertLess(hosted.index('Write-CnMonMsixSignatureDiagnosticStatus'),
+                        hosted.index('hosted installed-package qualification did not pass'))
+
         manual = job_block(text, 'trusted-manual')
         self.assertEqual(len(upload_steps(manual)), 1)
         self.assertEqual(path_entries(upload_steps(manual)[0]), [

@@ -40,6 +40,61 @@ function Get-JobDirectory {
     return $jobDirectory
 }
 
+function Write-CnMonMsixSignatureDiagnosticStatus([string]$Path) {
+    if ($env:GITHUB_ACTIONS -cne 'true' -or $env:GITHUB_EVENT_NAME -cne 'pull_request' -or
+        $env:GITHUB_REPOSITORY -cne 'evdanil/cn-mon') {
+        return
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        Write-Host 'MSIX signature diagnostic status: unavailable'
+        return
+    }
+    try {
+        $status = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -ErrorAction Stop
+        $guardNames = @(
+            'mode_hosted', 'github_actions', 'event_pull_request', 'repository_expected',
+            'image_os_windows', 'identity_name_env_matches', 'identity_publisher_env_matches',
+            'publisher_display_name_env_matches', 'expected_pfn_env_matches',
+            'identity_name_matches', 'identity_publisher_matches',
+            'publisher_display_name_matches', 'expected_pfn_matches', 'all'
+        )
+        $booleanNames = @($guardNames | ForEach-Object { "guard_$_" }) + @(
+            'sdk_exit_captured', 'private_log_retained', 'public_diagnostic_written'
+        )
+        $expectedNames = @('schema_version', 'failure_kind', 'save_status', 'save_error_kind') + $booleanNames
+        $actualNames = @($status.PSObject.Properties.Name | Sort-Object)
+        $expectedNames = @($expectedNames | Sort-Object)
+        if (($actualNames -join "`n") -cne ($expectedNames -join "`n") -or
+            $status.schema_version -ne 1 -or
+            $status.failure_kind -notin @('sdk_nonzero', 'sdk_invocation_error') -or
+            $status.save_status -notin @('not_attempted', 'success', 'failure') -or
+            $status.save_error_kind -notin @('none', 'io', 'access_denied', 'path', 'argument', 'other')) {
+            Write-Host 'MSIX signature diagnostic status: invalid'
+            return
+        }
+        foreach ($name in $booleanNames) {
+            if ($status.$name -isnot [bool]) {
+                Write-Host 'MSIX signature diagnostic status: invalid'
+                return
+            }
+        }
+        if (($status.failure_kind -eq 'sdk_nonzero') -ne $status.sdk_exit_captured -or
+            ($status.save_status -eq 'failure') -ne ($status.save_error_kind -ne 'none') -or
+            ($status.save_status -ne 'failure' -and $status.save_error_kind -ne 'none')) {
+            Write-Host 'MSIX signature diagnostic status: invalid'
+            return
+        }
+        $flags = foreach ($name in $booleanNames) {
+            $value = if ($status.$name) { 'true' } else { 'false' }
+            "$name=$value"
+        }
+        Write-Host ("MSIX signature diagnostic status: {0} failure_kind={1} save_status={2} save_error_kind={3}" -f (($flags -join ' '), $status.failure_kind, $status.save_status, $status.save_error_kind))
+    }
+    catch {
+        Write-Host 'MSIX signature diagnostic status: invalid'
+    }
+}
+
 function Assert-CandidateReceipt([string]$PackagePath, [string]$ReceiptPath) {
     $receipt = Get-Content -LiteralPath $ReceiptPath -Raw | ConvertFrom-Json
     $release = Get-ReleaseMetadata
@@ -230,6 +285,7 @@ switch ($Mode) {
         $log = Join-Path $directory 'hosted-qualification.log'
         & pwsh -NoProfile -File $tester -Mode Hosted -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory *> $log
         if ($LASTEXITCODE -ne 0) {
+            Write-CnMonMsixSignatureDiagnosticStatus -Path (Join-Path $evidenceDirectory 'msix-signature-diagnostic-status.json')
             throw 'hosted installed-package qualification did not pass; details remain job-local'
         }
 

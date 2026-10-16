@@ -406,21 +406,31 @@ function Remove-CnMonMsixOwnedCertificate {
     if ($cleanupErrors.Count -gt 0) { throw 'one or more owned certificate objects could not be removed' }
 }
 
+function Get-CnMonMsixSyntheticPrDiagnosticGuard {
+    param([string]$Mode, [object]$Identity)
+    $guard = [ordered]@{
+        mode_hosted = $Mode -ceq 'Hosted'
+        github_actions = $env:GITHUB_ACTIONS -ceq 'true'
+        event_pull_request = $env:GITHUB_EVENT_NAME -ceq 'pull_request'
+        repository_expected = $env:GITHUB_REPOSITORY -ceq 'evdanil/cn-mon'
+        image_os_windows = $env:ImageOS -cmatch '^win'
+        identity_name_env_matches = $env:CNMON_MSIX_IDENTITY_NAME -ceq 'Example.CnMon'
+        identity_publisher_env_matches = $env:CNMON_MSIX_IDENTITY_PUBLISHER -ceq 'CN=Example, O=Example'
+        publisher_display_name_env_matches = $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME -ceq 'Example Publisher'
+        expected_pfn_env_matches = $env:CNMON_MSIX_EXPECTED_PFN -ceq 'Example.CnMon_518g7wxbxvqf6'
+        identity_name_matches = [string]$Identity.Name -ceq 'Example.CnMon'
+        identity_publisher_matches = [string]$Identity.Publisher -ceq 'CN=Example, O=Example'
+        publisher_display_name_matches = [string]$Identity.PublisherDisplayName -ceq 'Example Publisher'
+        expected_pfn_matches = [string]$Identity.ExpectedPFN -ceq 'Example.CnMon_518g7wxbxvqf6'
+    }
+    $guard.all = @($guard.Values | Where-Object { -not [bool]$_ }).Count -eq 0
+    return $guard
+}
+
 function Test-CnMonMsixSyntheticPrDiagnostic {
     param([string]$Mode, [object]$Identity)
-    return $Mode -ceq 'Hosted' -and
-        $env:GITHUB_ACTIONS -ceq 'true' -and
-        $env:GITHUB_EVENT_NAME -ceq 'pull_request' -and
-        $env:GITHUB_REPOSITORY -ceq 'evdanil/cn-mon' -and
-        $env:ImageOS -cmatch '^win' -and
-        $env:CNMON_MSIX_IDENTITY_NAME -ceq 'Example.CnMon' -and
-        $env:CNMON_MSIX_IDENTITY_PUBLISHER -ceq 'CN=Example, O=Example' -and
-        $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME -ceq 'Example Publisher' -and
-        $env:CNMON_MSIX_EXPECTED_PFN -ceq 'Example.CnMon_518g7wxbxvqf6' -and
-        [string]$Identity.Name -ceq 'Example.CnMon' -and
-        [string]$Identity.Publisher -ceq 'CN=Example, O=Example' -and
-        [string]$Identity.PublisherDisplayName -ceq 'Example Publisher' -and
-        [string]$Identity.ExpectedPFN -ceq 'Example.CnMon_518g7wxbxvqf6'
+    $guard = Get-CnMonMsixSyntheticPrDiagnosticGuard -Mode $Mode -Identity $Identity
+    return [bool]$guard.all
 }
 
 function Get-CnMonMsixSignatureDiagnostic {
@@ -479,6 +489,35 @@ function Save-CnMonMsixSignatureDiagnostic {
     }
 }
 
+function Save-CnMonMsixSignatureDiagnosticStatus {
+    param(
+        [string]$ArtifactDirectory,
+        [string]$Mode,
+        [System.Collections.IDictionary]$Guard,
+        [bool]$SdkExitCaptured,
+        [bool]$PrivateLogRetained,
+        [ValidateSet('not_attempted', 'success', 'failure')][string]$SaveStatus,
+        [ValidateSet('none', 'io', 'access_denied', 'path', 'argument', 'other')][string]$SaveErrorKind,
+        [bool]$PublicDiagnosticWritten
+    )
+    if ($Mode -cne 'Hosted' -or $env:GITHUB_ACTIONS -cne 'true' -or
+        $env:GITHUB_EVENT_NAME -cne 'pull_request' -or $env:GITHUB_REPOSITORY -cne 'evdanil/cn-mon') {
+        return
+    }
+    $status = [ordered]@{ schema_version = 1 }
+    foreach ($key in $Guard.Keys) { $status["guard_$key"] = [bool]$Guard[$key] }
+    $status.sdk_exit_captured = $SdkExitCaptured
+    $status.private_log_retained = $PrivateLogRetained
+    $status.failure_kind = if ($SdkExitCaptured) { 'sdk_nonzero' } else { 'sdk_invocation_error' }
+    $status.save_status = $SaveStatus
+    $status.save_error_kind = $SaveErrorKind
+    $status.public_diagnostic_written = $PublicDiagnosticWritten
+    $path = Join-Path $ArtifactDirectory 'msix-signature-diagnostic-status.json'
+    if (Test-Path -LiteralPath $path) { throw 'signature diagnostic status already exists' }
+    $json = ConvertTo-Json -InputObject $status -Depth 4
+    [IO.File]::WriteAllText($path, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+}
+
 function Assert-CnMonMsixSignature {
     param(
         [string]$Path,
@@ -496,11 +535,32 @@ function Assert-CnMonMsixSignature {
         Invoke-CnMonMsixTool $signtool @('verify', '/pa', '/v', $Path) $LogPath
     }
     catch {
-        if ($null -ne $script:LastSdkToolExitCode) {
+        $sdkExitCaptured = $null -ne $script:LastSdkToolExitCode
+        $guard = Get-CnMonMsixSyntheticPrDiagnosticGuard -Mode $Mode -Identity $Identity
+        $saveStatus = 'not_attempted'
+        $saveErrorKind = 'none'
+        if ($sdkExitCaptured) {
             try {
                 Save-CnMonMsixSignatureDiagnostic -LogPath $LogPath -ArtifactDirectory $ArtifactDirectory -ExitCode $script:LastSdkToolExitCode -Phase $Phase -Mode $Mode -Identity $Identity
-            } catch { }
+                $saveStatus = 'success'
+            }
+            catch {
+                $saveStatus = 'failure'
+                $saveErrorKind = switch ($_.Exception.GetType().Name) {
+                    { $_ -in @('IOException', 'FileLoadException') } { 'io'; break }
+                    'UnauthorizedAccessException' { 'access_denied'; break }
+                    { $_ -in @('PathTooLongException', 'DirectoryNotFoundException') } { 'path'; break }
+                    'ArgumentException' { 'argument'; break }
+                    default { 'other' }
+                }
+            }
         }
+        $privateDirectory = Join-Path $ArtifactDirectory 'private-signature-diagnostics'
+        $privateLog = Join-Path $privateDirectory "$Phase.log"
+        $publicPath = Join-Path $ArtifactDirectory 'msix-signature-diagnostic.json'
+        try {
+            Save-CnMonMsixSignatureDiagnosticStatus -ArtifactDirectory $ArtifactDirectory -Mode $Mode -Guard $guard -SdkExitCaptured:$sdkExitCaptured -PrivateLogRetained:(Test-Path -LiteralPath $privateLog -PathType Leaf) -SaveStatus $saveStatus -SaveErrorKind $saveErrorKind -PublicDiagnosticWritten:(Test-Path -LiteralPath $publicPath -PathType Leaf)
+        } catch { }
         throw
     }
     Set-CnMonMsixGate 'signature' 'pass'

@@ -140,6 +140,7 @@ function Invoke-MockedPackageLifecycle {
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $targetPath = Join-Path $PSScriptRoot 'test-msix-windows.ps1'
 $modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
+$ciHelperPath = Join-Path $PSScriptRoot 'msix-ci.ps1'
 $goTestPath = Join-Path $repoRoot 'cmd/cn-mon'
 $parseErrors = $null
 $sourceAst = [System.Management.Automation.Language.Parser]::ParseFile($targetPath, [ref]$null, [ref]$parseErrors)
@@ -150,6 +151,11 @@ $moduleParseErrors = $null
 $moduleAst = [System.Management.Automation.Language.Parser]::ParseFile($modulePath, [ref]$null, [ref]$moduleParseErrors)
 if ($moduleParseErrors.Count -gt 0) {
     throw "packaging module did not parse: $($moduleParseErrors[0].Message)"
+}
+$ciParseErrors = $null
+$ciAst = [System.Management.Automation.Language.Parser]::ParseFile($ciHelperPath, [ref]$null, [ref]$ciParseErrors)
+if ($ciParseErrors.Count -gt 0) {
+    throw "CI helper did not parse: $($ciParseErrors[0].Message)"
 }
 
 # Import only pure helper definitions; the qualification script's top-level entry point is never executed.
@@ -167,9 +173,11 @@ $requiredFunctions = @(
     'Get-CnMonMsixProfileTargets',
     'Invoke-CnMonMsixNativeTests',
     'Assert-CnMonMsixSignature',
+    'Get-CnMonMsixSyntheticPrDiagnosticGuard',
     'Test-CnMonMsixSyntheticPrDiagnostic',
     'Get-CnMonMsixSignatureDiagnostic',
-    'Save-CnMonMsixSignatureDiagnostic'
+    'Save-CnMonMsixSignatureDiagnostic',
+    'Save-CnMonMsixSignatureDiagnosticStatus'
 )
 $functionAsts = @($sourceAst.FindAll({
     param($candidate)
@@ -181,6 +189,14 @@ $fixtureFilesFunctionAsts = @($sourceAst.FindAll({
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $candidate.Name -eq 'Get-CnMonMsixFixtureFiles'
 }, $true))
+$ciStatusFunctionAsts = @($ciAst.FindAll({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -eq 'Write-CnMonMsixSignatureDiagnosticStatus'
+}, $true))
+if ($ciStatusFunctionAsts.Count -ne 1) {
+    throw 'safe CI diagnostic status writer is missing'
+}
 $moduleHelperNames = @('Get-CnMonMsixSha256', 'Test-CnMonMsixHash', 'Assert-CnMonMsixPayload')
 $moduleFunctionAsts = @($moduleAst.FindAll({
     param($candidate)
@@ -200,7 +216,7 @@ if ($missingFunctions.Count -gt 0) {
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-harness-test-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tempRoot
 $helperPath = Join-Path $tempRoot 'extracted-helpers.ps1'
-$helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFunctionAsts) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+$helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFunctionAsts) + @($ciStatusFunctionAsts) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
 [IO.File]::WriteAllText($helperPath, $helperText, [Text.UTF8Encoding]::new($false))
 . $helperPath
 $script:MakeAppxFootprint = @('[Content_Types].xml', 'AppxBlockMap.xml')
@@ -583,6 +599,9 @@ exit 0
                 ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
             }
             Assert-True (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'Hosted' -Identity $syntheticIdentity) 'exact golden PR identity was not authorized for a safe diagnostic'
+            $guardStatus = Get-CnMonMsixSyntheticPrDiagnosticGuard -Mode 'Hosted' -Identity $syntheticIdentity
+            Assert-True $guardStatus.all 'exact synthetic fixture guard did not report a complete match'
+            foreach ($guard in $guardStatus.Keys) { Assert-True ([bool]$guardStatus[$guard]) "expected synthetic guard '$guard' to be true" }
 
             $privateRoot = Join-Path $tempRoot 'signature-diagnostic-source'
             $privateArtifactDirectory = Join-Path $tempRoot 'signature-diagnostic-private-artifacts'
@@ -599,11 +618,12 @@ mock PFX payload must stay private
 stderr:
 '@
             $script:mockSignatureLog = $rawLog
+            $script:mockSignatureExitMode = 'captured'
             function Invoke-CnMonMsixTool {
                 [CmdletBinding()]
                 param([string]$Executable, [string[]]$Arguments, [string]$LogPath)
                 [IO.File]::WriteAllText($LogPath, $script:mockSignatureLog, [Text.UTF8Encoding]::new($false))
-                $script:LastSdkToolExitCode = 1
+                if ($script:mockSignatureExitMode -eq 'captured') { $script:LastSdkToolExitCode = 1 }
                 throw 'mock SDK child failed'
             }
             $sdkDirectory = Join-Path $tempRoot 'signature-sdk'
@@ -626,14 +646,37 @@ stderr:
             Assert-Equal $diagnostic.phase 'candidate-verify' 'signature phase was not retained'
 
             $publicPath = Join-Path $privateArtifactDirectory 'msix-signature-diagnostic.json'
+            $statusPath = Join-Path $privateArtifactDirectory 'msix-signature-diagnostic-status.json'
             $retainedPrivateLog = Join-Path (Join-Path $privateArtifactDirectory 'private-signature-diagnostics') 'candidate-verify.log'
             Assert-True (Test-Path -LiteralPath $publicPath -PathType Leaf) 'golden synthetic PR did not receive its allowlisted diagnostic'
+            Assert-True (Test-Path -LiteralPath $statusPath -PathType Leaf) 'PR capture status was not retained for safe hosted diagnosis'
             Assert-True (Test-Path -LiteralPath $retainedPrivateLog -PathType Leaf) 'failed-child SDK log was not retained privately'
             Assert-Equal ([IO.File]::ReadAllText($retainedPrivateLog)) $rawLog 'private SDK log was modified while being retained'
             $publicText = [IO.File]::ReadAllText($publicPath)
+            $statusText = [IO.File]::ReadAllText($statusPath)
+            $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json -AsHashtable
+            Assert-Equal $status.schema_version 1 'diagnostic status schema version was invalid'
+            Assert-True $status.guard_all 'diagnostic status did not record the complete synthetic guard'
+            Assert-True $status.sdk_exit_captured 'diagnostic status did not record the child exit capture'
+            Assert-True $status.private_log_retained 'diagnostic status did not record private log retention'
+            Assert-Equal $status.failure_kind 'sdk_nonzero' 'diagnostic failure kind was not constrained'
+            Assert-Equal $status.save_status 'success' 'diagnostic save status was not recorded'
+            Assert-Equal $status.save_error_kind 'none' 'unexpected safe diagnostic save error kind'
+            Assert-True $status.public_diagnostic_written 'diagnostic status did not record public synthetic JSON'
             foreach ($sensitive in @('CN=Example, O=Example', 'Example Publisher', 'Example.CnMon_518g7wxbxvqf6', '0123456789ABCDEF0123456789ABCDEF01234567', 'C:\runner\temp', 'BEGIN PRIVATE KEY', 'mock PFX payload')) {
                 Assert-True ($publicText -notmatch [regex]::Escape($sensitive)) "synthetic diagnostic leaked '$sensitive'"
+                Assert-True ($statusText -notmatch [regex]::Escape($sensitive)) "diagnostic status leaked '$sensitive'"
             }
+            $ciStatusOutput = (Write-CnMonMsixSignatureDiagnosticStatus -Path $statusPath 6>&1 | Out-String).Trim()
+            Assert-True ($ciStatusOutput.Contains('guard_image_os_windows=true')) 'CI status did not expose the verified Windows boolean'
+            Assert-True ($ciStatusOutput.Contains('save_status=success')) 'CI status did not expose the fixed save result'
+            $invalidStatusPath = Join-Path $privateArtifactDirectory 'invalid-diagnostic-status.json'
+            $invalidStatus = [ordered]@{}
+            foreach ($key in $status.Keys) { $invalidStatus[$key] = $status[$key] }
+            $invalidStatus.unexpected = 'CN=Example, O=Example'
+            [IO.File]::WriteAllText($invalidStatusPath, (ConvertTo-Json -InputObject $invalidStatus -Depth 4), [Text.UTF8Encoding]::new($false))
+            $invalidOutput = (Write-CnMonMsixSignatureDiagnosticStatus -Path $invalidStatusPath 6>&1 | Out-String).Trim()
+            Assert-Equal $invalidOutput 'MSIX signature diagnostic status: invalid' 'CI status logger accepted unrecognized fields or exposed their values'
             Remove-Item -LiteralPath $privateRoot -Recurse -Force
             Assert-True (Test-Path -LiteralPath $retainedPrivateLog -PathType Leaf) 'private SDK evidence did not survive PrivateRoot cleanup'
 
@@ -646,6 +689,10 @@ stderr:
             }
             $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Private Example Publisher'
             Assert-True (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'Hosted' -Identity $nonGoldenIdentity)) 'non-golden identity was authorized for public diagnostics'
+            $nonGoldenGuard = Get-CnMonMsixSyntheticPrDiagnosticGuard -Mode 'Hosted' -Identity $nonGoldenIdentity
+            Assert-True (-not $nonGoldenGuard.all) 'non-golden identity guard did not report a mismatch'
+            Assert-True (-not $nonGoldenGuard.identity_publisher_env_matches) 'publisher environment mismatch was not isolated'
+            Assert-True (-not $nonGoldenGuard.identity_publisher_matches) 'publisher object mismatch was not isolated'
             $realArtifactDirectory = Join-Path $tempRoot 'real-signature-diagnostic-artifacts'
             $realPrivateRoot = Join-Path $tempRoot 'real-signature-diagnostic-source'
             $null = New-Item -ItemType Directory -Path $realArtifactDirectory, $realPrivateRoot
@@ -655,11 +702,43 @@ stderr:
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $realArtifactDirectory 'msix-signature-diagnostic.json'))) 'non-golden identity produced a public diagnostic'
             Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $realArtifactDirectory 'private-signature-diagnostics') 'candidate-verify.log')) 'real-run SDK failure was not retained privately'
 
+            $missingExitDirectory = Join-Path $tempRoot 'signature-missing-exit-artifacts'
+            $missingExitSource = Join-Path $tempRoot 'signature-missing-exit-source'
+            $null = New-Item -ItemType Directory -Path $missingExitDirectory, $missingExitSource
+            $ArtifactDirectory = $missingExitDirectory
+            $script:mockSignatureExitMode = 'missing'
+            $script:LastSdkToolExitCode = $null
+            try { Assert-CnMonMsixSignature -Path 'candidate.msix' -LogPath (Join-Path $missingExitSource 'candidate-verify.log') -Identity $syntheticIdentity }
+            catch { $failedChild = $true }
+            $missingExitStatus = Get-Content -LiteralPath (Join-Path $missingExitDirectory 'msix-signature-diagnostic-status.json') -Raw | ConvertFrom-Json -AsHashtable
+            Assert-Equal $missingExitStatus.failure_kind 'sdk_invocation_error' 'missing SDK exit was not classified safely'
+            Assert-True (-not $missingExitStatus.sdk_exit_captured) 'missing SDK exit was incorrectly recorded as captured'
+            Assert-Equal $missingExitStatus.save_status 'not_attempted' 'save ran without an SDK exit code'
+
+            $saveFailureDirectory = Join-Path $tempRoot 'signature-save-failure-artifacts'
+            $saveFailureSource = Join-Path $tempRoot 'signature-save-failure-source'
+            $saveFailurePrivate = Join-Path $saveFailureDirectory 'private-signature-diagnostics'
+            $null = New-Item -ItemType Directory -Path $saveFailurePrivate, $saveFailureSource
+            [IO.File]::WriteAllText((Join-Path $saveFailurePrivate 'candidate-verify.log'), 'pre-existing private evidence', [Text.UTF8Encoding]::new($false))
+            $ArtifactDirectory = $saveFailureDirectory
+            $script:mockSignatureExitMode = 'captured'
+            $script:LastSdkToolExitCode = $null
+            try { Assert-CnMonMsixSignature -Path 'candidate.msix' -LogPath (Join-Path $saveFailureSource 'candidate-verify.log') -Identity $syntheticIdentity }
+            catch { $failedChild = $true }
+            $saveFailureStatus = Get-Content -LiteralPath (Join-Path $saveFailureDirectory 'msix-signature-diagnostic-status.json') -Raw | ConvertFrom-Json -AsHashtable
+            Assert-Equal $saveFailureStatus.save_status 'failure' 'failed diagnostic copy was not distinguished'
+            Assert-Equal $saveFailureStatus.save_error_kind 'other' 'failed diagnostic copy did not map to a fixed error kind'
+            Assert-True (-not $saveFailureStatus.public_diagnostic_written) 'failed diagnostic copy reported a public diagnostic'
+
             $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
             $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
             $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
             Assert-True (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'Hosted' -Identity $syntheticIdentity)) 'manual job was authorized for public signature diagnostics'
             Assert-True (-not (Test-CnMonMsixSyntheticPrDiagnostic -Mode 'User' -Identity $syntheticIdentity)) 'non-Hosted mode was authorized for public signature diagnostics'
+            Save-CnMonMsixSignatureDiagnosticStatus -ArtifactDirectory $realArtifactDirectory -Mode 'Hosted' -Guard $guardStatus -SdkExitCaptured:$true -PrivateLogRetained:$true -SaveStatus success -SaveErrorKind none -PublicDiagnosticWritten:$false
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $realArtifactDirectory 'msix-signature-diagnostic-status.json'))) 'manual job received synthetic capture status'
+            $manualOutput = (Write-CnMonMsixSignatureDiagnosticStatus -Path $statusPath 6>&1 | Out-String).Trim()
+            Assert-Equal $manualOutput '' 'manual job exposed synthetic signature diagnostic status'
         }
         finally {
             foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') }
