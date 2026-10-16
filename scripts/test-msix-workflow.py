@@ -676,7 +676,7 @@ function pwsh {
             results = {
                 'schema_version': 1,
                 'mode': 'Hosted',
-                'overall': 'incomplete',
+                'overall': 'pass',
                 'gates': {'identity': 'pass', 'package_hash': 'pass'},
             }
             (evidence / 'msix-native-results.json').write_text(json.dumps(results), encoding='utf-8')

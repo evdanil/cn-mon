@@ -327,6 +327,21 @@ switch ($Mode) {
                         $gates[$name] = [string]$results.gates.$name
                     }
                 }
+                $hasFailure = $results.overall -eq 'fail' -or
+                    @($gates.Values | Where-Object { $_ -eq 'fail' }).Count -gt 0
+                $completePassMap = if ($results.mode -eq 'Hosted') {
+                    $gates.wack -eq 'incomplete' -and
+                        @($gateNames | Where-Object { $_ -ne 'wack' -and $gates[$_] -ne 'pass' }).Count -eq 0
+                } else {
+                    @($gateNames | Where-Object { $gates[$_] -ne 'pass' }).Count -eq 0
+                }
+                if ($hasFailure) {
+                    $overall = 'fail'
+                } elseif ($results.overall -eq 'pass' -and $completePassMap) {
+                    $overall = 'pass'
+                } else {
+                    $overall = 'incomplete'
+                }
             } catch {
                 $nativeEvidence = 'invalid'
             }
