@@ -241,12 +241,20 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertIn('scripts/msix-ci.ps1 -Mode Hosted -PackageDirectory input', hosted)
         certify = named_step(qualify, 'Run WACK certification gate')
         self.assertIn('scripts/msix-ci.ps1 -Mode Certify', certify)
+        evidence = named_step(qualify, 'Upload synthetic qualification evidence')
+        self.assertIn("if: always() && !cancelled() && steps.qualify.outcome == 'success'", evidence)
         helper = CI_HELPER_PATH.read_text(encoding='utf-8')
         for requirement in ('scripts/test-msix-windows.ps1', '-Mode Hosted', '-Mode Certify',
                             'package_sha256', 'archive_sha256', 'binary_sha256',
-                            'packaging_revision', 'Get-SourceRevision', 'Assert-NativeResults'):
+                            'packaging_revision', 'Get-SourceRevision', 'Read-NativeResults',
+                            'Assert-NativeResults'):
             self.assertIn(requirement, helper)
-        self.assertIn("$results.mode -cne 'Certify'", helper)
+        self.assertIn("$results.mode -cne $ExpectedMode", helper)
+        certify_branch = re.search(r"(?ms)^    'Certify' \{(.*?)^    'Summary' \{", helper).group(1)
+        self.assertLess(certify_branch.index('Read-NativeResults'),
+                        certify_branch.index('Write-GateOutput'))
+        self.assertLess(certify_branch.index('Write-GateOutput'),
+                        certify_branch.index('Assert-NativeResults'))
 
     def test_public_artifact_paths_are_exact_and_manual_uploads_summary_only(self):
         text = workflow_text()
@@ -276,11 +284,11 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertEqual(path_entries(qualify_uploads[1]), [summary])
         self.assertEqual(path_entries(manual_uploads[0]), [summary])
         self.assertIn("if: steps.package.outcome == 'success'", package_uploads[0])
-        self.assertIn("if: steps.qualify.outcome == 'success'", qualify_uploads[0])
+        self.assertIn("if: always() && !cancelled() && steps.qualify.outcome == 'success'", qualify_uploads[0])
         for upload in package_uploads[1:] + qualify_uploads[1:] + manual_uploads:
             self.assertIn('if: always()', upload)
-        for upload in package_uploads[:1] + qualify_uploads[:1]:
-            self.assertIn("if: steps.", upload)
+        self.assertIn("steps.package.outcome == 'success'", package_uploads[0])
+        self.assertIn("steps.qualify.outcome == 'success'", qualify_uploads[0])
         for upload in package_uploads + qualify_uploads + manual_uploads:
             self.assertNotRegex(upload.lower(), r'\.pfx|\.p12|\.key|wack\.xml|wack\.html|\.log')
 
@@ -300,14 +308,16 @@ class MsixWorkflowTests(unittest.TestCase):
         windows_test = (ROOT / 'scripts' / 'test-msix-windows.ps1').read_text(encoding='utf-8')
         for golden_value in SYNTHETIC_IDENTITY.values():
             self.assertIn(golden_value, windows_test)
-        for guard in ('Test-CnMonMsixSyntheticPrDiagnostic', 'GITHUB_EVENT_NAME', 'pull_request',
+        for guard in ('Test-CnMonMsixSyntheticPrDiagnostic', 'Save-CnMonMsixSignatureFailureEvidence',
+                      'CurrentDiagnosticPhase', 'GITHUB_EVENT_NAME', 'pull_request',
                       'GITHUB_ACTIONS', 'ImageOS', 'msix-signature-diagnostic.json'):
             self.assertIn(guard, windows_test)
 
         self.assertNotIn('msix-signature-diagnostic-status.json', text)
         helper = CI_HELPER_PATH.read_text(encoding='utf-8')
         self.assertIn('function Write-CnMonMsixSignatureDiagnosticStatus', helper)
-        for field in ('identity_publisher_env_matches', 'expected_pfn_matches',
+        for field in ('identity_publisher_env_matches', 'expected_pfn_matches', 'mode_user',
+                      'phase', 'trust_presence_checked', 'trusted_certificate_present',
                       'sdk_exit_captured', 'private_log_retained', 'save_error_kind',
                       'public_diagnostic_written'):
             self.assertIn(field, helper)

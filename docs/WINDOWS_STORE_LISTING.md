@@ -49,6 +49,16 @@ cn-mon is a terminal tool with no graphical dashboard or background monitoring s
 
 The manifest declares Windows Desktop minimum version 10.0.17763.0 and x64 architecture. The declared minimum has not been runtime-qualified with the installed package. Do not turn the manifest minimum into a claim that every listed Windows build has been tested.
 
+**Price:** Free. The current app has no paid features, subscriptions, or in-app purchases.
+
+**Market availability:** No custom market restrictions were requested. Actual Partner Center market settings are not confirmed in this draft.
+
+**License:** Apache License, Version 2.0, matching the repository's root `LICENSE` file.
+
+**Additional license terms field (copy-ready single URL):** https://github.com/evdanil/cn-mon/blob/main/LICENSE
+
+The Windows package payload includes both `LICENSE` and `THIRD_PARTY_NOTICES.md`. Preserve both; the Apache-2.0 terms for first-party code do not replace the notices and licenses for third-party code. The Store field above should contain only the single license URL.
+
 **Support contact:** https://github.com/evdanil/cn-mon/issues
 
 **Proposed privacy policy URL:** https://github.com/evdanil/cn-mon/blob/main/docs/PRIVACY.md
@@ -114,10 +124,9 @@ Keep the actual screenshots as source captures, preserve the console context tha
 
 - Confirm the exact reserved Store title spelling in Partner Center.
 - Choose the primary category. “Developer tools > Networking” is a reasonable starting proposal, not a completed selection.
-- Set price, market availability, and release timing.
-- Complete the current IARC age-rating questionnaire from the app's actual content and behavior; do not assign a rating from this draft.
+- Set release timing.
+- Complete the mandatory IARC questionnaire for the first submission, including for a free app. Microsoft generates the applicable age rating from the answers; this draft does not assign one.
 - Review the privacy policy and determine the Partner Center personal-information declaration for the package's declared capabilities. Microsoft may require a privacy policy based on declared capabilities even when the app itself does not upload user data.
-- Decide whether to use the Standard Application License Terms or provide different Store license terms. The repository's Apache-2.0 utility-code license does not decide the Store customer-license field.
 - Confirm any publisher display name and package listing name in Partner Center privately. Keep reserved identity values out of public files.
 - Omit the optional website field unless the owner supplies a product webpage. The GitHub Issues URL above is the selected support contact link.
 
@@ -128,10 +137,11 @@ Checked 2026-10-16 against Microsoft's current MSIX documentation:
 - [MSIX Store listing fields and limits](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/add-and-edit-store-listing-info): description up to 10,000 characters; product features up to 20, each no more than 200 characters; short description up to 1,000 characters and recommended under 270; the “What's new” field is up to 1,500 characters and should be blank for an initial submission. The description must be plain text without HTML, code snippets, or URLs.
 - [Reserved app names](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/reserve-your-apps-name): the title must be reserved; Microsoft documents a 256-character app-name maximum.
 - [MSIX supplemental listing fields](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/add-additional-information): up to seven search terms, no more than 40 characters each.
+- [MSIX additional license terms](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/add-additional-information): the field accepts one URL displayed as a link, or up to 10,000 characters of plain text. The repository `LICENSE` is 11,358 characters, so use the single URL above to link its exact Apache-2.0 text without rewriting it; keep `THIRD_PARTY_NOTICES.md` in the package as well.
 - [MSIX screenshots and images](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/screenshots-and-images): one desktop screenshot is required; Microsoft's guidance recommends at least four. Desktop PNGs must be at least 1366 × 768 and no larger than 50 MB; captions may be up to 200 characters.
 - [MSIX support and privacy information](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/support-info): a privacy policy is required when the app accesses, collects, or transmits personal information, and Microsoft may require one based on package capabilities. The support contact field is recommended for non-Xbox submissions.
 - [MSIX categories](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/categories-and-subcategories): a primary category is required; “Developer tools > Networking” is available.
-- [MSIX age ratings](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/age-ratings?pivots=store-installer-msix): the first submission requires completion of the current IARC questionnaire.
+- [MSIX age ratings](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/age-ratings): the first submission requires the IARC questionnaire; the rating is based on questionnaire answers, including for a free app.
 
 Before publishing the privacy URL, verify the actual history, log, and configuration paths under the installed package identity. The policy describes the CLI's local-file behavior; installed-package filesystem qualification is incomplete.
 

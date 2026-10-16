@@ -52,21 +52,24 @@ function Write-CnMonMsixSignatureDiagnosticStatus([string]$Path) {
     try {
         $status = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -ErrorAction Stop
         $guardNames = @(
-            'mode_hosted', 'github_actions', 'event_pull_request', 'repository_expected',
+            'mode_hosted', 'mode_user', 'github_actions', 'event_pull_request', 'repository_expected',
             'image_os_windows', 'identity_name_env_matches', 'identity_publisher_env_matches',
             'publisher_display_name_env_matches', 'expected_pfn_env_matches',
             'identity_name_matches', 'identity_publisher_matches',
             'publisher_display_name_matches', 'expected_pfn_matches', 'all'
         )
         $booleanNames = @($guardNames | ForEach-Object { "guard_$_" }) + @(
-            'sdk_exit_captured', 'private_log_retained', 'public_diagnostic_written'
+            'sdk_exit_captured', 'private_log_retained', 'trust_presence_checked',
+            'trusted_certificate_present', 'public_diagnostic_written'
         )
-        $expectedNames = @('schema_version', 'failure_kind', 'save_status', 'save_error_kind') + $booleanNames
+        $expectedNames = @('schema_version', 'phase', 'failure_kind', 'exception_kind', 'save_status', 'save_error_kind') + $booleanNames
         $actualNames = @($status.PSObject.Properties.Name | Sort-Object)
         $expectedNames = @($expectedNames | Sort-Object)
         if (($actualNames -join "`n") -cne ($expectedNames -join "`n") -or
-            $status.schema_version -ne 1 -or
-            $status.failure_kind -notin @('sdk_nonzero', 'sdk_invocation_error') -or
+            $status.schema_version -ne 2 -or
+            $status.phase -notin @('candidate-verify', 'user-trust-presence', 'user-verify', 'candidate-setup', 'candidate-post-verify', 'user-post-verify', 'other') -or
+            $status.failure_kind -notin @('sdk_nonzero', 'sdk_invocation_error', 'trusted_certificate_missing', 'stage_exception') -or
+            $status.exception_kind -notin @('none', 'invalid_operation', 'io', 'access_denied', 'path', 'argument', 'security', 'other') -or
             $status.save_status -notin @('not_attempted', 'success', 'failure') -or
             $status.save_error_kind -notin @('none', 'io', 'access_denied', 'path', 'argument', 'other')) {
             Write-Host 'MSIX signature diagnostic status: invalid'
@@ -78,7 +81,16 @@ function Write-CnMonMsixSignatureDiagnosticStatus([string]$Path) {
                 return
             }
         }
-        if (($status.failure_kind -eq 'sdk_nonzero') -ne $status.sdk_exit_captured -or
+        $phaseMatchesMode = switch ([string]$status.phase) {
+            { $_ -in @('candidate-verify', 'candidate-setup', 'candidate-post-verify') } { [bool]$status.guard_mode_hosted; break }
+            { $_ -in @('user-trust-presence', 'user-verify', 'user-post-verify') } { [bool]$status.guard_mode_user; break }
+            default { [bool]($status.guard_mode_hosted -or $status.guard_mode_user) }
+        }
+        if ($status.guard_mode_hosted -eq $status.guard_mode_user -or -not $phaseMatchesMode -or
+            (($status.failure_kind -eq 'sdk_nonzero') -ne $status.sdk_exit_captured) -or
+            ($status.failure_kind -eq 'sdk_invocation_error' -and ($status.sdk_exit_captured -or $status.phase -notin @('candidate-verify', 'user-verify'))) -or
+            ($status.failure_kind -eq 'trusted_certificate_missing') -ne ($status.phase -eq 'user-trust-presence' -and $status.trust_presence_checked -and -not $status.trusted_certificate_present) -or
+            ($status.trusted_certificate_present -and -not $status.trust_presence_checked) -or
             ($status.save_status -eq 'failure') -ne ($status.save_error_kind -ne 'none') -or
             ($status.save_status -ne 'failure' -and $status.save_error_kind -ne 'none')) {
             Write-Host 'MSIX signature diagnostic status: invalid'
@@ -88,7 +100,7 @@ function Write-CnMonMsixSignatureDiagnosticStatus([string]$Path) {
             $value = if ($status.$name) { 'true' } else { 'false' }
             "$name=$value"
         }
-        Write-Host ("MSIX signature diagnostic status: {0} failure_kind={1} save_status={2} save_error_kind={3}" -f (($flags -join ' '), $status.failure_kind, $status.save_status, $status.save_error_kind))
+        Write-Host ("MSIX signature diagnostic status: phase={0} failure_kind={1} exception_kind={2} {3} save_status={4} save_error_kind={5}" -f ($status.phase, $status.failure_kind, $status.exception_kind, ($flags -join ' '), $status.save_status, $status.save_error_kind))
     }
     catch {
         Write-Host 'MSIX signature diagnostic status: invalid'
@@ -116,11 +128,11 @@ function Assert-CandidateReceipt([string]$PackagePath, [string]$ReceiptPath) {
     }
 }
 
-function Assert-NativeResults(
+function Read-NativeResults(
     [string]$ResultsPath,
     [ValidateSet('Hosted', 'Certify')][string]$ExpectedMode
 ) {
-    $results = Get-Content -LiteralPath $ResultsPath -Raw | ConvertFrom-Json
+    $results = Get-Content -LiteralPath $ResultsPath -Raw | ConvertFrom-Json -ErrorAction Stop
     $propertyNames = @($results.PSObject.Properties.Name | Sort-Object)
     $expectedProperties = @('gates', 'mode', 'overall', 'schema_version')
     $expectedProperties = @($expectedProperties | Sort-Object)
@@ -142,6 +154,14 @@ function Assert-NativeResults(
             throw 'native qualification results contain an invalid gate status'
         }
     }
+    return $results
+}
+
+function Assert-NativeResults(
+    [string]$ResultsPath,
+    [ValidateSet('Hosted', 'Certify')][string]$ExpectedMode
+) {
+    $results = Read-NativeResults -ResultsPath $ResultsPath -ExpectedMode $ExpectedMode
     if ($results.overall -cne 'pass') {
         throw 'native qualification results did not pass'
     }
@@ -333,11 +353,8 @@ switch ($Mode) {
         & pwsh -NoProfile -File $tester -Mode Certify -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory *> $log
         $exitCode = $LASTEXITCODE
         if (Test-Path -LiteralPath $resultsPath -PathType Leaf) {
-            $results = Assert-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify
+            $results = Read-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify
             $gateStatus = [string]$results.gates.wack
-            if ($results.mode -cne 'Certify') {
-                $gateStatus = 'incomplete'
-            }
         } else {
             $gateStatus = 'incomplete'
         }
@@ -345,6 +362,7 @@ switch ($Mode) {
         if ($exitCode -ne 0 -or $gateStatus -ne 'pass') {
             throw 'WACK certification gate did not pass; report remains job-local'
         }
+        $null = Assert-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify
     }
     'Summary' {
         $event = $env:EVENT_NAME

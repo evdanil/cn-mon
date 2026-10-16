@@ -145,7 +145,7 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
       - name: Upload synthetic qualification evidence
-        if: steps.qualify.outcome == 'success'
+        if: always() && !cancelled() && steps.qualify.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cn-mon-msix-synthetic-qualification-${{ github.run_id }}-${{ github.run_attempt }}
