@@ -209,6 +209,7 @@ $requiredFunctions = @(
     'Get-CnMonMsixSignedPayloadExpectedFiles',
     'Get-CnMonMsixDiagnosticErrorCategory',
     'Get-CnMonMsixFailureDiagnostic',
+    'Get-CnMonMsixNativeTestFailureDiagnostic',
     'Save-CnMonMsixQualificationFailureEvidence',
     'Set-CnMonMsixCaughtGateFailure',
     'Remove-CnMonMsixTemporaryUser',
@@ -1080,6 +1081,98 @@ stderr:
         finally {
             foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') }
         }
+    }
+
+    Invoke-Check 'native profile failure evidence is fixed, numeric, and distinguishes exit from marker failure' {
+        $privateRoot = Join-Path $tempRoot 'native-failure-private'
+        $expectedProfile = Join-Path $privateRoot 'profile'
+        $localAppData = Join-Path $privateRoot 'local'
+        $cache = Join-Path $localAppData 'Packages/Example.CnMon_518g7wxbxvqf6/LocalCache/Local'
+        $null = New-Item -ItemType Directory -Force -Path $expectedProfile, $cache
+        $history = Join-Path $localAppData 'msix-profile-history.db'
+        $log = Join-Path $localAppData 'msix-profile.log'
+        $cacheHistory = Join-Path $cache 'msix-profile-history.db'
+        [IO.File]::WriteAllText($cacheHistory, 'synthetic cache witness', [Text.UTF8Encoding]::new($false))
+        $secretPath = Join-Path $privateRoot 'private-user-profile'
+        $rawOutput = @"
+--- FAIL: TestNativeMSIXRealProfileLayers (0.02s)
+    native_msix_windows_test.go:324: private failure at $secretPath CN=Actual Publisher, O=Private
+    C:\Users\private\profile\native_msix_windows_test.go:711: unrelated helper frame
+panic: test timed out after 10m0s
+"@
+        $childFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase 'real-profile-config' -FailureKind child_exit -ExitCode 1 -Output $rawOutput -ProfileHistoryPath $history -ProfileLogPath $log -LocalAppData $localAppData -PackageFamilyName 'Example.CnMon_518g7wxbxvqf6'
+        Assert-Equal $childFailure.phase 'real-profile-config' 'native failure evidence lost its fixed phase'
+        Assert-Equal $childFailure.test_name 'NativeMSIXRealProfileLayers' 'native failure evidence accepted an arbitrary test name'
+        Assert-Equal $childFailure.failure_kind 'child_exit' 'nonzero child was not classified as a child exit'
+        Assert-Equal $childFailure.exit_code 1 'native failure evidence lost the numeric exit code'
+        Assert-True $childFailure.timeout 'native test timeout marker was not reduced to a boolean'
+        Assert-Equal (@($childFailure.source_lines) -join ',') '324' 'native failure evidence did not keep only bounded assertion source lines'
+        Assert-True (-not $childFailure.profile_history_exists -and -not $childFailure.profile_log_exists) 'expected profile output existence was misreported'
+        Assert-True $childFailure.package_localcache_history_exists 'known package-local cache witness was not reported'
+        Assert-True (-not $childFailure.package_localcache_log_exists) 'missing package-local cache output was misreported'
+        $safeJson = ConvertTo-Json -InputObject $childFailure -Depth 5
+        foreach ($sensitive in @($secretPath, 'C:\Users\private', 'Actual Publisher', 'CN=')) {
+            Assert-True ($safeJson -notmatch [regex]::Escape($sensitive)) 'native failure evidence retained raw output, identity, or path data'
+        }
+
+        $markerFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase 'real-profile-config' -FailureKind missing_marker -ExitCode 0 -Output $rawOutput -ProfileHistoryPath $history -ProfileLogPath $log -LocalAppData $localAppData -PackageFamilyName 'Example.CnMon_518g7wxbxvqf6'
+        Assert-Equal $markerFailure.failure_kind 'missing_marker' 'zero-exit marker failure was confused with a child exit'
+        Assert-Equal $markerFailure.exit_code 0 'marker failure lost its zero child exit code'
+
+        $script:NativeTestFailure = $childFailure
+        $directory = Join-Path $tempRoot 'native-failure-public'
+        $null = New-Item -ItemType Directory -Path $directory
+        $syntheticIdentity = [pscustomobject]@{
+            Name = 'Example.CnMon'
+            Publisher = 'CN=Example, O=Example'
+            PublisherDisplayName = 'Example Publisher'
+            ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6'
+        }
+        $identityKeys = @(
+            'GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS',
+            'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN'
+        )
+        $oldIdentity = @{}
+        foreach ($key in $identityKeys) { $oldIdentity[$key] = [Environment]::GetEnvironmentVariable($key) }
+        try {
+            $env:GITHUB_ACTIONS = 'true'
+            $env:GITHUB_EVENT_NAME = 'pull_request'
+            $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'
+            $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+            $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+            $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $errorRecord = [System.Management.Automation.ErrorRecord]::new([InvalidOperationException]::new('private child failure'), 'NativeTestFailure', [System.Management.Automation.ErrorCategory]::InvalidOperation, $null)
+            Save-CnMonMsixQualificationFailureEvidence -Mode User -Gate history_config -Operation user_mode_native_qualification -ArtifactDirectory $directory -Identity $syntheticIdentity -ErrorRecord $errorRecord
+            $publicText = [IO.File]::ReadAllText((Join-Path $directory 'msix-signature-diagnostic.json'))
+            $publicFailure = (ConvertFrom-Json -InputObject $publicText -AsHashtable).qualification_failure
+            Assert-Equal $publicFailure.native_test.failure_kind 'child_exit' 'guarded qualification diagnostic omitted the native child classification'
+            Assert-Equal (@($publicFailure.native_test.source_lines) -join ',') '324' 'public qualification diagnostic did not include only the numeric assertion line'
+            foreach ($sensitive in @($secretPath, 'C:\Users\private', 'Actual Publisher', 'CN=')) {
+                Assert-True ($publicText -notmatch [regex]::Escape($sensitive)) 'public qualification diagnostic leaked private child output'
+            }
+        }
+        finally {
+            $script:NativeTestFailure = $null
+            foreach ($key in $identityKeys) { [Environment]::SetEnvironmentVariable($key, $oldIdentity[$key], 'Process') }
+        }
+        foreach ($key in $identityKeys) {
+            Assert-Equal ([Environment]::GetEnvironmentVariable($key)) $oldIdentity[$key] "native diagnostic test did not restore process environment '$key'"
+        }
+
+        $profileFunction = @($sourceAst.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq 'Invoke-CnMonMsixUserMode'
+        }, $true))[0]
+        $profileTest = Get-CommandNodes $profileFunction 'Invoke-CnMonMsixNativeTests' | Where-Object { $_.Extent.Text -match 'real-profile-config' } | Select-Object -First 1
+        Assert-True ($null -ne $profileTest) 'real-profile configuration Go test invocation is missing'
+        $historyGate = @($profileFunction.FindAll({
+            param($candidate)
+            $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and $candidate.Extent.Text -match "CurrentGate\s*=\s*'history_config'"
+        }, $true) | Where-Object { $_.Extent.StartOffset -lt $profileTest.Extent.StartOffset } | Sort-Object { $_.Extent.StartOffset } | Select-Object -Last 1)
+        Assert-True ($historyGate.Count -eq 1) 'real-profile test failure is still attributed to the prior alias gate'
     }
 
     Invoke-Check 'account failure diagnostics are closed, guarded, and privately retained' {

@@ -53,6 +53,7 @@ $script:LastSignatureLogPath = $null
 $script:CurrentSourceOperation = 'script_entry'
 $script:FailureSourceOperation = $null
 $script:PublicDiagnosticWritten = $false
+$script:NativeTestFailure = $null
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
@@ -184,6 +185,10 @@ function Save-CnMonMsixQualificationFailureEvidence {
         else {
             $public.schema_version = 1
             $script:PublicDiagnosticWritten = $true
+        }
+        if ($Mode -eq 'User' -and $Gate -eq 'history_config' -and
+            $Operation -eq 'user_mode_native_qualification' -and $null -ne $script:NativeTestFailure) {
+            $diagnostic.native_test = $script:NativeTestFailure
         }
         $public.qualification_failure = $diagnostic
         [IO.File]::WriteAllText($publicPath, (ConvertTo-Json -InputObject $public -Depth 5) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
@@ -935,6 +940,7 @@ function Assert-CnMonMsixInstalledPackage {
 
 function Invoke-CnMonMsixNativeTests {
     param([string]$Name, [string]$TestExe, [string]$Pattern, [string[]]$RequiredMarkers)
+    if ($Name -ceq 'real-profile-config') { $script:NativeTestFailure = $null }
     $stdout = Join-Path $ArtifactDirectory "msix-$Name.stdout.log"
     $stderr = Join-Path $ArtifactDirectory "msix-$Name.stderr.log"
     $listStdout = Join-Path $ArtifactDirectory "msix-$Name.tests.log"
@@ -954,14 +960,68 @@ function Invoke-CnMonMsixNativeTests {
     if (Test-Path -LiteralPath $stdout) { $output += Get-Content -LiteralPath $stdout -Raw }
     if (Test-Path -LiteralPath $stderr) { $output += Get-Content -LiteralPath $stderr -Raw }
     if ($exit -ne 0) {
+        if ($Name -ceq 'real-profile-config') {
+            $script:NativeTestFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase $Name -FailureKind child_exit -ExitCode $exit -Output $output -ProfileHistoryPath $env:CNMON_MSIX_PROFILE_HISTORY -ProfileLogPath $env:CNMON_MSIX_PROFILE_LOG -LocalAppData $env:LOCALAPPDATA -PackageFamilyName $env:CNMON_MSIX_EXPECTED_PFN
+        }
         throw "native Windows qualification phase '$Name' failed; private output was retained"
     }
     foreach ($marker in $RequiredMarkers) {
         if ($output -notmatch [regex]::Escape($marker)) {
+            if ($Name -ceq 'real-profile-config') {
+                $script:NativeTestFailure = Get-CnMonMsixNativeTestFailureDiagnostic -Phase $Name -FailureKind missing_marker -ExitCode $exit -Output $output -ProfileHistoryPath $env:CNMON_MSIX_PROFILE_HISTORY -ProfileLogPath $env:CNMON_MSIX_PROFILE_LOG -LocalAppData $env:LOCALAPPDATA -PackageFamilyName $env:CNMON_MSIX_EXPECTED_PFN
+            }
             throw "native Windows qualification phase '$Name' omitted a required witness"
         }
     }
     return $output
+}
+
+function Get-CnMonMsixNativeTestFailureDiagnostic {
+    param(
+        [ValidateSet('real-profile-config')][string]$Phase,
+        [ValidateSet('child_exit', 'missing_marker')][string]$FailureKind,
+        [int]$ExitCode,
+        [string]$Output,
+        [string]$ProfileHistoryPath,
+        [string]$ProfileLogPath,
+        [string]$LocalAppData,
+        [string]$PackageFamilyName
+    )
+    if (($FailureKind -eq 'child_exit' -and $ExitCode -eq 0) -or
+        ($FailureKind -eq 'missing_marker' -and $ExitCode -ne 0)) {
+        throw 'native test failure evidence has an inconsistent child result'
+    }
+
+    $sourceLines = [Collections.Generic.List[int]]::new()
+    foreach ($match in [regex]::Matches($Output, '(?im)^\s*native_msix_windows_test\.go:(\d+):')) {
+        $lineNumber = 0
+        if ([int]::TryParse($match.Groups[1].Value, [ref]$lineNumber) -and
+            $lineNumber -ge 280 -and $lineNumber -le 365 -and
+            -not $sourceLines.Contains($lineNumber)) {
+            $sourceLines.Add($lineNumber)
+        }
+        if ($sourceLines.Count -ge 8) { break }
+    }
+
+    $cacheHistoryExists = $false
+    $cacheLogExists = $false
+    if ($LocalAppData -and $PackageFamilyName) {
+        $cacheRoot = Join-Path $LocalAppData (Join-Path 'Packages' (Join-Path $PackageFamilyName 'LocalCache/Local'))
+        $cacheHistoryExists = Test-Path -LiteralPath (Join-Path $cacheRoot 'msix-profile-history.db') -PathType Leaf -ErrorAction SilentlyContinue
+        $cacheLogExists = Test-Path -LiteralPath (Join-Path $cacheRoot 'msix-profile.log') -PathType Leaf -ErrorAction SilentlyContinue
+    }
+    return [ordered]@{
+        phase = 'real-profile-config'
+        test_name = 'NativeMSIXRealProfileLayers'
+        failure_kind = $FailureKind
+        exit_code = $ExitCode
+        timeout = [bool]($Output -match '(?im)(?:panic:\s*)?test timed out after\b|context deadline exceeded')
+        source_lines = @($sourceLines.ToArray())
+        profile_history_exists = [bool]($ProfileHistoryPath -and (Test-Path -LiteralPath $ProfileHistoryPath -PathType Leaf -ErrorAction SilentlyContinue))
+        profile_log_exists = [bool]($ProfileLogPath -and (Test-Path -LiteralPath $ProfileLogPath -PathType Leaf -ErrorAction SilentlyContinue))
+        package_localcache_history_exists = [bool]$cacheHistoryExists
+        package_localcache_log_exists = [bool]$cacheLogExists
+    }
 }
 
 function Invoke-CnMonMsixShell {
@@ -1433,6 +1493,7 @@ function Invoke-CnMonMsixUserMode {
         Set-CnMonMsixGate 'native_cli' 'pass'
         Set-CnMonMsixGate 'icmp' 'pass'
 
+        $script:CurrentGate = 'history_config'
         $profileHistory = Join-Path $env:LOCALAPPDATA 'msix-profile-history.db'
         $profileLog = Join-Path $env:LOCALAPPDATA 'msix-profile.log'
         $profileText = "[ping]`nhistory_file = $profileHistory`nhistory_days = 90`n[logging]`nlogfile = $profileLog`nlevel = INFO`n"
