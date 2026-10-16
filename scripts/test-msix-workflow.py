@@ -17,6 +17,8 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW_PATH = ROOT / '.github' / 'workflows' / 'msix.yml'
 CI_HELPER_PATH = ROOT / 'scripts' / 'msix-ci.ps1'
+COMPLETION_CI_PATH = ROOT / 'scripts' / 'complete-msix-ci.ps1'
+COMPLETION_CI_HARNESS_PATH = ROOT / 'scripts' / 'complete-msix-ci-harness.ps1'
 SYNTHETIC_IDENTITY = {
     'name': 'Example.CnMon',
     'publisher': 'CN=Example, O=Example',
@@ -148,6 +150,60 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertIn('cn-mon-msix-synthetic-package-${{ github.run_id }}-${{ github.run_attempt }}', qualify)
         self.assertIn('run: python scripts/test-msix-workflow.py', package)
         self.assertIn('run: python scripts/test-msix-workflow.py', qualify)
+
+    def test_reviewed_completion_route_is_pr_only_and_keeps_normal_qualification(self):
+        text = workflow_text()
+        qualify = job_block(text, 'synthetic-qualification')
+        manual = job_block(text, 'trusted-manual')
+        self.assertIn('permissions:\n      actions: read\n      contents: read', qualify)
+        self.assertIn('fetch-depth: 0', qualify)
+        self.assertIn('completion_overall: ${{ steps.complete.outputs.overall }}', qualify)
+        self.assertIn('completion_passed_gates: ${{ steps.complete.outputs.passed_gate_count }}', qualify)
+        self.assertIn('completion_gate_count: ${{ steps.complete.outputs.gate_count }}', qualify)
+        self.assertIn('completion_provenance: ${{ steps.complete.outputs.provenance }}', qualify)
+
+        route = named_step(qualify, 'Select the pull request qualification route')
+        self.assertIn('scripts/complete-msix-ci.ps1 -Mode SelectRoute', route)
+        self.assertIn('packaging/windows/qualification/completion.json', route)
+        completion = named_step(qualify, 'Validate reviewed MSIX completion record')
+        self.assertIn("if: steps.route.outputs.mode == 'ReviewedRecord'", completion)
+        self.assertIn('id: complete', completion)
+        self.assertIn('scripts/complete-msix-ci.ps1 -Mode Complete', completion)
+        self.assertIn('GH_TOKEN: ${{ github.token }}', completion)
+        self.assertIn('EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}', completion)
+
+        normal_steps = (
+            'Download exact synthetic package artifact',
+            'Configure synthetic identity',
+            'Initialize Windows SDK and runner evidence',
+            'Qualify the downloaded package bytes',
+            'Record read-only desktop prerequisite inventory',
+            'Run WACK certification gate',
+            'Upload synthetic qualification evidence',
+            'Write sanitized qualification summary',
+            'Upload sanitized qualification summary',
+            'Upload synthetic signature diagnostic',
+        )
+        for name in normal_steps:
+            self.assertIn("steps.route.outputs.mode == 'Qualification'", named_step(qualify, name), name)
+        reviewed_summary = named_step(qualify, 'Upload reviewed completion summary')
+        self.assertIn("if: success() && steps.route.outputs.mode == 'ReviewedRecord'", reviewed_summary)
+        self.assertIn('cn-mon-msix-reviewed-completion-summary-${{ github.run_id }}-${{ github.run_attempt }}', reviewed_summary)
+        self.assertIn('reviewed-completion-summary.json', reviewed_summary)
+        self.assertNotIn('complete-msix-ci.ps1', manual)
+
+    def test_reviewed_completion_wrapper_safety_harness(self):
+        self.assertTrue(COMPLETION_CI_PATH.is_file(), 'reviewed completion CI wrapper is missing')
+        self.assertTrue(COMPLETION_CI_HARNESS_PATH.is_file(), 'reviewed completion CI harness is missing')
+        pwsh = shutil.which('pwsh')
+        self.assertIsNotNone(pwsh, 'PowerShell 7 is required for the reviewed completion CI harness')
+        result = subprocess.run(
+            [pwsh, '-NoProfile', '-File', str(COMPLETION_CI_HARNESS_PATH)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_all_jobs_use_exact_source_checkouts_and_pinned_actions(self):
         text = workflow_text()
@@ -323,7 +379,7 @@ class MsixWorkflowTests(unittest.TestCase):
         qualify_uploads = upload_steps(qualify)
         manual_uploads = upload_steps(manual)
         self.assertEqual(len(package_uploads), 2)
-        self.assertEqual(len(qualify_uploads), 3)
+        self.assertEqual(len(qualify_uploads), 4)
         self.assertEqual(len(manual_uploads), 1)
         artifact_names = [upload_name(upload) for upload in
                           package_uploads + qualify_uploads + manual_uploads]
@@ -332,7 +388,8 @@ class MsixWorkflowTests(unittest.TestCase):
             r'${{ runner.temp }}\cn-mon-msix-job\package\cn-mon_1.3.0.0_x64.msix',
             r'${{ runner.temp }}\cn-mon-msix-job\package\msix-receipt.json',
         })
-        self.assertEqual(set(path_entries(qualify_uploads[0])), {
+        qualify_evidence = named_step(qualify, 'Upload synthetic qualification evidence')
+        self.assertEqual(set(path_entries(qualify_evidence)), {
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json',
@@ -341,13 +398,18 @@ class MsixWorkflowTests(unittest.TestCase):
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-wack-structure.json',
         })
         summary = r'${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json'
+        reviewed_summary = named_step(qualify, 'Upload reviewed completion summary')
+        self.assertEqual(path_entries(reviewed_summary), [
+            r'${{ runner.temp }}\cn-mon-msix-reviewed-completion-${{ github.run_id }}-${{ github.run_attempt }}\reviewed-completion-summary.json'
+        ])
         self.assertEqual(path_entries(package_uploads[1]), [summary])
-        self.assertEqual(path_entries(qualify_uploads[1]), [summary])
+        qualify_summary = named_step(qualify, 'Upload sanitized qualification summary')
+        self.assertEqual(path_entries(qualify_summary), [summary])
         self.assertEqual(path_entries(manual_uploads[0]), [summary])
         self.assertIn("if: steps.package.outcome == 'success'", package_uploads[0])
-        self.assertIn("if: always() && !cancelled()", qualify_uploads[0])
-        self.assertNotIn("steps.qualify.outcome", qualify_uploads[0])
-        for upload in package_uploads[1:] + qualify_uploads[1:] + manual_uploads:
+        self.assertIn("if: always() && !cancelled()", qualify_evidence)
+        self.assertNotIn("steps.qualify.outcome", qualify_evidence)
+        for upload in package_uploads[1:] + [qualify_evidence, qualify_summary] + manual_uploads:
             self.assertIn('if: always()', upload)
         self.assertIn("steps.package.outcome == 'success'", package_uploads[0])
         for upload in package_uploads + qualify_uploads + manual_uploads:

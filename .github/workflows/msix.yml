@@ -96,12 +96,25 @@ jobs:
     needs: synthetic-package
     runs-on: windows-2025
     timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      completion_overall: ${{ steps.complete.outputs.overall }}
+      completion_passed_gates: ${{ steps.complete.outputs.passed_gate_count }}
+      completion_gate_count: ${{ steps.complete.outputs.gate_count }}
+      completion_provenance: ${{ steps.complete.outputs.provenance }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
           persist-credentials: false
+      - name: Select the pull request qualification route
+        id: route
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/complete-msix-ci.ps1 -Mode SelectRoute -ConfigurationPath packaging/windows/qualification/completion.json
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
           go-version: '1.27.2'
@@ -115,12 +128,30 @@ jobs:
       - name: Test desktop surface privacy and safety
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1
+      - name: Validate reviewed MSIX completion record
+        id: complete
+        if: steps.route.outputs.mode == 'ReviewedRecord'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: pwsh -NoProfile -File ./scripts/complete-msix-ci.ps1 -Mode Complete -ConfigurationPath packaging/windows/qualification/completion.json
+      - name: Upload reviewed completion summary
+        if: success() && steps.route.outputs.mode == 'ReviewedRecord'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-reviewed-completion-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-reviewed-completion-${{ github.run_id }}-${{ github.run_attempt }}\reviewed-completion-summary.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Download exact synthetic package artifact
+        if: steps.route.outputs.mode == 'Qualification'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cn-mon-msix-synthetic-package-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}\cn-mon-msix-job\input
       - name: Configure synthetic identity
+        if: steps.route.outputs.mode == 'Qualification'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -142,14 +173,16 @@ jobs:
           )
           [IO.File]::AppendAllText($env:GITHUB_ENV, ($values -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
       - name: Initialize Windows SDK and runner evidence
+        if: steps.route.outputs.mode == 'Qualification'
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize
       - name: Qualify the downloaded package bytes
         id: qualify
+        if: steps.route.outputs.mode == 'Qualification'
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted -PackageDirectory input
       - name: Record read-only desktop prerequisite inventory
-        if: always() && !cancelled()
+        if: always() && !cancelled() && steps.route.outputs.mode == 'Qualification'
         shell: pwsh
         run: >-
           pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1
@@ -159,11 +192,11 @@ jobs:
           -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
       - name: Run WACK certification gate
         id: certify
-        if: always() && !cancelled()
+        if: always() && !cancelled() && steps.route.outputs.mode == 'Qualification'
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
       - name: Upload synthetic qualification evidence
-        if: always() && !cancelled()
+        if: always() && !cancelled() && steps.route.outputs.mode == 'Qualification'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cn-mon-msix-synthetic-qualification-${{ github.run_id }}-${{ github.run_attempt }}
@@ -177,7 +210,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Write sanitized qualification summary
-        if: always()
+        if: always() && steps.route.outputs.mode == 'Qualification'
         shell: pwsh
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -187,7 +220,7 @@ jobs:
           WACK_STATUS: ${{ steps.certify.outputs.gate_status || steps.certify.outcome || 'skipped' }}
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Summary
       - name: Upload sanitized qualification summary
-        if: always()
+        if: always() && steps.route.outputs.mode == 'Qualification'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cn-mon-msix-synthetic-qualification-summary-${{ github.run_id }}-${{ github.run_attempt }}
@@ -195,7 +228,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Upload synthetic signature diagnostic
-        if: always() && steps.qualify.outcome == 'failure'
+        if: always() && steps.qualify.outcome == 'failure' && steps.route.outputs.mode == 'Qualification'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cn-mon-msix-synthetic-signature-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
