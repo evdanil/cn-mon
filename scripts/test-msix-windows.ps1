@@ -181,6 +181,37 @@ function Assert-CnMonMsixPackagePayload {
     msix-package\Assert-CnMonMsixPayload -Root $Path -ExpectedFiles $Files
 }
 
+function Get-CnMonMsixFixtureFiles {
+    param(
+        [System.Collections.IDictionary]$SourceFiles,
+        [string]$BinaryHash,
+        [string]$ManifestHash,
+        [string]$ConfigHash
+    )
+    if ($null -eq $SourceFiles -or
+        -not $SourceFiles.Contains('cn-mon.exe') -or
+        -not $SourceFiles.Contains('AppxManifest.xml') -or
+        $SourceFiles.Contains('.cn') -or
+        $BinaryHash -notmatch '^[0-9a-fA-F]{64}$' -or
+        $ManifestHash -notmatch '^[0-9a-fA-F]{64}$' -or
+        $ConfigHash -notmatch '^[0-9a-fA-F]{64}$' -or
+        ([string]$SourceFiles['cn-mon.exe']).ToLowerInvariant() -cne $BinaryHash.ToLowerInvariant()) {
+        throw 'test fixture source or changed file hashes are invalid'
+    }
+
+    $files = [ordered]@{}
+    foreach ($path in $SourceFiles.Keys) {
+        $hash = [string]$SourceFiles[$path]
+        if ($hash -notmatch '^[0-9a-fA-F]{64}$') {
+            throw 'test fixture source payload contains an invalid hash'
+        }
+        $files[[string]$path] = $hash.ToLowerInvariant()
+    }
+    $files['AppxManifest.xml'] = $ManifestHash.ToLowerInvariant()
+    $files['.cn'] = $ConfigHash.ToLowerInvariant()
+    return $files
+}
+
 function Get-CnMonMsixNativeSelector {
     param([string]$Pattern)
     if ($Pattern.StartsWith('Test', [StringComparison]::Ordinal)) {
@@ -563,11 +594,7 @@ function New-CnMonMsixFixture {
     if ($binaryHash -cne ([string]$Receipt.binary_sha256).ToLowerInvariant()) {
         throw 'fixture binary provenance does not match the original candidate receipt'
     }
-    $fixtureFiles = [ordered]@{
-        'cn-mon.exe' = $binaryHash
-        'AppxManifest.xml' = $manifestHash
-        '.cn' = $configHash
-    }
+    $fixtureFiles = Get-CnMonMsixFixtureFiles -SourceFiles $Receipt.files -BinaryHash $binaryHash -ManifestHash $manifestHash -ConfigHash $configHash
     $fixtureUnpacked = Join-Path $script:PrivateRoot 'fixture-signed-unpacked'
     New-Item -ItemType Directory -Path $fixtureUnpacked | Out-Null
     Invoke-CnMonMsixTool $makeappx @('unpack', '/p', $Destination, '/d', $fixtureUnpacked, '/no') (Join-Path $script:PrivateRoot 'fixture-signed-unpack.log')
@@ -575,7 +602,7 @@ function New-CnMonMsixFixture {
     $packageHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
     $fixtureReceipt = [ordered]@{
         schema_version = 1
-        purpose = 'qualification-fixture'
+        purpose = 'test-fixture'
         source_package_sha256 = ([string]$Receipt.package_sha256).ToLowerInvariant()
         source_manifest_sha256 = ([string]$Receipt.manifest_sha256).ToLowerInvariant()
         binary_sha256 = $binaryHash
@@ -604,7 +631,7 @@ function Assert-CnMonMsixFixtureReceipt {
     }
     else { [string]$CandidateReceipt.package_sha256 }
     if ([int]$FixtureReceipt.schema_version -ne 1 -or
-        [string]$FixtureReceipt.purpose -cne 'qualification-fixture' -or
+        [string]$FixtureReceipt.purpose -cne 'test-fixture' -or
         [string]$FixtureReceipt.name -cne [string]$Identity.Name -or
         [string]$FixtureReceipt.publisher -cne [string]$Identity.Publisher -or
         [string]$FixtureReceipt.expected_pfn -cne [string]$Identity.ExpectedPFN -or
@@ -618,11 +645,11 @@ function Assert-CnMonMsixFixtureReceipt {
         [string]$FixtureReceipt.package_sha256 -notmatch '^[0-9a-f]{64}$' -or
         [string]$FixtureReceipt.manifest_sha256 -notmatch '^[0-9a-f]{64}$' -or
         [string]$FixtureReceipt.config_sha256 -notmatch '^[0-9a-f]{64}$') {
-        throw 'qualification fixture receipt does not match the signed candidate provenance'
+        throw 'test fixture receipt does not match the signed candidate provenance'
     }
     if ([string]$FixtureReceipt.package_sha256 -cne ([string]$FixtureReceipt.signing.signed_package_sha256).ToLowerInvariant() -or
         (Get-FileHash -LiteralPath $PackagePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne [string]$FixtureReceipt.package_sha256) {
-        throw 'qualification fixture package hash does not match its private receipt'
+        throw 'test fixture package hash does not match its private receipt'
     }
     foreach ($relativePath in $FixtureReceipt.files.Keys) {
         $expectedHash = ([string]$FixtureReceipt.files[$relativePath]).ToLowerInvariant()
