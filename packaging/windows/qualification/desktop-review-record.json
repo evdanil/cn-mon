@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "mode": "desktop_completion_review",
+  "authority": "independent_root_reviewer",
+  "supplement_sha256": "818b433ec244a2383352d0732b20bed1e82301fd8d06b8f84ca9194da594cc0d",
+  "screenshot_review_completed": true,
+  "reviewed_screenshot_sha256s": [
+    "2f755ed84b85798819d3caad47f5b43b99de42df7aedcf5a5726bdcef9a17086",
+    "08d08fd19f3278442cc68f69b0d698ecd3b45de2f39ca508bd9413f880120b74",
+    "538e49196903ffbb7ac850f80376e9f9ebd91158c867a079e3f9a05b9dbd7b76",
+    "57d659d2a58a43390a397f7d415460616809c1f04d62c6f742b86b8e84c22d3b",
+    "57d659d2a58a43390a397f7d415460616809c1f04d62c6f742b86b8e84c22d3b",
+    "635f5864765e726985a8f44d29e049d4c1b9fd4f9f597b77a5dc177042a3c9ec",
+    "3dcd341156d25d2505118da083424d02b958c508df3cf2a37a6099264d8ccde6",
+    "29cb55f691d8fd3d2cc01f2d4951ace750cf30adbdcc241dee377cea65d46578",
+    "a6926f41521263fbb0ccccfd7fd062807ee9a90dafe86ead60cf6759779a6afe",
+    "d5fe84c69e037f987bf81c25dd79718ca13a2df24366540fa70082db40b54f92"
+  ],
+  "alias_off_on_reviewed": true,
+  "repair_activation_completion_reviewed": true,
+  "private_evidence_bundle_sha256": "4df4e5f61264a82f9fcd77544a473444fd59fcd6343f8027f6bf6049ca2f3ad1",
+  "independent_sol_review": {
+    "role": "gpt-6.1-sol",
+    "reviewed_at_utc": "20261016T131654Z",
+    "reference": "sol-desktop-412aef96-20261016T131654Z",
+    "status": "resolved"
+  }
+}

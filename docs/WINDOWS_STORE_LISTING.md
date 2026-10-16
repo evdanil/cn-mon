@@ -1,6 +1,6 @@
 # Microsoft Store listing draft
 
-Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Current synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; strict WACK parsing passes all 24 tests, including DPI awareness. Repair and command-conflict/Settings alias recovery remain incomplete, the visible-desktop supplement and Store screenshots are pending, and runtime PerMonitorV2 behavior is unmeasured. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
+Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Current synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; strict WACK parsing passes all 24 tests, including DPI awareness. The actual visible-desktop run completed alias OFF/ON checks, Repair with data preserved and all five screenshots. LocalAudit reports 19/19 PASS; CI ReviewedRecord remains unchecked, trust cleanup is pending, and runtime PerMonitorV2 behavior is unmeasured. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
 
 ## Copy-ready English listing
 
@@ -77,7 +77,7 @@ The following capability justification is ready for certification notes:
 
 > The package declares the `runFullTrust` restricted capability to run the existing native command-line executable as a full-trust desktop process. This allows the invoking command-line session to pass arguments and standard streams and lets cn-mon resolve hostnames, send native ICMP probes, make TCP connection attempts for user-selected targets, and use configuration, history, and log files. The package installs no service or driver.
 
-This capability justification describes intended desktop execution; current hosted qualification covers installation and core alias/ICMP behavior for the tested candidates, but it does not establish Store eligibility. Continue testing repair and command conflicts/Settings alias recovery against the installed candidate; do not substitute a portable archive binary for the package. Those two hosted gates remain incomplete. The strict WACK parser passes all 24 tests for both current candidates, while the visible-desktop supplement and screenshots remain pending. Runtime DPI state is unmeasured. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for run details.
+This capability justification describes intended desktop execution; current hosted qualification covers installation and core alias/ICMP behavior for the tested candidates, but it does not establish Store eligibility. Actual repair and alias conflict/recovery checks ran against the installed candidate. LocalAudit reports 19/19 PASS; CI ReviewedRecord remains unchecked. The strict WACK parser passes all 24 tests for both current candidates, and five genuine screenshots have been captured and independently approved. Runtime DPI state is unmeasured. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for run details.
 
 ~~~powershell
 $reviewDir = Join-Path $env:TEMP ("cn-mon-store-review-" + [guid]::NewGuid().ToString("N"))
@@ -106,9 +106,9 @@ Replace RUN_ID and REQUEST_ID with values returned by the history reports. The d
 
 ## Screenshot capture plan
 
-A prior Session 0 capture probe produced a black 1024 × 768 image, so it is unusable; no Store screenshots have been captured. Capture each image from the actual installed MSIX in a visible Windows desktop session after the desktop qualification supplement. Do not fabricate a terminal image, use a Linux capture, or present a portable build as an installed package. Use a clean disposable account and loopback data, and remove usernames, private paths, target names, and other sensitive values from the visible terminal before capture.
+A prior Session 0 capture probe produced a black 1024 × 768 image and remains unusable. The five final genuine 1920 × 1080 PNG screenshots were captured from the actual installed MSIX in a visible Windows desktop session. All five passed independent review and cleanup; they are ready for owner review before any Store upload.
 
-Microsoft requires at least one screenshot and recommends at least four for each supported device family. Desktop screenshots must be PNG, at least 1366 × 768 pixels, no larger than 50 MB, and may include captions up to 200 characters. The following five are planned, in this order:
+Microsoft requires at least one screenshot and recommends at least four for each supported device family. Desktop screenshots must be PNG, at least 1366 × 768 pixels, no larger than 50 MB, and may include captions up to 200 characters. The five captured screenshots are listed below in capture order:
 
 | File to capture | Command and setup | Caption |
 | --- | --- | --- |
@@ -143,6 +143,6 @@ Checked 2026-10-16 against Microsoft's current MSIX documentation:
 - [MSIX categories](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/categories-and-subcategories): a primary category is required; “Developer tools > Networking” is available.
 - [MSIX age ratings](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/age-ratings): the first submission requires the IARC questionnaire; the rating is based on questionnaire answers, including for a free app.
 
-Before publishing the privacy URL, verify the actual history, log, and configuration paths under the installed package identity. The policy describes the CLI's local-file behavior; full lifecycle qualification remains incomplete while repair and command-conflict/alias recovery are open.
+Before publishing the privacy URL, verify the actual history, log, and configuration paths under the installed package identity. The policy describes the CLI's local-file behavior; CI ReviewedRecord and trust cleanup remain open.
 
-This file prepares listing content only. It does not modify Partner Center, reserve a name, create Store assets, or submit or publish the product.
+This file prepares listing content only. It does not write to Partner Center, reserve a name, or submit or publish the product.

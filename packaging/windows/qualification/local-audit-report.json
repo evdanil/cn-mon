@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "mode": "desktop_local_audit_record",
+  "overall": "pass",
+  "candidate": {
+    "run_id": "38866515555",
+    "artifact_id": "12031747143",
+    "archive_sha256": "ed18d14a6a4e17526bd73d47f68336d9ee45ead71c15e61f106fba257d461818",
+    "signed_package_sha256": "d782d72374fe6bef2ca666e6cf64039283d0b1b24f4c9aa22cd940956873642f",
+    "signed_receipt_sha256": "7f7ddda42b87b7611fe5107aeb519e3cf0e04e5e2870a7dc8374d6c7b74db55b",
+    "certify_result_sha256": "ebdaa5f3b456afa5e183910b25e80385e3e1d0d86c8db7fee7d7847c9a99971f",
+    "packaging_revision": "b6c874d7b5de8257dde37685f0c3bfeb79b50b14"
+  },
+  "qualification_scripts": {
+    "helper_sha256": "136ed196db55ca43930473d95ca37c3b1a11963e06138329f2d22c698fbde9fc",
+    "helper_verification": "local_bytes_verified",
+    "screenshot_verification": "local_bytes_verified",
+    "desktop_driver_sha256": "42fce86a4c1e3f9bce0686a65d28b5ef5bf19e554d38e9ce4e4d2ebd6b7c5613",
+    "validator_revision": "c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6"
+  },
+  "evidence": {
+    "completion_supplement_sha256": "818b433ec244a2383352d0732b20bed1e82301fd8d06b8f84ca9194da594cc0d",
+    "review_attestation_sha256": "e52b9c09bbb7c9b18b668ffa2aa006f4266a3e19dc8070cfe765f3281374f55b",
+    "private_evidence_bundle_sha256": "4df4e5f61264a82f9fcd77544a473444fd59fcd6343f8027f6bf6049ca2f3ad1"
+  },
+  "gates": {
+    "identity": "pass",
+    "package_hash": "pass",
+    "signature": "pass",
+    "account": "pass",
+    "package_registration": "pass",
+    "exact_identity": "pass",
+    "installed_binary_hash": "pass",
+    "alias_identity": "pass",
+    "native_cli": "pass",
+    "icmp": "pass",
+    "history_config": "pass",
+    "shell_aliases": "pass",
+    "upgrade": "pass",
+    "repair": "pass",
+    "uninstall_reinstall": "pass",
+    "conflicts": "pass",
+    "fail_injection": "pass",
+    "cleanup": "pass",
+    "wack": "pass"
+  }
+}
