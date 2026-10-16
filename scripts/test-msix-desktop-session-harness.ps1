@@ -316,7 +316,7 @@ Assert-True (-not (Test-CnMonMsixDesktopPhaseAllowed -Phase 'Screenshots' -Compl
 Assert-True (Test-CnMonMsixDesktopPhaseAllowed -Phase 'Cleanup' -Completed @{}) 'Cleanup must remain available for recovery'
 
 function New-RepairWindowMetadata {
-    param([string]$Heading = 'cn-mon Network Monitor', [string]$Publisher = 'Example Publisher', [string]$Version = '1.3.0.0', [bool]$HeadingVisible = $true, [bool]$RepairVisible = $true, [bool]$RepairEnabled = $true, [int]$PageCount = 1, [int]$SpecificationsCount = 1, [int]$BreadcrumbBarCount = 1)
+    param([string]$Heading = 'cn-mon — Network Monitor', [string]$Publisher = 'Example Publisher', [string]$Version = '1.3.0.0', [bool]$HeadingVisible = $true, [bool]$RepairVisible = $true, [bool]$RepairEnabled = $true, [int]$PageCount = 1, [int]$SpecificationsCount = 1, [int]$BreadcrumbBarCount = 1)
     $specifications = @(); for ($i = 0; $i -lt $SpecificationsCount; $i++) { $specifications += [pscustomobject]@{ name = 'Specifications'; names = @('Specifications', 'Publisher', $Publisher, 'Version', $Version) } }
     $page = [pscustomobject]@{ specifications = $specifications; repair_buttons = @(@{ automation_id = 'SystemSettings_StorageSense_AppSizesAdvanced_AppRepair_Button'; name = 'Repair'; visible = $RepairVisible; enabled = $RepairEnabled }) }
     $breadcrumb = New-CnMonMsixSessionRepairBreadcrumbMetadata -AutomationId 'PermanentNavigationViewBreadcrumbBar' -VisibleNames $(if ($HeadingVisible) { @($Heading) } else { @() })
@@ -324,7 +324,9 @@ function New-RepairWindowMetadata {
 }
 $repairMetadata = New-RepairWindowMetadata
 Assert-True (Test-CnMonMsixSessionRepairTarget -WindowMetadata $repairMetadata -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0') 'scoped candidate Settings metadata with offscreen Specifications values was rejected'
-$duplicateBreadcrumbLabels = New-CnMonMsixSessionRepairBreadcrumbMetadata -AutomationId 'PermanentNavigationViewBreadcrumbBar' -VisibleNames @('cn-mon Network Monitor', 'cn-mon Network Monitor')
+Assert-True (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -Heading 'cn-mon — Network Monitor') -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0') 'reserved-title Settings metadata was rejected'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -Heading 'cn-mon Network Monitor') -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'old unreserved Settings title was accepted'
+$duplicateBreadcrumbLabels = New-CnMonMsixSessionRepairBreadcrumbMetadata -AutomationId 'PermanentNavigationViewBreadcrumbBar' -VisibleNames @('cn-mon — Network Monitor', 'cn-mon — Network Monitor')
 Assert-True ($duplicateBreadcrumbLabels.match_count -eq 2 -and (Test-CnMonMsixSessionRepairTarget -WindowMetadata ([pscustomobject]@{ page_content = $repairMetadata.page_content; breadcrumb_bar_count = 1; breadcrumb_bars = @($duplicateBreadcrumbLabels) }) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'button and text labels for one visible breadcrumb were treated as ambiguous'
 Assert-True (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -RepairEnabled $false) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0') 'disabled candidate Repair control was lost during progress observation'
 Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -Heading 'Other app') -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'wrong visible breadcrumb was accepted'

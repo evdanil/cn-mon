@@ -1,12 +1,12 @@
 # Microsoft Store listing draft
 
-Working editorial copy for the current x64 MSIX package, version 1.3.1.0, which contains the unchanged cn-mon CLI 0.3.0. Store upload rejected historical package 1.3.0.0 because its hidden Start entry required headless-app permission that is not granted to this app. Fresh WACK and installed-package qualification for 1.3.1.0 is pending; certification and publication have not occurred. Frozen records and earlier hosted results apply to 1.3.0.0 only. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for evidence.
+Working editorial copy for the current x64 MSIX package, version 1.3.2.0, which contains the unchanged cn-mon CLI 0.3.0. Store upload rejected package 1.3.0.0 because its hidden Start entry required headless-app permission that is not granted to this app. Package 1.3.1.0 was rejected during package validation because its display name did not match the reserved title. The current package is 1.3.2.0 and uses the exact reserved title `cn-mon — Network Monitor`; upload validation and fresh WACK/installed-package qualification are pending. Frozen qualification records remain historical, and certification/publication have not occurred. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for evidence.
 
 ## Copy-ready English listing
 
-**Product name draft:** cn-mon Network Monitor
+**Product name:** cn-mon — Network Monitor
 
-The package already displays “cn-mon Network Monitor.” Confirm the exact reserved spelling privately in Partner Center before entering the listing title.
+Use the exact reserved spelling “cn-mon — Network Monitor” in Partner Center.
 
 **Short description:**
 
