@@ -223,9 +223,11 @@ with tempfile.TemporaryDirectory(prefix='cnmon-docbytes-') as temp:
 # The README's Linux example must stop before extraction when the checksum
 # verifier reports a mismatch.
 readme = (ROOT / 'README.md').read_text(encoding='utf-8')
-linux_example_start = readme.index('```sh\n', readme.index('On Linux:')) + len('```sh\n')
-linux_example_end = readme.index('\n```', linux_example_start)
-linux_example = readme[linux_example_start:linux_example_end]
+linux_section = re.search(r'^### Linux\s*$([\s\S]*?)(?=^##?\s|\Z)', readme, re.MULTILINE)
+assert linux_section, 'README Linux installation section is missing'
+linux_code = re.search(r'^```sh\s*$\n(.*?)^```\s*$', linux_section.group(1), re.MULTILINE | re.DOTALL)
+assert linux_code, 'README Linux installation shell example is missing'
+linux_example = linux_code.group(1)
 with tempfile.TemporaryDirectory(prefix='cnmon-readme-checksum-') as temp:
     root = Path(temp); fake_bin = root / 'bin'; fake_bin.mkdir()
     (root / 'SHA256SUMS').write_text('0' * 64 + '  cn-mon_0.3.0_linux_amd64.tar.gz\n', encoding='ascii')

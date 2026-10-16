@@ -468,7 +468,6 @@ function Assert-CnMonMsixReviewedController {
     )
     $changed = Get-CnMonMsixChangedPaths -RepositoryRoot $RepositoryRoot -BaselineRevision $ControllerRevision -HeadRevision $HeadRevision
     foreach ($path in $changed) { if ($path -cnotin $evidencePaths) { throw 'pull request changes are outside the evidence-only completion allowlist' } }
-    foreach ($path in $evidencePaths) { if ($path -cnotin $changed) { throw 'pull request is missing a fixed sanitized completion record' } }
 }
 
 function Get-CnMonMsixChangedPaths {

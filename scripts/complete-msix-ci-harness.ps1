@@ -293,13 +293,6 @@ try {
     [IO.File]::WriteAllText($controllerWrapper, 'reviewed controller bytes')
     [IO.File]::WriteAllText($historicalValidator, 'historical validator bytes')
     [IO.File]::WriteAllText($controllerWorkflow, "pin=REVIEWED_COMPLETION_CONTROLLER_REVISION`n")
-    & git -C $controllerRoot add .
-    & git -C $controllerRoot commit --quiet -m reviewed-controller
-    if ($LASTEXITCODE -ne 0) { throw 'reviewed controller fixture commit failed' }
-    $controllerRevision = (& git -C $controllerRoot rev-parse HEAD).Trim()
-    $historicalHash = Get-CnMonMsixGitBlobSha256 -RepositoryRoot $controllerRoot -Revision $controllerRevision -Path 'scripts/complete-msix-qualification.ps1'
-    $controllerWorkflowText = [IO.File]::ReadAllText($controllerWorkflow).Replace('REVIEWED_COMPLETION_CONTROLLER_REVISION', $controllerRevision)
-    [IO.File]::WriteAllText($controllerWorkflow, $controllerWorkflowText)
     foreach ($path in @(
         'packaging/windows/qualification/completion.json',
         'packaging/windows/qualification/local-audit-report.json',
@@ -311,6 +304,13 @@ try {
         [IO.File]::WriteAllText($full, '{}')
     }
     & git -C $controllerRoot add .
+    & git -C $controllerRoot commit --quiet -m reviewed-controller
+    if ($LASTEXITCODE -ne 0) { throw 'reviewed controller fixture commit failed' }
+    $controllerRevision = (& git -C $controllerRoot rev-parse HEAD).Trim()
+    $historicalHash = Get-CnMonMsixGitBlobSha256 -RepositoryRoot $controllerRoot -Revision $controllerRevision -Path 'scripts/complete-msix-qualification.ps1'
+    $controllerWorkflowText = [IO.File]::ReadAllText($controllerWorkflow).Replace('REVIEWED_COMPLETION_CONTROLLER_REVISION', $controllerRevision)
+    [IO.File]::WriteAllText($controllerWorkflow, $controllerWorkflowText)
+    & git -C $controllerRoot add -- .github/workflows/msix.yml
     & git -C $controllerRoot commit --quiet -m evidence-and-pin
     if ($LASTEXITCODE -ne 0) { throw 'evidence controller fixture commit failed' }
     $controllerHead = (& git -C $controllerRoot rev-parse HEAD).Trim()
