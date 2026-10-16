@@ -1,6 +1,6 @@
 # Microsoft Store listing draft
 
-Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Frozen synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; the later hosted MSIX workflow passes 19/19; strict WACK parsing passes all 24 tests, including DPI awareness. The actual visible-desktop run completed alias OFF/ON checks, Repair with data preserved and all five screenshots. LocalAudit, its replayed ReviewedRecord and the hosted MSIX workflow pass 19/19; trust cleanup remains pending, and runtime PerMonitorV2 behavior is unmeasured. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
+Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Frozen synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; the later hosted MSIX workflow passes 19/19; strict WACK parsing passes all 24 tests, including DPI awareness. The actual visible-desktop run completed alias OFF/ON checks, Repair with data preserved and all five screenshots. LocalAudit, its replayed ReviewedRecord and the hosted MSIX workflow pass 19/19; test-signer trust cleanup is complete, and runtime PerMonitorV2 behavior is unmeasured. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
 
 ## Copy-ready English listing
 
@@ -143,6 +143,6 @@ Checked 2026-10-16 against Microsoft's current MSIX documentation:
 - [MSIX categories](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/categories-and-subcategories): a primary category is required; “Developer tools > Networking” is available.
 - [MSIX age ratings](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/age-ratings): the first submission requires the IARC questionnaire; the rating is based on questionnaire answers, including for a free app.
 
-Before publishing the privacy URL, verify the actual history, log, and configuration paths under the installed package identity. The policy describes the CLI's local-file behavior; trust cleanup remains open.
+Before publishing the privacy URL, verify the actual history, log, and configuration paths under the installed package identity. The policy describes the CLI's local-file behavior; test-signer trust cleanup is complete.
 
 This file prepares listing content only. It does not write to Partner Center, reserve a name, or submit or publish the product.
