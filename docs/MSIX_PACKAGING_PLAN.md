@@ -1,0 +1,160 @@
+# cn-mon MSIX Packaging Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Preserve the user's required agent roles and existing checkout.
+
+**Goal:** Produce and qualify an x64 MSIX containing the exact published CLI 0.3.0, with an installed execution alias and reviewable native evidence.
+
+**Architecture:** A small PowerShell packager validates the published ZIP, stages its unchanged payload with the approved manifest/assets, and invokes Windows SDK MakeAppx. Separate native qualification signs a test copy and exercises its registered alias as an ordinary user. CI produces artifacts and evidence; Store submission remains separate.
+
+**Tech Stack:** PowerShell 7 for packaging, Windows PowerShell 5.1 for Appx operations where required, Windows SDK 10.0.26100.0, existing Go 1.27.2 native test helpers, GitHub Actions. No new production dependency.
+
+**Spec:** [Approved MSIX packaging specification](MSIX_PACKAGING_SPEC.md).
+
+Status: implementation authorized under the approved plan, updated 2026-10-16 for the user's repository privacy requirement. This correction changes identity input and artifact handling; it does not authorize Store upload/publication or claim qualification is complete.
+
+## Global constraints
+
+- Planning: `gpt-6-astra` xhigh. Implementation: `gpt-6-luna` xhigh for this Store-related work, applying the user's later reasoning-effort instruction. Independent code review: `gpt-6.1-sol` medium. Do not substitute models or switch to root implementation.
+- Work in the existing isolated checkout on one milestone branch, without a new worktree. Preserve unrelated `.gitignore`, `.ignore` and `graft/` changes. Stage only named milestone files when commits become authorized.
+- Initial MSIX `1.3.0.0` maps to CLI `0.3.0`; versions increase independently. Required environment variables: `CNMON_MSIX_IDENTITY_NAME`, `CNMON_MSIX_IDENTITY_PUBLISHER`, `CNMON_MSIX_PUBLISHER_DISPLAY_NAME`, `CNMON_MSIX_EXPECTED_PFN`. No reserved literal values or unused Store/MSA/SID metadata belong in repository files or unpublished Git history.
+- CLI revision `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed`; archive SHA-256 `3e5ef313b4034202430256f14ac31bfdfc9ae4e7d2d23a9f4c74602cd6c74388`; executable SHA-256 `8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d`.
+- Consume `https://github.com/evdanil/cn-mon/releases/download/v0.3.0/cn-mon_0.3.0_windows_amd64.zip`. Do not rebuild, strip, patch or individually sign its executable. Preserve its README, license and notices byte-for-byte.
+- Single x64 package; `Windows.Desktop`; application `CnMon`; full-trust `cn-mon.exe` alias; only `runFullTrust`; no GUI, PSF, service, Python runtime or Windows App SDK dependency. New utility code and first-party assets use Apache-2.0; retain dependency notices.
+- Keep all existing CLI, native ICMP and signal behavior, and all 31 acceptance mappings. Native Linux and Windows execution remain required. Current archives, tags and publication workflow remain unchanged.
+- The existing Windows test VM (access details kept outside the repository) retains its `C:\work` constraint. File-only probes may unpack/run portable tools there without an installer or system PATH change. Do not register application packages, create accounts, alter trust/policy or elevate there. Routine reversible package testing remains authorized on a compatible disposable environment.
+
+## Environment decisions and evidence limits
+
+Use manifest `MinVersion="10.0.17763.0"`. [Go's minimum requirements](https://go.dev/wiki/MinimumRequirements#windows) specify Windows 10 or later for Go 1.21 and later; the [Go 1.27 notes](https://go.dev/doc/go1.27) do not announce a higher Windows minimum. This supports the proposed floor alongside Microsoft's [Store MSIX installation requirements](https://learn.microsoft.com/windows/msix/supported-platforms#microsoft-store-submissions). It is a compatibility-policy conclusion, not a successful installed-package test on Windows 10 1809. Preserve that distinction in published documentation.
+
+Use a fresh GitHub-hosted `windows-2025` runner for the new packaging job. Its [published image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md#installed-windows-sdks) lists SDK `10.0.26100.0`; existing native jobs continue using their current labels. Pin the new SDK path to `C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64`, require `makeappx.exe` and `signtool.exe`, and record their actual file versions plus runner image/OS information. A missing tool is a failed prerequisite, not permission to install an unspecified replacement. A separately recorded file-only probe may unpack official Microsoft.Windows.SDK.BuildTools `10.0.26100.1742` and portable PowerShell 7 under the existing VM's `C:\work`, recording source/hashes/tool versions without an installer, global PATH change or privilege/trust changes. Such a MakeAppx probe proves packaging only, never installed-package qualification.
+
+The hosted qualification job is the proposed permitted environment for temporary local-account creation and test-certificate trust in `LocalMachine\TrustedPeople`, following the repository's existing disposable native-test pattern. These setup operations are confined to that disposable runner and cleaned up; they are never applied to the existing VM. Generate an ephemeral code-signing certificate whose Subject matches Publisher, store its private material only in a private temporary directory, and upload no key material. The product runs as an ordinary user even though test setup needs the hosted runner's administrative capabilities.
+
+Server-hosted Appx deployment, profile initialization, repair and WACK usability are execution prerequisites to measure. Do not assume that the runner image supplies a usable desktop certification session. [WACK requires an active user session and cannot run in Session 0](https://learn.microsoft.com/windows/uwp/debug-test-perf/windows-app-certification-kit#validate-your-windows-app-using-the-windows-app-certification-kit-from-a-command-line). If the hosted runner cannot exercise a required gate, retain the failed/incomplete report and use a separately available, permitted desktop test environment; no such additional host or credentials are established by this plan. Do not mark qualification complete or silently weaken the gate.
+
+Supply `MaxVersionTested` from the intended qualification machine's Windows major/minor/build with fourth component zero. Record it as a candidate declaration until installed tests pass on that build. Record actual OS edition, build and revision in the evidence; do not present a Server run as a Windows client run or claim every OS above MinVersion was tested.
+
+## Files and interfaces
+
+| File | Responsibility |
+| --- | --- |
+| `packaging/windows/release.json` | Public release URL, CLI version/revision, two payload hashes and initial package version only. No reserved identity/PFN or unused Store metadata. |
+| `packaging/windows/AppxManifest.xml` | Public template with `__CNMON_MSIX_IDENTITY_NAME__`, `__CNMON_MSIX_IDENTITY_PUBLISHER__`, `__CNMON_MSIX_PUBLISHER_DISPLAY_NAME__`; desktop alias, English strings, `runFullTrust`, hidden Start entry and assets. Render values/version/MaxVersionTested with XML APIs into staging only. |
+| `packaging/windows/Assets/StoreLogo.png`, `Square44x44Logo.png`, `Square150x150Logo.png` | Original 50/44/150-pixel package assets; retain an editable first-party source beside them, excluded from the package. |
+| `packaging/windows/README-MSIX.md` | Terminal launch, alias resolution, data locations and package/CLI version explanation. |
+| `scripts/msix-package.psm1` | Shared archive, manifest and payload validation used by the packager and its behavioral tests. No deployment or signing side effects. |
+| `scripts/package-msix.ps1` | Unsigned package assembly, unpack verification and receipt. |
+| `scripts/test-msix-package.ps1` | Dependency-free PowerShell assertions for invalid inputs, paths, identity and post-pack payload verification. |
+| `scripts/test-msix-windows.ps1` | Hosted setup, signed fixture/candidate, ordinary-user installation tests, lifecycle, evidence and cleanup; an explicit certification mode runs WACK. |
+| `cmd/cn-mon/native_msix_windows_test.go` | Test-only installed-alias identity/token and console integration, with `//go:build native && windows`, reusing existing native helpers; no product implementation edits. |
+| `.github/workflows/msix.yml` | Synthetic PR tests; trusted manual build/qualification with four `vars.*` inputs mapped to environment, read-only repository permissions and sanitized summaries only by default. |
+| Existing five packaging/user documents | Current design, implementation status, commands, tested environments and limits. |
+
+The packager and native harness require the four identity environment variables; fail missing, blank, malformed or inconsistent identity/PFN with field-name-only diagnostics. `Read-CnMonMsixIdentity` reads them and returns `{Name, Publisher, PublisherDisplayName, ExpectedPfn}` after Windows package identity API validation. Tests temporarily set synthetic values and restore the caller's environment. Real variables are never needed for PR tests.
+
+Packager interface: `package-msix.ps1 -ReleaseArchive <zip> -OutputDirectory <empty-dir> -SdkBinDirectory <sdk-x64-dir> -PackageVersion 1.3.0.0 -MaxVersionTested <four-part-version>`. It derives `packaging_revision` from Git HEAD and rejects modified/untracked packaging inputs; unrelated workspace files are not silently included. It returns exit 0 only after validation and writes `cn-mon_1.3.0.0_x64.msix` and `msix-receipt.json`; failure returns nonzero and leaves no success receipt or final-named package.
+
+Local/private receipt fields: `schema_version`, `purpose` (`candidate` or `test-fixture`), `package_version`, `cli_version`, `cli_revision`, `packaging_revision`, `archive_sha256`, `binary_sha256`, `name`, `publisher`, `publisher_display_name`, `expected_pfn`, `architecture`, `min_version`, `max_version_tested`, `files` (relative path to SHA-256), `manifest_sha256`, `package_sha256`, `tools`, `signing` (`unsigned` or test certificate thumbprint and signed hash). A signed receipt adds `unsigned_package_sha256` and sets `package_sha256` to the signed artifact's hash. Keep package-relative paths portable and actual tool paths in private provenance only. Real identity-bearing receipts, rendered manifests, packages, certificates and detailed reports are not uploaded automatically; public summaries contain only non-identity release/hash/check status information. GitHub Actions variables are not masked by default and public-repository Actions artifacts are not private storage.
+
+## Review focus
+
+1. A changed download or replaced staged executable must fail before producing a candidate; Task 1 tests both independent checks.
+2. Paths containing spaces and shell metacharacters must remain literal, and unexpected files must not enter the package; Task 1 uses paths with spaces/apostrophes and an extra-file fixture.
+3. A portable `cn-mon` earlier on PATH must not masquerade as installed-alias success; Task 2 proves registered identity and tests command precedence explicitly.
+4. A filtered administrator token must not masquerade as a non-administrator account; Task 2 records SID, group membership and integrity for parent and launched child.
+5. Failure after installation or signing must not leave a user, trusted certificate or package behind, nor leak a PFX in artifacts; Tasks 2 and 3 exercise cleanup and artifact allowlisting.
+
+## Task 1: Verified unsigned package
+
+**Files:** create the packaging directory, validation module, packager and `test-msix-package.ps1` from the file map. **Consumes:** public release input record, local ZIP and separately validated identity environment. **Produces:** unsigned MSIX and receipt for Task 2.
+
+The module exports `Read-CnMonMsixIdentity()` returning the validated environment-derived object above; `Expand-CnMonMsixRelease(ArchivePath, Destination, Release)` returning a relative-path/hash hashtable; `Read-CnMonMsixManifest(ManifestPath, Release, Identity, PackageVersion, MaxVersionTested)` returning validated XML; and `Assert-CnMonMsixPayload(Root, ExpectedFiles)` returning normally or throwing. All parameters except the release/identity objects and hash map are strings. The payload assertion requires exact files/hashes, allowing only MakeAppx-generated footprint files when checking unpacked output.
+
+- [ ] Write the assertion script first, using a disposable directory and the real verified ZIP. A missing module/function is the initial RED; then ensure each failure fixture reaches its intended guard. Example payload regression, with `$root` and `$expected` created by `Expand-CnMonMsixRelease`:
+
+```powershell
+Import-Module ./scripts/msix-package.psm1 -Force
+$exe = Join-Path $root 'cn-mon.exe'
+[IO.File]::AppendAllText($exe, 'changed')
+$rejected = $false
+try { Assert-CnMonMsixPayload -Root $root -ExpectedFiles $expected }
+catch { $rejected = $_.Exception.Message -match 'payload hash mismatch' }
+if (-not $rejected) { throw 'modified executable was accepted' }
+```
+
+- [ ] Use only synthetic identities such as `Example.CnMon`, `CN=Example` and a Windows-derived matching PFN. Add missing/blank variable cases, malformed Publisher/Name, a mismatched PFN and a source manifest whose identity placeholder was replaced with a literal; require rejection without echoing input values. Prove rendering changes only staging and `release.json` contains no identity. Add independent cases for one corrupted archive byte, missing archive, wrong Name/Publisher/x64/alias, zero major/nonzero fourth/out-of-range/malformed version, a missing referenced asset, unexpected staged file, and literal paths with spaces/apostrophes. Prove invalid archive/manifest failures happen before MakeAppx and do not overwrite an existing output directory or produce a success receipt. Test the valid package as the positive control.
+- [ ] Run `pwsh -NoProfile -File scripts/test-msix-package.ps1 -ReleaseArchive <verified-zip> -SdkBinDirectory <sdk-x64-dir>` and retain the failing behavior. Implement the smallest module and script needed for GREEN; use XML APIs and argument arrays, never generated command strings or `Invoke-Expression`.
+- [ ] Before extraction, verify the pinned archive hash and inspect its entries. Accept only the four expected release files under `cn-mon_0.3.0_windows_amd64/`; reject rooted/traversal paths, duplicates and unexpected files. Validate the executable hash and exact version output. Stage only the four originals plus rendered manifest, three PNGs and `README-MSIX.md`.
+- [ ] Render validated manifest values and create the package without `/nv`. Perform the actual pack/unpack and compare contents using the shared assertion:
+
+```powershell
+& (Join-Path $SdkBinDirectory 'makeappx.exe') pack /d $stage /p $temporaryPackage /no
+if ($LASTEXITCODE -ne 0) { throw 'MakeAppx pack failed' }
+& (Join-Path $SdkBinDirectory 'makeappx.exe') unpack /p $temporaryPackage /d $unpacked /no
+if ($LASTEXITCODE -ne 0) { throw 'MakeAppx unpack failed' }
+Assert-CnMonMsixPayload -Root $unpacked -ExpectedFiles $expectedPackageFiles
+```
+
+- [ ] Re-run the assertion script to GREEN and refactor only duplicated validation. Module tests run against the editable working files. For positive whole-script tests before committing the branch, copy just the required packaging files into a temporary Git repository and create a fixture commit there; invoke the packager in that clean fixture and label its outputs test-only. Once commits are authorized, commit the named branch files as `feat: package the qualified Windows release as MSIX`, then produce and inspect the real candidate/receipt from that committed packaging revision. Do not stage unrelated files or weaken the clean-input guard to run tests.
+
+## Task 2: Signed candidate and installed ordinary-user evidence
+
+**Files:** create `scripts/test-msix-windows.ps1` and `cmd/cn-mon/native_msix_windows_test.go`; reuse existing helpers in `native_windows_test.go`, `native_windows_terminal_test.go`, `native_rerun_test.go` and configuration tests. **Consumes:** Task 1 package/receipt and SDK tools. **Produces:** separately named signed candidate, fixture receipts, native transcripts and `msix-native-results.json` with explicit pass/fail/incomplete gates.
+
+Harness interface: `test-msix-windows.ps1 -Mode Hosted|User|Certify -PackagePath <msix> -ReceiptPath <json> -SdkBinDirectory <sdk-x64-dir> -ArtifactDirectory <dir> [-ExpectedSid <sid>] [-FailAfterInstall]`. The last switch injects the cleanup-test failure only. `Hosted` is restricted to a fresh GitHub-hosted runner; `User` requires an already trusted signed input and an ordinary account, and performs no trust/account setup; `Certify` performs WACK in a suitable active user session. An unsupported prerequisite returns nonzero with `incomplete`, never PASS or a silent skip.
+
+- [ ] Add a test-only gate before implementing setup: a missing or differently registered package cannot qualify, and setting `CNMON_NATIVE_COMMAND_BINARY` to a portable copy must fail the new MSIX selection test. Compile the existing native test executable; the tested application is still the published binary:
+
+```powershell
+go test -tags native -c -o "$artifactDir\msix-tests.exe" ./cmd/cn-mon
+if ($LASTEXITCODE -ne 0) { throw 'native test helper compilation failed' }
+$env:CNMON_MSIX_TEST = '1'
+$env:CNMON_NATIVE_COMMAND = '1'
+$env:CNMON_NATIVE_COMMAND_BINARY = $portableCopy
+& "$artifactDir\msix-tests.exe" -test.run '^TestNativeMSIXInstalledAlias$' -test.v
+if ($LASTEXITCODE -eq 0) { throw 'portable executable falsely qualified as installed MSIX' }
+```
+
+- [ ] Implement hosted setup using the existing `test-native-command-windows.ps1` account/credential/timeout pattern, without calling that script to stage a copy of the product. Create one unique ordinary user, initialize/load its real profile, and verify it is not a member of Administrators, has medium integrity and is not elevated. Inspect Appx command/service availability and fail clearly if registration cannot run in that account/session.
+- [ ] Copy the unsigned candidate, create a short-lived matching-Subject code-signing certificate, sign with SHA-256 and verify the signature/trust. Import only the test certificate into the disposable runner's TrustedPeople store, never TrustedRoot. Record all created objects before mutation for cleanup. Unpack signed output and recheck every original payload hash; write a new signed receipt linked to the unsigned hash. Create a separate lower-version `1.2.999.0` configuration/upgrade fixture with the same binary and identity plus a recorded adjacent `.cn` file; label it `test-fixture` and never publish it as the candidate.
+- [ ] As the ordinary user, register the package using `Add-AppxPackage -Path $PackagePath`, obtain it with `Get-AppxPackage -Name $env:CNMON_MSIX_IDENTITY_NAME`, and compare Name, Publisher, x64, version and PFN. Hash the installed `InstallLocation\cn-mon.exe`; separately resolve and invoke the user's `%LOCALAPPDATA%\Microsoft\WindowsApps\cn-mon.exe` alias. The Go gate checks package identity of the launched process with the Windows package-identity API, not just the parent or a matching filename. Invoke both bare command spellings in fresh PowerShell and Command Prompt sessions without globally modifying PATH.
+- [ ] Require GREEN for help/version; literal arguments and relative paths; stdin, stdout/stderr and exits 0/1/2/3; simultaneous runs; IPv4/IPv6 echo; local TCP open/refused; history write/list/show/rerun. Use bounded loopback fixtures, never public DNS/network silence as a deterministic oracle. The MSIX ordinary-user gate requires ICMP success; the older general native suite's accepted permission-denial branch does not pass this new gate.
+- [ ] Run actual private-console helpers through the installed alias for `q`, `v`, Ctrl+C, follow, redirection and restoration. Reuse helpers rather than copying them wholesale; any necessary changes stay in `_test.go` files and preserve existing native selectors. Ensure no helper follows the alias and copies the executable out of the package. Retain a child PID/package-family witness and console-state results.
+- [ ] Verify real user-profile defaults and both `.cn` layers with deliberate differing settings, then explicit config/CLI overrides and caller-relative paths. Bypass `nativeCommandEnv`'s temporary `USERPROFILE`/`APPDATA`/`LOCALAPPDATA` rewriting for real-profile and alias tests; selectively reuse its console/process helpers while retaining the ordinary account's actual environment. Check files from outside the package. Upgrade from the fixture to the exact candidate; test repair through the OS-supported repair operation, uninstall, alias removal, data retention and reinstall. If no repair operation is available, report that gate incomplete; `Reset-AppxPackage` is not a substitute for data-preserving repair. Exercise a portable PATH conflict and disabled alias, recording supported recovery without overwriting another command.
+- [ ] Inject a controlled failure after package installation; require nonzero result and cleanup evidence. In `finally`, terminate only owned processes, remove owned packages in their user's context, restore/remove test profile files, delete only the created certificate/key and account, and report cleanup failures. Never remove a pre-existing package or certificate. Re-run the full successful path to GREEN, then commit named test files as `test: qualify the installed MSIX as an ordinary user` when authorized.
+
+## Task 3: Artifact-only Windows CI and certification preflight
+
+**Files:** create `.github/workflows/msix.yml`; extend only the new test scripts as needed. **Consumes:** committed Task 1/2 inputs. **Produces:** local/job-scoped same-revision packages and qualification evidence, plus sanitized public summaries; no default identity-bearing artifact upload, Store credentials or publication action.
+
+- [ ] Add synthetic PR tests and a trusted manual-dispatch build with `contents: read`, 60-minute timeout, exact selected checkout, `persist-credentials: false`, and existing full-SHA action pins. PR jobs supply synthetic environment values and never map real `vars.*` into arbitrary PR code. The real-identity manual job is restricted to the trusted reviewed branch/revision. Use `windows-2025`, the selected SDK and setup-go 1.27.2 for test helpers; verify the fixed release download hash.
+- [ ] In the trusted manual job map each required input, for example `CNMON_MSIX_IDENTITY_NAME: ${{ vars.CNMON_MSIX_IDENTITY_NAME }}`, and apply the equivalent mapping for Publisher, PublisherDisplayName and ExpectedPfn. Validate presence without printing values; register each with Actions `add-mask` before external tools. Do not echo environment, resolved manifest, certificate Subject, PFN or raw tool errors. Masking is defensive log handling, not cryptographic secrecy or artifact access control.
+- [ ] Run real build and Hosted qualification sequentially in the same job, checking the recorded package hash between steps; this removes any need to upload real packages/receipts for inter-job transfer. Keep detailed outputs in a private local/job directory by default. Hosted ephemeral outputs may disappear after the job; do not promise retained private evidence without an actual approved private destination. A local private build can retain them until an explicit transfer/publication decision.
+- [ ] Automatically upload only an allowlisted sanitized result summary. Do not upload real `.msix`, resolved manifests, full receipts, public certificates, detailed logs or WACK XML/HTML without explicit artifact publication authorization and review of destination access. Never upload PFX/private keys/passwords. Test the collector with a dummy `.pfx` and a synthetic identity-bearing receipt; require rejection rather than inclusion. Keep sanitized failure status with `if: always()` and report detailed evidence availability honestly.
+- [ ] Discover WACK at `C:\Program Files (x86)\Windows Kits\10\App Certification Kit\appcert.exe` and check its help and session context. In Certify mode on a permitted active-session host, execute the documented form and inspect both exit status and report:
+
+```powershell
+& $appcert reset
+if ($LASTEXITCODE -ne 0) { throw 'WACK reset failed' }
+& $appcert test -appxpackagepath $PackagePath -reportoutputpath "$ArtifactDirectory\wack.xml"
+if ($LASTEXITCODE -ne 0) { throw 'WACK execution failed; retain report' }
+```
+
+- [ ] If the hosted job lacks a usable WACK session, repair flow or Appx deployment, keep that job/gate incomplete and retain the diagnostic. Do not add `continue-on-error` to make qualification appear successful. A later permitted desktop run must consume the same signed candidate and receipt; if packaging inputs change, rebuild and rerun affected gates.
+- [ ] Validate workflow changes on the branch, require real Windows pack/installed tests and explicit failures from the corrupted-input/portable-alias/artifact-secret fixtures, and record run URLs. Keep the existing `.github/workflows/native.yml` Linux and Windows native jobs required; do not replace them with cross-compilation or this narrower package suite. Commit named CI changes as `ci: retain MSIX artifacts and native qualification evidence` when authorized.
+
+## Task 4: Close qualification, documentation and reviews
+
+**Files:** `README.md`, `docs/APPLICATION_SPEC.md`, `docs/DEVELOPMENT_PLAN.md`, `docs/WINDOWS_STORE_PREPARATION.md`, `docs/MSIX_PACKAGING_SPEC.md`, `docs/MSIX_PACKAGING_PLAN.md`, and packaged `README-MSIX.md` if observed behavior requires a correction. **Consumes:** exact package and all same-revision results. **Produces:** one reviewable milestone PR with accurate status and reproducible evidence.
+
+- [ ] Require the full spec acceptance matrix, native Linux and Windows checks, ordinary-user installed alias/ICMP/console/lifecycle evidence and WACK report. A missing desktop environment, unsupported repair operation or incomplete WACK is an open gate; report the exact missing evidence and do not claim milestone completion. Distinguish declared Windows minimum, actual tested OS editions/builds and eventual Store certification.
+- [ ] Update existing prose in place with final package/CLI mapping, identity variable contract, command alias, installation/test instructions, data retention and known limits. Preserve portable archive instructions and original hashes. Do not add unused Store identifiers, reserved identity values or submission automation to public prose. Verify no signing key, secret, test-only configuration or fixture package is included in candidate payload/artifacts; scan tracked files and unpublished commits for reserved values before pushing. The installable package necessarily exposes its own identity to recipients; this is a repository/distribution boundary, not a promise of secret package identity.
+- [ ] Run `git diff --check`, relative Markdown link checks, `pwsh -NoProfile -File scripts/test-msix-package.ps1` with its documented inputs, and the existing source/native CI checks at the reviewed commit. Rerun only affected checks after fixes, retaining the exact tested package hash. Check no production `.go` file changed and the embedded executable remains the approved hash.
+- [ ] Request independent `gpt-6.1-sol` medium review of code, workflow, receipts and test evidence. Resolve findings; publish the milestone PR to `main` when authorized, then post `@codex review`. Monitor it, fix actionable findings and rerun affected checks. Pending/unavailable external review remains incomplete; merge only after required checks and both reviews are resolved.
+
+## Self-review and handoff
+
+Spec coverage: identity/version/provenance/manifest/build → Task 1; signing, PFN and installed CLI/data/console/lifecycle → Task 2; isolated CI, artifact retention and WACK → Task 3; native regression gates, docs and independent/external review → Task 4. All five review-focus risks have explicit failure or native checks. No task changes application behavior or authorizes Store submission.
+
+Continue under the user's existing implementation authorization with the revised identity contract and required Luna implementer/Sol reviewer. Do not add another approval pause for this direct privacy correction; explicit publication authorization is still required before releasing identity-bearing artifacts.

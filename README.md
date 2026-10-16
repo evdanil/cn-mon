@@ -4,13 +4,13 @@
 
 ## Download a release
 
-Download [cn-mon 0.3.0](https://github.com/evdanil/gotest/releases/tag/v0.3.0), published 2026-10-11 from qualified source `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed`: [Linux archive](https://github.com/evdanil/gotest/releases/download/v0.3.0/cn-mon_0.3.0_linux_amd64.tar.gz), [Windows archive](https://github.com/evdanil/gotest/releases/download/v0.3.0/cn-mon_0.3.0_windows_amd64.zip), and [SHA256SUMS](https://github.com/evdanil/gotest/releases/download/v0.3.0/SHA256SUMS). All 13 jobs in [final run 38124176778](https://github.com/evdanil/gotest/actions/runs/38124176778) passed, including native qualification on both platforms and verification of the public tag and asset bytes. Version 0.3.0 includes saved-batch rerun, history management and live display refinements, with all 31 acceptance mappings retained.
+Download [cn-mon 0.3.0](https://github.com/evdanil/cn-mon/releases/tag/v0.3.0), published 2026-10-11 from qualified source `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed`: [Linux archive](https://github.com/evdanil/cn-mon/releases/download/v0.3.0/cn-mon_0.3.0_linux_amd64.tar.gz), [Windows archive](https://github.com/evdanil/cn-mon/releases/download/v0.3.0/cn-mon_0.3.0_windows_amd64.zip), and [SHA256SUMS](https://github.com/evdanil/cn-mon/releases/download/v0.3.0/SHA256SUMS). All 13 jobs in [final run 38124176778](https://github.com/evdanil/gotest/actions/runs/38124176778) passed, including native qualification on both platforms and verification of the public tag and asset bytes. Version 0.3.0 includes saved-batch rerun, history management and live display refinements, with all 31 acceptance mappings retained.
 
 Earlier [0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0) and [0.2.0](https://github.com/evdanil/gotest/releases/tag/v0.2.0) sources, tags and assets remain unchanged. Their qualification evidence and the 0.3.0 public hashes are recorded in the [development plan](docs/DEVELOPMENT_PLAN.md).
 
 ### Microsoft Store status
 
-Preparation is underway for a CLI-only Store package, with x64 MSIX as the recommended starting route. `cn-mon` is not currently available in Microsoft Store: the Partner Center identity has not been reserved, and packaged CLI behavior, eligibility and certification remain unverified. See the [Windows Store preparation guide](docs/WINDOWS_STORE_PREPARATION.md).
+The Partner Center identity is reserved for a CLI-only x64 MSIX package. The [approved packaging specification](docs/MSIX_PACKAGING_SPEC.md) maps initial package version `1.3.0.0` to the unchanged CLI `0.3.0` executable; the [implementation plan](docs/MSIX_PACKAGING_PLAN.md) uses GitHub Actions variables for reserved identity values and a public manifest template. Real package/receipt publication requires separate authorization. `cn-mon` is not currently available in Microsoft Store; installed-package behavior, eligibility and certification remain unverified. Store upload/publication is a separate stage. See the [Windows Store preparation guide](docs/WINDOWS_STORE_PREPARATION.md).
 
 ### Install cn-mon 0.3.0
 
