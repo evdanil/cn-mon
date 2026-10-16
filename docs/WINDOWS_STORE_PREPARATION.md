@@ -12,6 +12,21 @@ The [copy-ready Microsoft Store listing](WINDOWS_STORE_LISTING.md) links its lic
 
 These facts describe the current source and release. Packaging behavior, Store policy eligibility, and certification outcomes must be established against an actual Windows package and the current Partner Center requirements.
 
+## Read-only desktop preflight
+
+The standalone preflight inventories the current session/token, SDK tools, AppCert, Appx cmdlets, and optional package/receipt hashes, signature, and registration. Its fixed-schema JSON report is an eligibility inventory, not qualification evidence. The script makes no deployment, trust, account, package-reset, or certification changes; it writes only `msix-desktop-preflight.json` under the specified artifact directory. Run its pure helper/safety harness separately:
+
+```powershell
+pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
+pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1 `
+  -PackagePath <PackagePath> `
+  -ReceiptPath <ReceiptPath> `
+  -SdkBinDirectory <SdkBinDirectory> `
+  -ArtifactDirectory <ArtifactDirectory>
+```
+
+The Windows pure-helper safety probe passed. The completed read-only VM inventory found OS build `26200`; the current SSH context is Session 0 and is not desktop-session eligible, without establishing whether another interactive session exists. The current token is not elevated or administrator and has no Administrators SID. MakeAppx, SignTool and all three Appx cmdlets are available; AppCert is absent. The private unsigned package hash matches its receipt, and the expected package/version is not registered for the current user. Hosted inventory remains pending the next CI run. The synthetic workflow retains the fixed-schema preflight JSON. In the trusted manual workflow, detailed output remains job-private and only the sanitized summary is uploaded. This read-only step leaves the existing VM's file-only constraint unchanged and does not authorize desktop mutations.
+
 ## Distribution route
 
 Microsoft's [Store submission overview](https://learn.microsoft.com/windows/apps/publish/) describes two relevant routes:
