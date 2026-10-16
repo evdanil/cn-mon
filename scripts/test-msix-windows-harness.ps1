@@ -265,13 +265,12 @@ try {
         if ($IsWindows) {
             $fakeContent = @'
 @echo off
-echo(%~1| findstr /b /c:"-test.list=" >nul
-if not errorlevel 1 (
-  if "%CNMON_HARNESS_EMPTY_LIST%"=="1" exit /b 0
-  echo TestNativeMSIXFixtureAdjacentConfig
-  exit /b 0
-)
+if /i "%~1"=="-test.list" goto list
 echo CNMON_HARNESS_MARKER=passed
+exit /b 0
+:list
+if "%CNMON_HARNESS_EMPTY_LIST%"=="1" exit /b 0
+echo TestNativeMSIXFixtureAdjacentConfig
 exit /b 0
 '@
         }
@@ -295,9 +294,9 @@ exit 0
         $oldEmpty = $env:CNMON_HARNESS_EMPTY_LIST
         try {
             $env:CNMON_HARNESS_EMPTY_LIST = '1'
-            Assert-Throws { Invoke-CnMonMsixNativeTests -Name 'empty-list' -TestExe $fakeExe -Pattern 'NativeMSIXFixtureAdjacentConfig' -RequiredMarkers @('CNMON_HARNESS_MARKER=passed') } 'zero-match child incorrectly passed native qualification'
+            Assert-Throws { Invoke-CnMonMsixNativeTests -Name 'empty-list' -TestExe $fakeExe -Pattern 'TestNativeMSIXFixtureAdjacentConfig' -RequiredMarkers @('CNMON_HARNESS_MARKER=passed') } 'zero-match child incorrectly passed native qualification'
             Remove-Item Env:CNMON_HARNESS_EMPTY_LIST -ErrorAction SilentlyContinue
-            $output = Invoke-CnMonMsixNativeTests -Name 'known-test' -TestExe $fakeExe -Pattern 'NativeMSIXFixtureAdjacentConfig' -RequiredMarkers @('CNMON_HARNESS_MARKER=passed')
+            $output = Invoke-CnMonMsixNativeTests -Name 'known-test' -TestExe $fakeExe -Pattern 'TestNativeMSIXFixtureAdjacentConfig' -RequiredMarkers @('CNMON_HARNESS_MARKER=passed')
             Assert-True ($output -match 'CNMON_HARNESS_MARKER=passed') 'known selected test did not preserve its required witness'
         }
         finally {
