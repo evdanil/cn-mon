@@ -63,6 +63,25 @@ $repairObservationAst = $sourceAst.Find({
 }, $true)
 Assert-True ($null -ne $repairObservationAst) 'desktop Repair observation constructor is missing'
 Assert-True ([regex]::IsMatch($repairObservationAst.Extent.Text, '\$button\s*=\s*\[pscustomobject\]@\{\s*name\s*=\s''Repair''\s+element\s*=\s*\$element\s+enabled\s*=')) 'actual Repair observation does not bind its exact name, UIA element, and enabled state'
+$seedAst = $sourceAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -ceq 'Invoke-CnMonMsixSessionSeed'
+}, $true)
+Assert-True ($null -ne $seedAst) 'profile seed function is missing'
+$configAssignment = $seedAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $candidate.Left.Extent.Text -ceq '$config'
+}, $true)
+Assert-True ($null -ne $configAssignment) 'profile seed config rendering is missing'
+$profileFixture = Join-Path ([IO.Path]::GetTempPath()) ('cnmon-profile fixture ' + [Guid]::NewGuid().ToString('N'))
+$profileHistory = [IO.Path]::GetFullPath((Join-Path $profileFixture 'msix-profile-history.db'))
+$profileLog = [IO.Path]::GetFullPath((Join-Path $profileFixture 'msix-profile.log'))
+$renderProfileConfig = [scriptblock]::Create($configAssignment.Right.Extent.Text)
+$renderedProfileConfig = & $renderProfileConfig
+Assert-True ($renderedProfileConfig.Contains("history_file = $profileHistory`n", [StringComparison]::Ordinal)) 'profile history path was not rendered as an absolute path with spaces preserved'
+Assert-True ($renderedProfileConfig.Contains("logfile = $profileLog`n", [StringComparison]::Ordinal)) 'profile log path was not rendered as an absolute path with spaces preserved'
 
 $empty = @{}
 Assert-True (Test-CnMonMsixDesktopPhaseAllowed -Phase 'Prepare' -Completed $empty) 'Prepare should be allowed first'

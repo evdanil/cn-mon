@@ -1022,7 +1022,9 @@ function Invoke-CnMonMsixSessionSeed {
     }
     finally { Set-CnMonMsixSessionUserFileHash -Paths $defaults }
 
-    $config = "[ping]`nhistory_file = msix-profile-history.db`n[logging]`nlogfile = msix-profile.log`n"
+    $profileHistory = [IO.Path]::GetFullPath((Join-Path $profile 'msix-profile-history.db'))
+    $profileLog = [IO.Path]::GetFullPath((Join-Path $profile 'msix-profile.log'))
+    $config = "[ping]`nhistory_file = $profileHistory`n[logging]`nlogfile = $profileLog`n"
     $stream = [IO.File]::Open($profileConfig, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try {
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($config)
