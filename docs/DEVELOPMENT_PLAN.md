@@ -1,6 +1,6 @@
 # cn-mon development and review plan
 
-M0–M11 are complete through [PR #20](https://github.com/evdanil/gotest/pull/20), merged as `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed` at `2026-10-11T08:15:12Z`. [Version 0.3.0](https://github.com/evdanil/gotest/releases/tag/v0.3.0) was freshly built, qualified and published from that exact source at `2026-10-11T08:24:40Z`, after the required checks and both reviews. All 13 final release jobs passed. The evidence below distinguishes merged source, unpublished candidates and verified public release bytes.
+M0–M11 are complete through [PR #20](https://github.com/evdanil/gotest/pull/20), merged as `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed` at `2026-10-11T08:15:12Z`. [Version 0.3.0](https://github.com/evdanil/gotest/releases/tag/v0.3.0) was freshly built, qualified and published from that exact source at `2026-10-11T08:24:40Z`, after the required checks and both reviews. All 13 final release jobs passed. M12, Windows MSIX packaging, is now in progress: package construction and native payload verification are complete, while installed-package qualification and WACK remain pending. The evidence below distinguishes merged source, unpublished candidates and verified public release bytes.
 
 Version 0.3.0 delivers M10 saved-batch rerun alongside the existing monitor, history management and display refinements, retaining all 31 acceptance mappings. No stripping or production behavior change was part of M11. Published 0.1.0 and 0.2.0 source, tags and assets remain unchanged; this later documentation update also leaves the exact 0.3.0 source snapshot and assets unchanged.
 
@@ -32,9 +32,12 @@ M0 specification/license boundary
                                  └─ M9 strict 0.2.0 qualification and delivery
                                      └─ M10 saved-batch rerun implementation
                                          └─ M11 strict 0.3.0 qualification and delivery
+                                             └─ M12 Windows MSIX packaging and installed qualification (in progress)
 ```
 
 M0–M11 are merged; versions 0.1.0, 0.2.0 and 0.3.0 passed exact merged-source qualification and publication at M6, M9 and M11 respectively. An acceptance ID referenced before its full integration milestone covers only the named component portion, not the entire scenario. Explicit-JSON target commands passed the M4 gate; reader commands, human formats and terminal integration passed M5, and the original release-binary matrix belongs to M6. M7 adds reviewed history management and M8 adds validated display refinements; M9 delivers both in qualified version 0.2.0. M10 implements rerun; M11 separately qualifies and delivers it in 0.3.0. Keep these component/integration boundaries when preparing dependent milestone PRs.
+
+M12 uses the [approved MSIX plan](MSIX_PACKAGING_PLAN.md). The package implementation in `2d64c4c` passed 34 local assertions and 42 native Windows assertions, including actual MakeAppx pack/unpack payload verification. A real-identity unsigned candidate was generated privately from those package inputs. It has not been signed, installed or qualified. The in-progress Windows harness and workflow do not yet establish hosted installed-package, lifecycle or WACK success; Store upload/publication remains outside the milestone.
 
 ### M0 — specification and permissive-license foundation (merged)
 
@@ -489,3 +492,5 @@ Progress checklist:
 - [x] M10 saved-batch rerun, source/native/candidate gates, reviews and merge ([PR #19](https://github.com/evdanil/gotest/pull/19), `8b145ceb557f392b96579f18c0705e407cb77ac1`)
 - [x] M11 strict 0.3.0 tooling, source/native/candidate gates and reviews merged ([PR #20](https://github.com/evdanil/gotest/pull/20), `bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed`)
 - [x] Exact M11 merged-source qualification and authorized [0.3.0 publication](https://github.com/evdanil/gotest/releases/tag/v0.3.0)
+- [x] M12 MSIX package construction and native payload verification (`2d64c4c`; private unsigned candidate generated)
+- [ ] M12 installed-package qualification, hosted workflow/WACK evidence, reviews and milestone PR

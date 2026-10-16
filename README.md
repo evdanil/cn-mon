@@ -10,7 +10,7 @@ Earlier [0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0) and [0.2.
 
 ### Microsoft Store status
 
-The Partner Center identity is reserved for a CLI-only x64 MSIX package. The [approved packaging specification](docs/MSIX_PACKAGING_SPEC.md) maps initial package version `1.3.0.0` to the unchanged CLI `0.3.0` executable; the [implementation plan](docs/MSIX_PACKAGING_PLAN.md) uses GitHub Actions variables for reserved identity values and a public manifest template. Real package/receipt publication requires separate authorization. `cn-mon` is not currently available in Microsoft Store; installed-package behavior, eligibility and certification remain unverified. Store upload/publication is a separate stage. See the [Windows Store preparation guide](docs/WINDOWS_STORE_PREPARATION.md).
+The approved x64 MSIX maps package version `1.3.0.0` to the unchanged CLI `0.3.0` executable. Unsigned package assembly is complete and a real-identity candidate was generated privately; it has not been signed, installed or qualified. PR workflow jobs use a synthetic identity. A trusted manual run reads the four identity inputs from protected GitHub environment secrets and uploads only sanitized status summaries. `cn-mon` is not currently available in Microsoft Store; installed-package behavior, eligibility and certification remain unverified. Store upload/publication is a separate stage. See the [MSIX specification](docs/MSIX_PACKAGING_SPEC.md), [implementation plan](docs/MSIX_PACKAGING_PLAN.md) and [Windows Store preparation guide](docs/WINDOWS_STORE_PREPARATION.md).
 
 ### Install cn-mon 0.3.0
 
