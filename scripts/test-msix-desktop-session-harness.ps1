@@ -21,6 +21,7 @@ $helperNames = @(
     'Test-CnMonMsixDesktopPhaseAllowed',
     'Test-CnMonMsixSessionStateBinding',
     'Test-CnMonMsixSessionRepairTarget',
+    'New-CnMonMsixSessionRepairBreadcrumbMetadata',
     'Test-CnMonMsixSessionRepairActionAllowed',
     'Test-CnMonMsixSessionRepairObservationAllowsInvoke',
     'Test-CnMonMsixSessionSettingsWindowBinding',
@@ -64,7 +65,9 @@ $repairObservationAst = $sourceAst.Find({
         $candidate.Name -ceq 'Get-CnMonMsixSessionRepairObservation'
 }, $true)
 Assert-True ($null -ne $repairObservationAst) 'desktop Repair observation constructor is missing'
-Assert-True ([regex]::IsMatch($repairObservationAst.Extent.Text, '\$button\s*=\s*\[pscustomobject\]@\{\s*name\s*=\s''Repair''\s+element\s*=\s*\$element\s+enabled\s*=')) 'actual Repair observation does not bind its exact name, UIA element, and enabled state'
+Assert-True ($repairObservationAst.Extent.Text.Contains('automation_id = [string]$_.Current.AutomationId', [StringComparison]::Ordinal) -and
+    $repairObservationAst.Extent.Text.Contains('element = $repairControls[0]', [StringComparison]::Ordinal) -and
+    $repairObservationAst.Extent.Text.Contains('enabled = [bool]$repairControls[0].Current.IsEnabled', [StringComparison]::Ordinal)) 'actual Repair observation does not bind its exact control, UIA element, and enabled state'
 $openSettingsAst = $sourceAst.Find({
     param($candidate)
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -207,8 +210,27 @@ Assert-True (Test-CnMonMsixDesktopPhaseAllowed -Phase 'RepairAfter' -Completed $
 Assert-True (-not (Test-CnMonMsixDesktopPhaseAllowed -Phase 'Screenshots' -Completed $completed)) 'screenshots ran before repair readback'
 Assert-True (Test-CnMonMsixDesktopPhaseAllowed -Phase 'Cleanup' -Completed @{}) 'Cleanup must remain available for recovery'
 
-Assert-True (Test-CnMonMsixSessionRepairTarget -VisibleNames @('cn-mon Network Monitor', 'Example Publisher', '1.3.0.0') -RepairButtonName 'Repair' -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0') 'exact candidate Settings page was rejected'
-Assert-True (Test-CnMonMsixSessionRepairTarget -VisibleNames @('cn-mon Network Monitor', 'Example Publisher', '1.3.0.0') -RepairButtonName 'Repair' -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0') 'disabled candidate Repair control was lost during progress observation'
+function New-RepairWindowMetadata {
+    param([string]$Heading = 'cn-mon Network Monitor', [string]$Publisher = 'Example Publisher', [string]$Version = '1.3.0.0', [bool]$HeadingVisible = $true, [bool]$RepairVisible = $true, [bool]$RepairEnabled = $true, [int]$PageCount = 1, [int]$SpecificationsCount = 1, [int]$BreadcrumbBarCount = 1)
+    $specifications = @(); for ($i = 0; $i -lt $SpecificationsCount; $i++) { $specifications += [pscustomobject]@{ name = 'Specifications'; names = @('Specifications', 'Publisher', $Publisher, 'Version', $Version) } }
+    $page = [pscustomobject]@{ specifications = $specifications; repair_buttons = @(@{ automation_id = 'SystemSettings_StorageSense_AppSizesAdvanced_AppRepair_Button'; name = 'Repair'; visible = $RepairVisible; enabled = $RepairEnabled }) }
+    $breadcrumb = New-CnMonMsixSessionRepairBreadcrumbMetadata -AutomationId 'PermanentNavigationViewBreadcrumbBar' -VisibleNames $(if ($HeadingVisible) { @($Heading) } else { @() })
+    return [pscustomobject]@{ page_content = @($page) * $PageCount; breadcrumb_bar_count = $BreadcrumbBarCount; breadcrumb_bars = @($breadcrumb) }
+}
+$repairMetadata = New-RepairWindowMetadata
+Assert-True (Test-CnMonMsixSessionRepairTarget -WindowMetadata $repairMetadata -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0') 'scoped candidate Settings metadata with offscreen Specifications values was rejected'
+$duplicateBreadcrumbLabels = New-CnMonMsixSessionRepairBreadcrumbMetadata -AutomationId 'PermanentNavigationViewBreadcrumbBar' -VisibleNames @('cn-mon Network Monitor', 'cn-mon Network Monitor')
+Assert-True ($duplicateBreadcrumbLabels.match_count -eq 2 -and (Test-CnMonMsixSessionRepairTarget -WindowMetadata ([pscustomobject]@{ page_content = $repairMetadata.page_content; breadcrumb_bar_count = 1; breadcrumb_bars = @($duplicateBreadcrumbLabels) }) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'button and text labels for one visible breadcrumb were treated as ambiguous'
+Assert-True (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -RepairEnabled $false) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0') 'disabled candidate Repair control was lost during progress observation'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -Heading 'Other app') -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'wrong visible breadcrumb was accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -Publisher 'Other publisher') -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'wrong scoped Specifications publisher was accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -Version '9.9.9.9') -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'wrong scoped Specifications version was accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -HeadingVisible $false) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'offscreen exact breadcrumb was accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -RepairVisible $false) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'offscreen Repair control was accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -PageCount 2) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'duplicate pageContent was accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -SpecificationsCount 0) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'missing Specifications group was accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -SpecificationsCount 2) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'duplicate Specifications groups were accepted'
+Assert-True (-not (Test-CnMonMsixSessionRepairTarget -WindowMetadata (New-RepairWindowMetadata -BreadcrumbBarCount 2) -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'duplicate breadcrumb bars were accepted'
 Assert-True (-not (Test-CnMonMsixSessionRepairActionAllowed -CandidatePageVerified $true -RepairButtonName 'Repair' -RepairButtonEnabled $false)) 'disabled Repair control authorized activation or completion'
 Assert-True (Test-CnMonMsixSessionRepairActionAllowed -CandidatePageVerified $true -RepairButtonName 'Repair' -RepairButtonEnabled $true) 'enabled candidate Repair control was rejected'
 $repairObservation = [pscustomobject]@{
@@ -220,8 +242,6 @@ $repairObservation.repair_button.enabled = $true
 Assert-True (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $repairObservation) 'enabled button from the real observation shape did not authorize Invoke'
 $repairObservation.repair_button.PSObject.Properties.Remove('name')
 Assert-True (-not (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $repairObservation)) 'observation missing its bound Repair name authorized Invoke'
-Assert-True (-not (Test-CnMonMsixSessionRepairTarget -VisibleNames @('Other application', 'Example Publisher', '1.3.0.0') -OffscreenNames @('cn-mon Network Monitor') -RepairButtonName 'Repair' -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'an offscreen previous cn-mon heading authorized Repair on another app page'
-Assert-True (-not (Test-CnMonMsixSessionRepairTarget -VisibleNames @('cn-mon Network Monitor', 'Example Publisher', '1.3.0.0') -RepairButtonName 'Reset' -ExpectedPublisher 'Example Publisher' -ExpectedVersion '1.3.0.0')) 'Reset was accepted as Repair'
 
 $ownedRunner = 'C:\private\desktop-session-terminal-command.ps1'
 $shellIdentity = @{

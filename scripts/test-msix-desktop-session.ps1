@@ -47,17 +47,32 @@ function Test-CnMonMsixSessionStateBinding {
 
 function Test-CnMonMsixSessionRepairTarget {
     param(
-        [string[]]$VisibleNames,
-        [string[]]$OffscreenNames = @(),
-        [string]$RepairButtonName,
+        [object]$WindowMetadata,
         [string]$ExpectedPublisher,
         [string]$ExpectedVersion
     )
-    $visible = @($VisibleNames | Where-Object { [string]$_ -cnotin $OffscreenNames })
-    $versionVisible = @($visible | Where-Object { [string]$_ -match "(?<![0-9])$([regex]::Escape($ExpectedVersion))(?![0-9])" }).Count -gt 0
-    return $visible -ccontains 'cn-mon Network Monitor' -and
-        $visible -ccontains $ExpectedPublisher -and $versionVisible -and
-        $RepairButtonName -ceq 'Repair'
+    if ($null -eq $WindowMetadata -or @($WindowMetadata.page_content).Count -ne 1 -or
+        [int]$WindowMetadata.breadcrumb_bar_count -ne 1 -or @($WindowMetadata.breadcrumb_bars).Count -ne 1) { return $false }
+    $content = @($WindowMetadata.page_content)[0]
+    $breadcrumb = @($WindowMetadata.breadcrumb_bars)[0]
+    if (@($content.specifications).Count -ne 1 -or @($content.repair_buttons).Count -ne 1) { return $false }
+    $specification = @($content.specifications)[0]
+    $repair = @($content.repair_buttons)[0]
+    return [string]$breadcrumb.automation_id -ceq 'PermanentNavigationViewBreadcrumbBar' -and
+        [bool]$breadcrumb.visible -and [string]$breadcrumb.name -ceq 'cn-mon Network Monitor' -and [int]$breadcrumb.match_count -gt 0 -and
+        [string]$specification.name -ceq 'Specifications' -and
+        @($specification.names | Where-Object { [string]$_ -ceq 'Publisher' }).Count -eq 1 -and
+        @($specification.names | Where-Object { [string]$_ -ceq $ExpectedPublisher }).Count -eq 1 -and
+        @($specification.names | Where-Object { [string]$_ -ceq 'Version' }).Count -eq 1 -and
+        @($specification.names | Where-Object { [string]$_ -ceq $ExpectedVersion }).Count -eq 1 -and
+        [string]$repair.automation_id -ceq 'SystemSettings_StorageSense_AppSizesAdvanced_AppRepair_Button' -and
+        [string]$repair.name -ceq 'Repair' -and [bool]$repair.visible
+}
+
+function New-CnMonMsixSessionRepairBreadcrumbMetadata {
+    param([string]$AutomationId, [string[]]$VisibleNames)
+    $matches = @($VisibleNames | Where-Object { [string]$_ -ceq 'cn-mon Network Monitor' })
+    return [pscustomobject]@{ automation_id = $AutomationId; name = if ($matches.Count -gt 0) { 'cn-mon Network Monitor' } else { '' }; visible = ($matches.Count -gt 0); match_count = $matches.Count }
 }
 
 function Test-CnMonMsixSessionRepairActionAllowed {
@@ -550,25 +565,41 @@ function Get-CnMonMsixSessionRepairObservation {
             [Windows.Automation.Condition]::TrueCondition)
         $visibleNames = [Collections.Generic.List[string]]::new()
         $windowRepairButton = $null
+        $pageContentElements = @($elements | Where-Object { [string]$_.Current.AutomationId -ceq 'pageContent' })
+        $breadcrumbBars = @($elements | Where-Object { [string]$_.Current.AutomationId -ceq 'PermanentNavigationViewBreadcrumbBar' })
+        $pageContentMetadata = @()
+        foreach ($pageContent in $pageContentElements) {
+            $contentDescendants = $pageContent.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+            $specificationGroups = @($contentDescendants | Where-Object { $_.Current.ControlType -eq [Windows.Automation.ControlType]::Group -and [string]$_.Current.Name -ceq 'Specifications' })
+            $specificationMetadata = @()
+            foreach ($specificationGroup in $specificationGroups) {
+                $specificationElements = $specificationGroup.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+                $specificationMetadata += [pscustomobject]@{ name = [string]$specificationGroup.Current.Name; names = @($specificationElements | ForEach-Object { [string]$_.Current.Name }) }
+            }
+            $repairControls = @($contentDescendants | Where-Object { [string]$_.Current.AutomationId -ceq 'SystemSettings_StorageSense_AppSizesAdvanced_AppRepair_Button' -and $_.Current.ControlType -eq [Windows.Automation.ControlType]::Button })
+            $repairMetadata = @($repairControls | ForEach-Object { [pscustomobject]@{ automation_id = [string]$_.Current.AutomationId; name = [string]$_.Current.Name; visible = -not [bool]$_.Current.IsOffscreen; enabled = [bool]$_.Current.IsEnabled } })
+            $pageContentMetadata += [pscustomobject]@{ specifications = $specificationMetadata; repair_buttons = $repairMetadata }
+            if ($repairControls.Count -eq 1 -and -not [bool]$repairControls[0].Current.IsOffscreen) {
+                $windowRepairButton = [pscustomobject]@{ name = [string]$repairControls[0].Current.Name; element = $repairControls[0]; enabled = [bool]$repairControls[0].Current.IsEnabled }
+            }
+        }
+        $breadcrumbMetadata = @()
+        foreach ($breadcrumbBar in $breadcrumbBars) {
+            $breadcrumbDescendants = $breadcrumbBar.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+            $visibleBreadcrumbNames = @($breadcrumbDescendants | Where-Object { -not [bool]$_.Current.IsOffscreen } | ForEach-Object { [string]$_.Current.Name })
+            $breadcrumbMetadata += New-CnMonMsixSessionRepairBreadcrumbMetadata -AutomationId ([string]$breadcrumbBar.Current.AutomationId) -VisibleNames $visibleBreadcrumbNames
+        }
         foreach ($element in $elements) {
             $name = [string]$element.Current.Name
             $isVisible = -not [bool]$element.Current.IsOffscreen
             if ($isVisible -and -not [string]::IsNullOrWhiteSpace($name)) { $visibleNames.Add($name) }
-            if ($element.Current.ControlType -eq [Windows.Automation.ControlType]::Button -and $name -ceq 'Repair') {
-                $button = [pscustomobject]@{
-                    name = 'Repair'
-                    element = $element
-                    enabled = [bool]$element.Current.IsEnabled
-                }
-                if ($isVisible) { $windowRepairButton = $button }
-            }
             if ($isVisible -and ($element.Current.ControlType -eq [Windows.Automation.ControlType]::ProgressBar -or
                 $name -match '(?i)repairing|repair in progress|applying repair')) {
                 $observation.progress_visible = $true
             }
         }
-        if ($null -ne $windowRepairButton -and (Test-CnMonMsixSessionRepairTarget -VisibleNames @($visibleNames) `
-                -RepairButtonName 'Repair' `
+        $metadata = [pscustomobject]@{ page_content = $pageContentMetadata; breadcrumb_bar_count = $breadcrumbBars.Count; breadcrumb_bars = $breadcrumbMetadata }
+        if ($null -ne $windowRepairButton -and (Test-CnMonMsixSessionRepairTarget -WindowMetadata $metadata `
                 -ExpectedPublisher ([string]$script:Receipt.publisher_display_name) -ExpectedVersion ([string]$script:Receipt.package_version))) {
             $observation.repair_button = $windowRepairButton
             $observation.visible_names = @($visibleNames.ToArray())
