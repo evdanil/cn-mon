@@ -136,6 +136,23 @@ func TestReleaseREADMERejectsUnknownLocalLinks(t *testing.T) {
 	}
 }
 
+func TestReleaseREADMERevisionPinsMSIXPlanLinksAndPreservesFragments(t *testing.T) {
+	revision := "0123456789abcdef0123456789abcdef01234567"
+	for _, path := range []string{"docs/MSIX_PACKAGING_PLAN.md", "./docs/MSIX_PACKAGING_PLAN.md"} {
+		t.Run(path, func(t *testing.T) {
+			input := "[MSIX plan](" + path + "#hosted-qualification-evidence)"
+			want := "[MSIX plan](https://github.com/evdanil/cn-mon/blob/" + revision + "/docs/MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence)"
+			got, err := releaseREADME([]byte(input), revision)
+			if err != nil {
+				t.Fatalf("releaseREADME returned error: %v", err)
+			}
+			if string(got) != want {
+				t.Fatalf("releaseREADME = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestValidateBuildInfoRequiresCleanExactIdentityAndModules(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, filepath.Join(root, "go.mod"), []byte(fixtureGoMod))

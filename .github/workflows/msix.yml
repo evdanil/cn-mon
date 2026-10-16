@@ -1,0 +1,380 @@
+name: Windows MSIX packaging
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-package:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Read release package version
+        id: release
+        shell: pwsh
+        run: |
+          $release = Get-Content -Raw packaging/windows/release.json | ConvertFrom-Json
+          if ($release.package_version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+          "package_version=$($release.package_version)" | Add-Content -Path $env:GITHUB_OUTPUT
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test workflow and artifact allowlist
+        shell: pwsh
+        run: python scripts/test-msix-workflow.py
+      - name: Test native MSIX harness safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-windows-harness.ps1
+      - name: Test desktop surface privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1
+      - name: Configure synthetic identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+          $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+          $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+          $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+          try {
+            Import-Module ./scripts/msix-package.psm1 -Force
+            $identity = Read-CnMonMsixIdentity
+          } catch {
+            throw 'synthetic identity validation failed'
+          }
+          $values = @(
+            "CNMON_MSIX_IDENTITY_NAME=$($identity.Name)",
+            "CNMON_MSIX_IDENTITY_PUBLISHER=$($identity.Publisher)",
+            "CNMON_MSIX_PUBLISHER_DISPLAY_NAME=$($identity.PublisherDisplayName)",
+            "CNMON_MSIX_EXPECTED_PFN=$($identity.ExpectedPFN)"
+          )
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($values -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+      - name: Initialize Windows SDK and runner evidence
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize
+      - name: Download and hash the published Windows release
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode DownloadRelease
+      - name: Build synthetic unsigned MSIX
+        id: package
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Build
+      - name: Upload synthetic unsigned package and receipt
+        if: steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}\cn-mon-msix-job\package\cn-mon_${{ steps.release.outputs.package_version }}_x64.msix
+            ${{ runner.temp }}\cn-mon-msix-job\package\msix-receipt.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Write sanitized package summary
+        if: always()
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          JOB_STATUS: ${{ job.status }}
+          PACKAGE_STATUS: ${{ steps.package.outcome || 'skipped' }}
+          QUALIFICATION_STATUS: not_applicable
+          WACK_STATUS: not_applicable
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Summary
+      - name: Upload sanitized package summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-package-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+  synthetic-qualification:
+    if: github.event_name == 'pull_request'
+    needs: synthetic-package
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CONTROLLER_REVISION: e17a7746eccc46a4d8a164f205847b0691d7b9c4
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      completion_overall: ${{ steps.complete.outputs.overall }}
+      completion_passed_gates: ${{ steps.complete.outputs.passed_gate_count }}
+      completion_gate_count: ${{ steps.complete.outputs.gate_count }}
+      completion_provenance: ${{ steps.complete.outputs.provenance }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Read release package version
+        id: release
+        shell: pwsh
+        run: |
+          $release = Get-Content -Raw packaging/windows/release.json | ConvertFrom-Json
+          if ($release.package_version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+          "package_version=$($release.package_version)" | Add-Content -Path $env:GITHUB_OUTPUT
+      - name: Select the pull request qualification route
+        id: route
+        shell: pwsh
+        run: |
+          $revision = $env:CONTROLLER_REVISION
+          if ($revision -notmatch '^[0-9a-f]{40}$') { throw 'reviewed completion controller revision is not pinned' }
+          $script = Join-Path $env:RUNNER_TEMP 'complete-msix-ci.ps1'
+          $git = [Diagnostics.ProcessStartInfo]::new('git')
+          $git.ArgumentList.Add('-C'); $git.ArgumentList.Add($env:GITHUB_WORKSPACE)
+          $git.ArgumentList.Add('cat-file'); $git.ArgumentList.Add('blob')
+          $git.ArgumentList.Add("${revision}:scripts/complete-msix-ci.ps1")
+          $git.UseShellExecute = $false; $git.RedirectStandardOutput = $true; $git.RedirectStandardError = $true
+          $process = [Diagnostics.Process]::Start($git)
+          $stream = [IO.File]::Create($script)
+          try { $process.StandardOutput.BaseStream.CopyTo($stream) } finally { $stream.Dispose() }
+          $process.WaitForExit()
+          if ($process.ExitCode -ne 0) { Remove-Item $script -Force -ErrorAction SilentlyContinue; throw 'reviewed completion controller could not be read' }
+          "controller_path=$script" | Add-Content -Path $env:GITHUB_OUTPUT
+          pwsh -NoProfile -File $script -Mode SelectRoute -ConfigurationPath packaging/windows/qualification/completion.json -RepositoryRoot $env:GITHUB_WORKSPACE -PullRequestBaseRevision '${{ github.event.pull_request.base.sha }}' -PullRequestHeadRevision '${{ github.event.pull_request.head.sha }}' -ControllerRevision $revision
+      - name: Validate reviewed MSIX completion record
+        id: complete
+        if: steps.route.outputs.mode == 'ReviewedRecord'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: pwsh -NoProfile -File '${{ steps.route.outputs.controller_path }}' -Mode Complete -ConfigurationPath packaging/windows/qualification/completion.json -RepositoryRoot $env:GITHUB_WORKSPACE -ControllerRevision $env:CONTROLLER_REVISION
+      - name: Upload reviewed completion summary
+        if: success() && steps.route.outputs.mode == 'ReviewedRecord'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-reviewed-completion-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-reviewed-completion-${{ github.run_id }}-${{ github.run_attempt }}\reviewed-completion-summary.json
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test workflow and artifact allowlist
+        shell: pwsh
+        run: python scripts/test-msix-workflow.py
+      - name: Test desktop preflight privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
+      - name: Test desktop surface privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1
+      - name: Download exact synthetic package artifact
+        if: steps.route.outputs.mode == 'Qualification'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cn-mon-msix-synthetic-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\input
+      - name: Configure synthetic identity
+        if: steps.route.outputs.mode == 'Qualification'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+          $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+          $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+          $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+          try {
+            Import-Module ./scripts/msix-package.psm1 -Force
+            $identity = Read-CnMonMsixIdentity
+          } catch {
+            throw 'synthetic identity validation failed'
+          }
+          $values = @(
+            "CNMON_MSIX_IDENTITY_NAME=$($identity.Name)",
+            "CNMON_MSIX_IDENTITY_PUBLISHER=$($identity.Publisher)",
+            "CNMON_MSIX_PUBLISHER_DISPLAY_NAME=$($identity.PublisherDisplayName)",
+            "CNMON_MSIX_EXPECTED_PFN=$($identity.ExpectedPFN)"
+          )
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($values -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+      - name: Initialize Windows SDK and runner evidence
+        if: steps.route.outputs.mode == 'Qualification'
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize
+      - name: Qualify the downloaded package bytes
+        id: qualify
+        if: steps.route.outputs.mode == 'Qualification'
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted -PackageDirectory input
+      - name: Record read-only desktop prerequisite inventory
+        if: always() && !cancelled() && steps.route.outputs.mode == 'Qualification'
+        shell: pwsh
+        run: >-
+          pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1
+          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix'
+          -ReceiptPath '${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json'
+          -SdkBinDirectory 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
+          -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
+      - name: Run WACK certification gate
+        id: certify
+        if: always() && !cancelled() && steps.route.outputs.mode == 'Qualification'
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
+      - name: Upload synthetic qualification evidence
+        if: always() && !cancelled() && steps.route.outputs.mode == 'Qualification'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-surface.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-wack-structure.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Write sanitized qualification summary
+        if: always() && steps.route.outputs.mode == 'Qualification'
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          JOB_STATUS: ${{ job.status }}
+          PACKAGE_STATUS: ${{ needs.synthetic-package.result }}
+          QUALIFICATION_STATUS: ${{ steps.qualify.outcome || 'skipped' }}
+          WACK_STATUS: ${{ steps.certify.outputs.gate_status || steps.certify.outcome || 'skipped' }}
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Summary
+      - name: Upload sanitized qualification summary
+        if: always() && steps.route.outputs.mode == 'Qualification'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-qualification-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload synthetic signature diagnostic
+        if: always() && steps.qualify.outcome == 'failure' && steps.route.outputs.mode == 'Qualification'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-signature-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signature-diagnostic.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  trusted-manual:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'evdanil/cn-mon'
+    environment: msix-packaging
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Read release package version
+        id: release
+        shell: pwsh
+        run: |
+          $release = Get-Content -Raw packaging/windows/release.json | ConvertFrom-Json
+          if ($release.package_version -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+          "package_version=$($release.package_version)" | Add-Content -Path $env:GITHUB_OUTPUT
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test workflow and artifact allowlist
+        shell: pwsh
+        run: python scripts/test-msix-workflow.py
+      - name: Test native MSIX harness safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-windows-harness.ps1
+      - name: Test desktop preflight privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
+      - name: Configure trusted identity
+        shell: pwsh
+        env:
+          CNMON_MSIX_IDENTITY_NAME: ${{ secrets.CNMON_MSIX_IDENTITY_NAME }}
+          CNMON_MSIX_IDENTITY_PUBLISHER: ${{ secrets.CNMON_MSIX_IDENTITY_PUBLISHER }}
+          CNMON_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.CNMON_MSIX_PUBLISHER_DISPLAY_NAME }}
+          CNMON_MSIX_EXPECTED_PFN: ${{ secrets.CNMON_MSIX_EXPECTED_PFN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = @(
+            'CNMON_MSIX_IDENTITY_NAME',
+            'CNMON_MSIX_IDENTITY_PUBLISHER',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME',
+            'CNMON_MSIX_EXPECTED_PFN'
+          )
+          foreach ($name in $names) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) { throw "required identity input is missing: $name" }
+            $masked = $value.Replace('%', '%25').Replace([string][char]13, '%0D').Replace([string][char]10, '%0A')
+            Write-Host "::add-mask::$masked"
+          }
+          try {
+            Import-Module ./scripts/msix-package.psm1 -Force
+            $identity = Read-CnMonMsixIdentity
+          } catch {
+            throw 'trusted identity validation failed'
+          }
+          $values = @(
+            "CNMON_MSIX_IDENTITY_NAME=$($identity.Name)",
+            "CNMON_MSIX_IDENTITY_PUBLISHER=$($identity.Publisher)",
+            "CNMON_MSIX_PUBLISHER_DISPLAY_NAME=$($identity.PublisherDisplayName)",
+            "CNMON_MSIX_EXPECTED_PFN=$($identity.ExpectedPFN)"
+          )
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($values -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+      - name: Initialize Windows SDK and runner evidence
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize
+      - name: Download and hash the published Windows release
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode DownloadRelease
+      - name: Build trusted unsigned MSIX
+        id: package
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Build
+      - name: Qualify the trusted package in this job
+        id: qualify
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted
+      - name: Record read-only desktop prerequisite inventory
+        if: always() && !cancelled()
+        shell: pwsh
+        run: >-
+          pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1
+          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_${{ steps.release.outputs.package_version }}_x64-signed.msix'
+          -ReceiptPath '${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json'
+          -SdkBinDirectory 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
+          -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
+      - name: Run WACK certification gate
+        id: certify
+        if: always() && !cancelled()
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
+      - name: Write sanitized trusted-run summary
+        if: always()
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          JOB_STATUS: ${{ job.status }}
+          PACKAGE_STATUS: ${{ steps.package.outcome || 'skipped' }}
+          QUALIFICATION_STATUS: ${{ steps.qualify.outcome || 'skipped' }}
+          WACK_STATUS: ${{ steps.certify.outputs.gate_status || steps.certify.outcome || 'skipped' }}
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Summary
+      - name: Upload sanitized trusted-run summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-trusted-manual-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json
+          if-no-files-found: error
+          retention-days: 14

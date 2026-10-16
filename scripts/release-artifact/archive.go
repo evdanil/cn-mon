@@ -70,6 +70,8 @@ func releaseREADME(input []byte, revision string) ([]byte, error) {
 			pathPart = "https://github.com/evdanil/cn-mon/blob/" + revision + "/docs/APPLICATION_SPEC.md"
 		case "docs/DEVELOPMENT_PLAN.md", "./docs/DEVELOPMENT_PLAN.md":
 			pathPart = "https://github.com/evdanil/cn-mon/blob/" + revision + "/docs/DEVELOPMENT_PLAN.md"
+		case "docs/MSIX_PACKAGING_PLAN.md", "./docs/MSIX_PACKAGING_PLAN.md":
+			pathPart = "https://github.com/evdanil/cn-mon/blob/" + revision + "/docs/MSIX_PACKAGING_PLAN.md"
 		case "", "LICENSE", "THIRD_PARTY_NOTICES.md":
 		default:
 			if strings.HasPrefix(pathPart, "https://") || strings.HasPrefix(pathPart, "http://") || strings.HasPrefix(pathPart, "mailto:") {

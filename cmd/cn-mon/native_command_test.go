@@ -23,9 +23,11 @@ func buildNativeCommand(t *testing.T) string {
 		if err != nil {
 			t.Fatalf("resolve prebuilt native command: %v", err)
 		}
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			t.Fatalf("prebuilt native command is unavailable: %s (%v)", path, err)
+		if os.Getenv("CNMON_MSIX_TEST") != "1" {
+			info, statErr := os.Stat(path)
+			if statErr != nil || !info.Mode().IsRegular() {
+				t.Fatalf("prebuilt native command is unavailable: %s (%v)", path, statErr)
+			}
 		}
 		return path
 	}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "mode": "ReviewedRecord",
+  "expected_local_audit_record_sha256": "5b6f96ea3a40321cfd85e395e42a0597efc7a448a0446168b46e04c862e910a7",
+  "expected_native_helper_sha256": "136ed196db55ca43930473d95ca37c3b1a11963e06138329f2d22c698fbde9fc",
+  "validator_revision": "c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6"
+}

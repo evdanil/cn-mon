@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "mode": "desktop_completion_supplement",
+  "overall": "incomplete",
+  "candidate": {
+    "run_id": "38866515555",
+    "artifact_id": "12031747143",
+    "archive_sha256": "ed18d14a6a4e17526bd73d47f68336d9ee45ead71c15e61f106fba257d461818",
+    "signed_package_sha256": "d782d72374fe6bef2ca666e6cf64039283d0b1b24f4c9aa22cd940956873642f",
+    "signed_receipt_sha256": "7f7ddda42b87b7611fe5107aeb519e3cf0e04e5e2870a7dc8374d6c7b74db55b",
+    "certify_result_sha256": "ebdaa5f3b456afa5e183910b25e80385e3e1d0d86c8db7fee7d7847c9a99971f",
+    "packaging_revision": "b6c874d7b5de8257dde37685f0c3bfeb79b50b14"
+  },
+  "qualification_scripts": {
+    "helper_sha256": "136ed196db55ca43930473d95ca37c3b1a11963e06138329f2d22c698fbde9fc",
+    "desktop_driver_sha256": "42fce86a4c1e3f9bce0686a65d28b5ef5bf19e554d38e9ce4e4d2ebd6b7c5613",
+    "validator_revision": "c19e7984ec8b5bf7058a5dbc2864ac56722fbaf6"
+  },
+  "observations": {
+    "ordinary_user": true,
+    "medium_integrity": true,
+    "interactive_session": true,
+    "alias": {
+      "off": {
+        "settings_opened": true,
+        "settings_verified": true,
+        "pwsh_failure": true,
+        "pwsh_success": false,
+        "cmd_failure": true,
+        "cmd_success": false
+      },
+      "on": {
+        "settings_opened": true,
+        "settings_verified": true,
+        "pwsh_failure": false,
+        "pwsh_success": true,
+        "cmd_failure": false,
+        "cmd_success": true,
+        "packaged_process_identity_verified": true
+      },
+      "path_unchanged": true
+    },
+    "repair": {
+      "activation_observed": true,
+      "completion_observed": true,
+      "data_before_sha256": "c5d4736a3f60bab01e58f55b1ac4f85a042546993e465b39ac3051673b4a9c21",
+      "data_after_sha256": "c5d4736a3f60bab01e58f55b1ac4f85a042546993e465b39ac3051673b4a9c21",
+      "readback_verified": true
+    },
+    "screenshots": [
+      {
+        "name": "alias-off-settings.png",
+        "sha256": "2f755ed84b85798819d3caad47f5b43b99de42df7aedcf5a5726bdcef9a17086",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "alias-on-settings.png",
+        "sha256": "08d08fd19f3278442cc68f69b0d698ecd3b45de2f39ca508bd9413f880120b74",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "repair-start.png",
+        "sha256": "538e49196903ffbb7ac850f80376e9f9ebd91158c867a079e3f9a05b9dbd7b76",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "repair-progress.png",
+        "sha256": "57d659d2a58a43390a397f7d415460616809c1f04d62c6f742b86b8e84c22d3b",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "repair-complete.png",
+        "sha256": "57d659d2a58a43390a397f7d415460616809c1f04d62c6f742b86b8e84c22d3b",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "01-cli-help.png",
+        "sha256": "635f5864765e726985a8f44d29e049d4c1b9fd4f9f597b77a5dc177042a3c9ec",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "02-icmp-table.png",
+        "sha256": "3dcd341156d25d2505118da083424d02b958c508df3cf2a37a6099264d8ccde6",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "03-json-tcp.png",
+        "sha256": "29cb55f691d8fd3d2cc01f2d4951ace750cf30adbdcc241dee377cea65d46578",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "04-history-list.png",
+        "sha256": "a6926f41521263fbb0ccccfd7fd062807ee9a90dafe86ead60cf6759779a6afe",
+        "width": 1920,
+        "height": 1080
+      },
+      {
+        "name": "05-history-detail.png",
+        "sha256": "d5fe84c69e037f987bf81c25dd79718ca13a2df24366540fa70082db40b54f92",
+        "width": 1920,
+        "height": 1080
+      }
+    ],
+    "desktop_cleanup_passed": true
+  }
+}

@@ -1,14 +1,50 @@
 # Windows Store preparation
 
-This note records the packaging decisions and validation still needed before `cn-mon` can be submitted to Microsoft Store. It does not define a package identity or claim Store eligibility.
+This note records the current package design and remaining validation before `cn-mon` can be submitted to Microsoft Store. The [MSIX packaging specification](MSIX_PACKAGING_SPEC.md) and [implementation plan](MSIX_PACKAGING_PLAN.md) describe the approved scope and privacy requirements. Frozen synthetic run `38866515555` and protected real-identity run `38866546789` each report 17 passed, 0 failed and 2 incomplete gates; the later hosted MSIX workflow passes 19/19; strict WACK parsing passes all 24 tests, including DPI awareness. Actual visible-desktop alias OFF/ON checks, Repair with data preserved, all five screenshots and cleanup completed before signer expiry. LocalAudit and the hosted MSIX workflow report 19/19 PASS. Test-signer trust cleanup is complete, and no MSIX has been submitted. See the implementation plan for hosted evidence.
+
+The [copy-ready Microsoft Store listing](WINDOWS_STORE_LISTING.md) links its license field to the repository's Apache-2.0 text and its privacy-policy field to the [standalone policy draft](PRIVACY.md). Five genuine screenshots were captured from the installed MSIX; review and publication of the policy URL remain open.
 
 ## Current application facts
 
 - `cn-mon` is a Go command-line network monitor. The supported Windows target is x86-64; the current public release is 0.3.0.
-- The program performs network probes, including raw ICMP, and uses `USERPROFILE`-based defaults for history and logs (with CLI options for selecting paths). It also checks executable-adjacent `.cn` configuration as a read-only input. It does not launch production helper processes.
+- The program performs network probes, including raw ICMP, and uses `USERPROFILE`-based defaults for history and logs outside AppData (with CLI options for selecting paths). It also checks executable-adjacent `.cn` configuration as a read-only input. It does not launch production helper processes.
 - Its primary interface is command-line input/output, including optional interactive terminal controls. There is no graphical application flow documented in this repository.
 
 These facts describe the current source and release. Packaging behavior, Store policy eligibility, and certification outcomes must be established against an actual Windows package and the current Partner Center requirements.
+
+## Read-only desktop preflight
+
+The standalone preflight inventories the current session/token, SDK tools, AppCert, Appx cmdlets, and optional package/receipt hashes, signature, and registration. Its fixed-schema JSON report is an eligibility inventory, not qualification evidence. The script makes no deployment, trust, account, package-reset, or certification changes; it writes only `msix-desktop-preflight.json` under the specified artifact directory. Run its pure helper/safety harness separately:
+
+```powershell
+pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
+pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1 `
+  -PackagePath <PackagePath> `
+  -ReceiptPath <ReceiptPath> `
+  -SdkBinDirectory <SdkBinDirectory> `
+  -ArtifactDirectory <ArtifactDirectory>
+```
+
+The Windows pure-helper safety probe passed. The VM inventory was collected from SSH Session 0 on OS build `26200`; its token was not elevated or an administrator and had no Administrators SID. MakeAppx, SignTool and all three Appx cmdlets were available; AppCert was absent. The private unsigned package hash matched its receipt, and that package was not registered for the inspected user. A separate hosted preflight used an eligible active console and elevated token with AppCert `10.0.26100.8249`. Current hosted WACK and qualification results are centralized in the [implementation plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence). Synthetic workflow output retains fixed-schema preflight JSON; the protected run uploaded only its sanitized summary, and its public log was audited against the four reserved identity inputs with no matches. The user has explicitly authorized registration of this candidate and trust for its exact test signer on the existing VM; generated files remain under `C:\work`.
+
+### Read-only visible-desktop supplement preflight
+
+The separate `test-msix-desktop-checks.ps1` preflight binds the signed candidate, receipt, Certify result and x64 native helper. It checks the signer certificate's validity and existing trust, the current ordinary-user token and active interactive desktop, and whether the candidate is already registered. It makes no package registration, trust-store, repair, alias or screenshot changes. The helper safety harness verifies its fixed schema, private-path handling and no-mutation behavior:
+
+```powershell
+pwsh -NoProfile -File ./scripts/test-msix-desktop-checks-harness.ps1
+pwsh -NoProfile -File ./scripts/test-msix-desktop-checks.ps1 `
+  -PackagePath <SignedCandidate> `
+  -ReceiptPath <SignedReceipt> `
+  -ResultsPath <CertifyResults> `
+  -NativeHelperPath <X64NativeHelper> `
+  -ExpectedNativeHelperSha256 <Sha256> `
+  -ArtifactDirectory <ExistingPrivateDirectory>
+```
+
+It writes `msix-desktop-supplement.json` and the public test-signer certificate into the existing private artifact directory. Its summary reports preflight eligibility only and deliberately leaves repair, conflicts, screenshots and cleanup incomplete. It does not pass the desktop supplement or substitute for actual installed-package checks. The actual visible-console run subsequently completed the checks and screenshot capture; its result is recorded in the implementation plan.
+
+For the frozen synthetic candidate, the signer certificate is valid from `2026-10-16 07:12:33 UTC` through `2026-10-16 13:22:32 UTC`. Complete any new installed-desktop qualification start to finish within that interval and retain the existing validity checks. Later immutable-evidence review does not require current certificate validity; independent private review must verify the actual run's start and end times. If qualification is incomplete at expiry, clean up owned state, obtain fresh Hosted and Certify results, replace the candidate pins, records and private evidence atomically, and recapture desktop proof. Re-signing alone does not preserve prior gates.
 
 ## Distribution route
 
@@ -21,11 +57,13 @@ Start with MSIX, while keeping the MSI/EXE listing route as a fallback if packag
 
 ## MSIX identity and command launch
 
-No Partner Center product identity has been reserved. Keep package identity and MSIX scaffolding pending that reservation. Microsoft's [Partner Center identity guidance](https://learn.microsoft.com/windows/apps/publish/view-app-identity-details) describes the identity values to use. Record `Identity/Name`, `Identity/Publisher`, and `PublisherDisplayName`; package Name and Publisher must match Partner Center exactly and are case-sensitive.
+The Partner Center identity is reserved, but its literal values are not stored in this repository. The [packaging specification](MSIX_PACKAGING_SPEC.md#2-identity-configuration-and-version) defines four required inputs: `CNMON_MSIX_IDENTITY_NAME`, `CNMON_MSIX_IDENTITY_PUBLISHER`, `CNMON_MSIX_PUBLISHER_DISPLAY_NAME` and `CNMON_MSIX_EXPECTED_PFN`. They are protected GitHub environment secrets in `msix-packaging`, passed to the trusted manual job at runtime and masked before tool calls. Render the public manifest template only in staging; PR tests use the synthetic `Example.CnMon` identity. Omit unused Store identifiers and MSA metadata. The trusted workflow uploads only sanitized status summaries; real packages, receipts and reports remain private.
 
-For Store upload, supported package upload forms include `.msix`, `.msixbundle`, and `.msixupload`; see Microsoft's [package upload guidance](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msix/upload-app-packages). Select the appropriate form after deciding the architecture and packaging pipeline. Store MSIX versions require a nonzero major component and a zero fourth component. Do not map CLI version `0.3.0` to package version `0.3.0.0`; choose an independent valid Store package version and document how it maps to the CLI release.
+The approved initial mapping is MSIX `1.3.0.0` containing CLI `0.3.0`; package versions increase independently, including for packaging-only fixes. Store MSIX versions require a nonzero major component and a zero fourth component. The proposed pipeline produces one x64 `.msix` from the hash-verified published Windows ZIP and records the exact source/payload/package identities. It adds no Store upload operation. For the later submission stage, supported upload forms include `.msix`, `.msixbundle`, and `.msixupload`; see Microsoft's [package upload guidance](https://learn.microsoft.com/windows/apps/publish/publish-your-app/msix/upload-app-packages).
 
 Microsoft's [packaged desktop alias example](https://learn.microsoft.com/en-us/windows/msix/psf/create-shortcut-with-script-package-support-framework#create-the-application-alias) shows a full-trust desktop entry point with an execution alias. Microsoft's [console-app comparison](https://learn.microsoft.com/en-us/windows/apps/develop/launch/console-apps#differences-from-uwp-console-apps) says `desktop4:Subsystem="console"` is for UWP console apps and is not required for a standard Win32 console binary such as `cn-mon.exe`. Plan for a packaged full-trust desktop alias and the `runFullTrust` restricted capability; confirm its justification and manifest against Partner Center requirements. Validate an alias for `cn-mon` on a clean Windows installation, including PATH/alias behavior, argument and stdin/stdout/exit-code forwarding, invocation from PowerShell and Command Prompt, and conflicts with an existing `cn-mon` command. Validate the Store listing, install and first-launch experience, and certification expectations specifically for a CLI-only product; eligibility and acceptance remain unconfirmed.
+
+The specification defines the `uap3`/`desktop` alias structure, unchanged native console executable, an artifact-only Windows workflow and separate test signing. Synthetic and real-identity MakeAppx pack/unpack checks verify payload hashes, which establishes package construction rather than installation behavior. The existing unpackaged ordinary-user smoke run passed IPv4/IPv6 ICMP, local TCP and history operations. Frozen synthetic and protected real-identity installed-package runs each report 17 passed, 0 failed and 2 incomplete gates; formal WACK acceptance passes all 24 tests with the strict parser. Actual visible-desktop alias and Repair checks and five screenshots are complete; LocalAudit, its replayed ReviewedRecord and the hosted MSIX workflow pass 19/19; test-signer trust cleanup is complete. Detailed hosted results are in the [implementation plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
 
 ## Required Windows package validation
 
@@ -34,9 +72,9 @@ Before submission, build a candidate package on the Windows packaging toolchain 
 - Install, upgrade, uninstall, repair, and clean-machine behavior for Windows x64.
 - CLI launch through the execution alias, including help/version, arguments, stdin/stdout/stderr, exit codes, cancellation, and interactive terminal use.
 - Declare the `runFullTrust` restricted capability for the full-trust desktop entry point and confirm the manifest and justification with Partner Center. Full trust does not establish raw ICMP behavior; validate raw ICMP under package identity. The app must not require elevation, and package testing must confirm it runs without an administrator prompt.
-- Read/write access and upgrade/uninstall handling for `USERPROFILE` history and log paths; verify that the user-home `%USERPROFILE%\.cn` configuration layer is read with the expected precedence as well as the read-only executable-adjacent `.cn` layer. Confirm mutable data is not placed in the package install directory.
+- Verify history/log defaults and other selected paths outside AppData separately from AppData paths. The defaults under `USERPROFILE` remain user-owned across package removal; on Windows 10 1903 and later, newly created AppData files/folders are virtualized, while writes to existing files use the unvirtualized file. On Windows 10 1809, all AppData writes use copy-on-write virtualization. Verify the app-visible view and physical package backing for the remaining lifecycle cases. Verify configuration precedence: executable-adjacent `.cn` loads first, `%USERPROFILE%\.cn` overrides it, and explicit `--config` and CLI overrides follow. Confirm mutable data is not placed in the package install directory. See Microsoft's [AppData virtualization guidance](https://learn.microsoft.com/windows/msix/desktop/flexible-virtualization). Current lifecycle evidence is summarized in the [implementation plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
 - If using the MSI/EXE route, verify the signed installer at its immutable versioned URL is standalone/offline, silent (apart from allowed UAC), and does not bundle unrelated software.
 - Package declaration, reserved publisher identity, architecture, signing, and all declared capabilities against the actual package and Partner Center review.
 - Microsoft's [Windows App Certification Kit (WACK)](https://learn.microsoft.com/windows/uwp/debug-test-perf/windows-app-certification-kit) results, followed by Partner Center certification. WACK is a recommended pre-submission check, not a guarantee of Store approval.
 
-Capture the Windows version, package build inputs, identity, test results, WACK report, and any certification feedback with the release evidence. Until those checks are complete, package behavior and Store acceptance remain unverified.
+Capture the Windows version, package build inputs, identity, test results, WACK report, and any certification feedback in local/private release evidence. Public summaries omit reserved identity values and identity-bearing tool output. The current WACK gate passes. Actual visible-desktop Repair, command-conflict/alias-disable checks and screenshots are complete; LocalAudit and its replayed ReviewedRecord pass 19/19. The frozen Hosted candidate records still show two incomplete gates; test-signer trust cleanup is complete, and Store acceptance remains unverified. See the [implementation plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for current run results.
