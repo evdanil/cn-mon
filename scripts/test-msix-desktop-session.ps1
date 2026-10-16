@@ -6,7 +6,7 @@ param(
     [ValidateSet('Run', 'Cleanup')][string]$Phase = 'Run',
     [Parameter(Mandatory = $true)][string]$PackagePath,
     [Parameter(Mandatory = $true)][string]$ReceiptPath,
-    [Parameter(Mandatory = $true)][string]$ResultsPath,
+    [string]$ResultsPath,
     [Parameter(Mandatory = $true)][string]$NativeHelperPath,
     [Parameter(Mandatory = $true)][string]$ExpectedNativeHelperSha256,
     [Parameter(Mandatory = $true)][string]$ExpectedValidatorRevision,
@@ -43,6 +43,49 @@ function Test-CnMonMsixSessionStateBinding {
         [string]$State.package_sha256 -ceq $PackageSha256 -and
         [string]$State.receipt_sha256 -ceq $ReceiptSha256 -and
         [string]$State.helper_sha256 -ceq $HelperSha256
+}
+
+function Test-CnMonMsixSessionSignerWindow {
+    param([DateTimeOffset]$StartedUtc, [DateTimeOffset]$CompletedUtc, [DateTimeOffset]$NotAfterUtc)
+    return $StartedUtc.Offset -eq [TimeSpan]::Zero -and $CompletedUtc.Offset -eq [TimeSpan]::Zero -and
+        $NotAfterUtc.Offset -eq [TimeSpan]::Zero -and $StartedUtc -le $CompletedUtc -and $CompletedUtc -le $NotAfterUtc
+}
+
+function Get-CnMonMsixSessionSignerNotAfter {
+    param([object]$Certificate, [string]$ExpectedThumbprint)
+    if ($null -eq $Certificate -or [string]$Certificate.Thumbprint -ine $ExpectedThumbprint) { throw 'verified signer certificate does not match the receipt' }
+    return ([DateTimeOffset]::new(([DateTime]$Certificate.NotAfter).ToUniversalTime())).ToString('o')
+}
+
+function Write-CnMonMsixSessionCheckpoint {
+    param([string]$Path, [byte[]]$Bytes, [switch]$ReplaceExisting)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $directory = [IO.Path]::GetDirectoryName($fullPath)
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) { throw 'checkpoint directory is unavailable' }
+    $destinationExists = Test-Path -LiteralPath $fullPath
+    if ($ReplaceExisting -and -not $destinationExists) { throw 'checkpoint replacement target is missing' }
+    if (-not $ReplaceExisting -and $destinationExists) { throw 'checkpoint already exists and is not owned by this run' }
+    if (-not $ReplaceExisting) {
+        $stream = [IO.File]::Open($fullPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        return
+    }
+    $temporary = Join-Path $directory (([IO.Path]::GetFileName($fullPath)) + '.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        [IO.File]::Move($temporary, $fullPath, $true)
+    }
+    finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue } }
+}
+
+function Get-CnMonMsixSessionCaptureBounds {
+    param([IntPtr]$WindowHandle, [IntPtr]$ForegroundHandle, [object]$MonitorBounds)
+    if ($WindowHandle -eq [IntPtr]::Zero -or $ForegroundHandle -ne $WindowHandle -or $null -eq $MonitorBounds) { return $null }
+    if ([int]$MonitorBounds.Width -lt 1 -or [int]$MonitorBounds.Height -lt 1) { return $null }
+    return $MonitorBounds
 }
 
 function Test-CnMonMsixSessionRepairTarget {
@@ -698,14 +741,16 @@ public static class CnMonMsixSessionWindowNative
 }
 
 function Save-CnMonMsixSessionScreenshot {
-    param([string]$Name, [switch]$Listing)
+    param([string]$Name, [Parameter(Mandatory = $true)][IntPtr]$WindowHandle, [switch]$Listing)
     if ($Name -cnotin (Get-CnMonMsixCompletionScreenshotNames)) { throw 'screenshot name is outside the allowlist' }
     $path = Join-Path $script:ArtifactFullPath $Name
     if (Test-Path -LiteralPath $path) { throw 'screenshot output already exists' }
     Add-Type -AssemblyName System.Drawing -ErrorAction Stop
     Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-    $bounds = [Windows.Forms.Screen]::PrimaryScreen.Bounds
-    if ($bounds.Width -lt 1 -or $bounds.Height -lt 1) { throw 'active desktop bounds are unavailable' }
+    if ([CnMonMsixSessionWindowNative]::GetForegroundWindow() -ne $WindowHandle) { throw 'verified capture window is no longer foreground' }
+    $bounds = [Windows.Forms.Screen]::FromHandle($WindowHandle).Bounds
+    $bounds = Get-CnMonMsixSessionCaptureBounds -WindowHandle $WindowHandle -ForegroundHandle ([CnMonMsixSessionWindowNative]::GetForegroundWindow()) -MonitorBounds $bounds
+    if ($null -eq $bounds) { throw 'verified window monitor bounds are unavailable' }
     if ($Listing -and ($bounds.Width -lt 1366 -or $bounds.Height -lt 768)) { throw 'listing screenshot resolution is below 1366x768' }
     $bitmap = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)
     $graphics = [Drawing.Graphics]::FromImage($bitmap)
@@ -745,13 +790,18 @@ function Write-CnMonMsixSessionSupplement {
     $json = ConvertTo-Json -InputObject $report -Depth 10
     $path = Join-Path $script:ArtifactFullPath 'msix-desktop-completion-supplement.json'
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
-    if (-not $script:SupplementCreated) {
-        $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        $script:SupplementCreated = $true
-        try { $stream.Write($bytes, 0, $bytes.Length) }
-        finally { $stream.Dispose() }
+    if ($script:State.cleanup_passed) {
+        try {
+            $started = [DateTimeOffset]::Parse([string]$script:State.run_started_utc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+            $completed = [DateTimeOffset]::Parse([string]$script:State.run_completed_utc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        }
+        catch { return }
+        $expires = [DateTimeOffset]::Parse([string]$script:State.signer_not_after_utc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        if (-not (Test-CnMonMsixSessionSignerWindow -StartedUtc $started -CompletedUtc $completed -NotAfterUtc $expires)) { return }
     }
-    else { [IO.File]::WriteAllBytes($path, $bytes) }
+    Write-CnMonMsixSessionCheckpoint -Path $path -Bytes $bytes -ReplaceExisting:([bool]$script:State.supplement_created)
+    $script:SupplementCreated = $true
+    $script:State.supplement_created = $true
     Save-CnMonMsixSessionState
 }
 
@@ -759,13 +809,8 @@ function Save-CnMonMsixSessionState {
     $path = Join-Path $script:ArtifactFullPath 'desktop-session-state.json'
     $json = ConvertTo-Json -InputObject $script:State -Depth 12
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
-    if (-not $script:StateCreated) {
-        $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        $script:StateCreated = $true
-        try { $stream.Write($bytes, 0, $bytes.Length) }
-        finally { $stream.Dispose() }
-    }
-    else { [IO.File]::WriteAllBytes($path, $bytes) }
+    Write-CnMonMsixSessionCheckpoint -Path $path -Bytes $bytes -ReplaceExisting:$script:StateCreated
+    $script:StateCreated = $true
 }
 
 function Set-CnMonMsixSessionUserFileHash {
@@ -913,7 +958,7 @@ function Invoke-CnMonMsixSessionAliasState {
         if ($settingsWindows.Count -ne 1) { throw 'the exact verified Settings window was unavailable after operator confirmation' }
         Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
         $screenshotName = if ($AliasState -eq 'Off') { 'alias-off-settings.png' } else { 'alias-on-settings.png' }
-        $screenshot = Save-CnMonMsixSessionScreenshot -Name $screenshotName
+        $screenshot = Save-CnMonMsixSessionScreenshot -Name $screenshotName -WindowHandle $settings.WindowHandle
         if ([string]::IsNullOrEmpty([string]$screenshot)) { throw 'verified Settings window screenshot was not captured' }
         $beforePath = [string]$script:State.path_before
         if ([Environment]::GetEnvironmentVariable('PATH', 'Process') -cne $beforePath) { throw 'PATH changed during alias testing' }
@@ -956,7 +1001,7 @@ function Invoke-CnMonMsixSessionRepair {
         Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle -Maximize
         Wait-CnMonMsixSessionUserConfirmation -Instruction "In Settings, open Installed apps, select cn-mon Network Monitor (version $($script:Receipt.package_version), $($script:Receipt.publisher_display_name)), choose the three-dot menu and Advanced options. Leave the page visible. Locate Repair, but do not click Repair or Reset." -RequiredText 'READY'
         Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
-        $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-start.png'))
+        $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-start.png' -WindowHandle $settings.WindowHandle))
         Save-CnMonMsixSessionRepairUiTrace -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
         Save-CnMonMsixSessionState
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
@@ -989,7 +1034,7 @@ function Invoke-CnMonMsixSessionRepair {
                 $sawProgress = $true
                 Write-Host ('CNMON_MSIX_REPAIR_EVENT=progress_observed UTC=' + [DateTime]::UtcNow.ToString('o'))
                 Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
-                $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-progress.png'))
+                $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-progress.png' -WindowHandle $settings.WindowHandle))
                 Save-CnMonMsixSessionState
                 break
             }
@@ -1004,7 +1049,7 @@ function Invoke-CnMonMsixSessionRepair {
                     (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $current)) {
                     Write-Host ('CNMON_MSIX_REPAIR_EVENT=completion_observed UTC=' + [DateTime]::UtcNow.ToString('o'))
                     Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
-                    $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-complete.png'))
+                    $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-complete.png' -WindowHandle $settings.WindowHandle))
                     $script:State.observations.repair.completion_observed = $true
                     break
                 }
@@ -1108,12 +1153,20 @@ function Invoke-CnMonMsixSessionPrepare {
         -PackagePath $script:PackageFullPath -ReceiptPath $script:ReceiptFullPath -ResultsPath $script:ResultsFullPath `
         -NativeHelperPath $script:NativeHelperFullPath -HelperSha256 $script:HelperSha256 -ArtifactDirectory $preflightDirectory `
         -ExpectedPackageSha256 ([string]$script:Receipt.package_sha256) -ExpectedReceiptSha256 (Get-CnMonMsixSessionHash -Path $script:ReceiptFullPath)
+    $signerCertificatePath = Join-Path $preflightDirectory 'msix-test-signer.cer'
+    $signerCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($signerCertificatePath)
+    try { $signerNotAfterUtc = Get-CnMonMsixSessionSignerNotAfter -Certificate $signerCertificate -ExpectedThumbprint ([string]$script:Receipt.signing.certificate_thumbprint) }
+    finally { $signerCertificate.Dispose() }
 
     $existing = @(Get-AppxPackage -Name ([string]$script:Receipt.name) -ErrorAction Stop)
     if ($existing.Count -ne 0) { throw 'a package with this candidate name is already registered; no package state was changed' }
     $script:State = [ordered]@{
         schema_version = 1
         run_id = [Guid]::NewGuid().ToString('N')
+        run_started_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        run_completed_utc = ''
+        signer_not_after_utc = $signerNotAfterUtc
+        supplement_created = $false
         package_sha256 = [string]$script:Receipt.package_sha256
         receipt_sha256 = Get-CnMonMsixSessionHash -Path $script:ReceiptFullPath
         helper_sha256 = $script:HelperSha256
@@ -1409,7 +1462,7 @@ exit $code
         }
         if ($null -eq $terminalProcess) { throw 'the exact run-owned Windows Terminal window is not visible in this user session' }
         Set-CnMonMsixSessionWindowForeground -Process $terminalProcess -WindowHandle $terminalHandle -Maximize
-        $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name $screen.Name -Listing))
+        $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name $screen.Name -WindowHandle $terminalHandle -Listing))
         Save-CnMonMsixSessionState
         $terminalProcess.Dispose()
         Write-Host 'The screenshot is saved. Press Enter at the Terminal tab prompt so its run-owned PowerShell shell exits.'
@@ -1554,6 +1607,9 @@ function Invoke-CnMonMsixSessionCleanup {
     }
     $script:State.cleanup_passed = $ok
     $script:State.observations.desktop_cleanup_passed = $ok
+    if ($ok -and [string]::IsNullOrWhiteSpace([string]$script:State.run_completed_utc)) {
+        $script:State.run_completed_utc = [DateTimeOffset]::UtcNow.ToString('o')
+    }
     Save-CnMonMsixSessionState
     if ($script:SupplementCreated) { Write-CnMonMsixSessionSupplement }
     return $ok
@@ -1608,7 +1664,10 @@ try {
 
     $script:PackageFullPath = Get-CnMonMsixSessionInputPath -Path $PackagePath
     $script:ReceiptFullPath = Get-CnMonMsixSessionInputPath -Path $ReceiptPath
-    $script:ResultsFullPath = Get-CnMonMsixSessionInputPath -Path $ResultsPath
+    if ($Phase -eq 'Run') {
+        if ([string]::IsNullOrWhiteSpace($ResultsPath)) { throw 'ResultsPath is required during Run' }
+        $script:ResultsFullPath = Get-CnMonMsixSessionInputPath -Path $ResultsPath
+    }
     $script:NativeHelperFullPath = Get-CnMonMsixSessionInputPath -Path $NativeHelperPath
     $script:StatePath = Join-Path $script:ArtifactFullPath 'desktop-session-state.json'
 
@@ -1625,7 +1684,7 @@ try {
         if (-not (Test-Path -LiteralPath $script:StatePath -PathType Leaf)) { throw 'no captured desktop state exists to recover' }
         $script:State = Get-Content -LiteralPath $script:StatePath -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
         $script:StateCreated = $true
-        $script:SupplementCreated = Test-Path -LiteralPath (Join-Path $script:ArtifactFullPath 'msix-desktop-completion-supplement.json') -PathType Leaf
+        $script:SupplementCreated = [bool]$script:State.supplement_created
         if (-not (Invoke-CnMonMsixSessionCleanup)) { throw 'desktop cleanup is incomplete; see the private state and transcript' }
         Write-Host 'Desktop session cleanup passed.'
     }
@@ -1642,6 +1701,10 @@ try {
         Invoke-CnMonMsixSessionListingScreenshots
         Write-CnMonMsixSessionSupplement
         if (-not (Invoke-CnMonMsixSessionCleanup)) { throw 'desktop cleanup is incomplete; the exact package or run-owned data remains' }
+        $started = [DateTimeOffset]::Parse([string]$script:State.run_started_utc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        $completed = [DateTimeOffset]::Parse([string]$script:State.run_completed_utc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        $expires = [DateTimeOffset]::Parse([string]$script:State.signer_not_after_utc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind)
+        if (-not (Test-CnMonMsixSessionSignerWindow -StartedUtc $started -CompletedUtc $completed -NotAfterUtc $expires)) { throw 'desktop completion fell outside the signed candidate validity window' }
         Write-Host 'Desktop session actions finished. The supplement remains incomplete until independent screenshot and UI review.'
     }
 }

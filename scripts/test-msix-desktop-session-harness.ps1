@@ -36,7 +36,11 @@ $helperNames = @(
     'Test-CnMonMsixOwnedFileCleanup',
 'Remove-CnMonMsixSessionOwnedWorkDirectory',
     'Get-CnMonMsixCompletionScreenshotNames',
-    'New-CnMonMsixDesktopCompletionSupplement'
+    'New-CnMonMsixDesktopCompletionSupplement',
+    'Test-CnMonMsixSessionSignerWindow',
+    'Get-CnMonMsixSessionSignerNotAfter',
+    'Write-CnMonMsixSessionCheckpoint',
+    'Get-CnMonMsixSessionCaptureBounds'
 )
 $functionAsts = @($sourceAst.FindAll({
     param($candidate)
@@ -47,11 +51,50 @@ if ($functionAsts.Count -ne $helperNames.Count) { throw 'desktop session pure he
 $helperSource = @($functionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
 . ([scriptblock]::Create($helperSource))
 
+$signerStart = [DateTimeOffset]::Parse('2026-10-16T13:12:50Z')
+$signerExpiry = [DateTimeOffset]::Parse('2026-10-16T13:22:32Z')
+Assert-True (Test-CnMonMsixSessionSignerWindow -StartedUtc $signerStart -CompletedUtc ([DateTimeOffset]::Parse('2026-10-16T13:20:00Z')) -NotAfterUtc $signerExpiry) 'completion inside the signer window was rejected'
+Assert-True (-not (Test-CnMonMsixSessionSignerWindow -StartedUtc $signerStart -CompletedUtc ([DateTimeOffset]::Parse('2026-10-16T13:22:33Z')) -NotAfterUtc $signerExpiry)) 'completion after signer expiry was accepted'
+Assert-True (Test-CnMonMsixDesktopPhaseAllowed -Phase 'Cleanup' -Completed @{}) 'expired signer window blocked recovery cleanup'
+$signerFixture = [pscustomobject]@{ Thumbprint = 'AABBCC'; NotAfter = [DateTime]::SpecifyKind([DateTime]::Parse('2026-10-16T13:22:32'), [DateTimeKind]::Utc) }
+Assert-Equal (Get-CnMonMsixSessionSignerNotAfter -Certificate $signerFixture -ExpectedThumbprint 'AABBCC') '2026-10-16T13:22:32.0000000+00:00' 'verified certificate expiry was not normalized to UTC'
+try { $null = Get-CnMonMsixSessionSignerNotAfter -Certificate $signerFixture -ExpectedThumbprint 'OTHER'; throw 'mismatched signer thumbprint was accepted' } catch { if ($_.Exception.Message -ceq 'mismatched signer thumbprint was accepted') { throw } }
+
+$checkpointFixture = Join-Path ([IO.Path]::GetTempPath()) ('cnmon-checkpoint-' + [Guid]::NewGuid().ToString('N'))
+$checkpointPayload = [Text.UTF8Encoding]::new($false).GetBytes('{"checkpoint":"first"}')
+try {
+    Write-CnMonMsixSessionCheckpoint -Path $checkpointFixture -Bytes $checkpointPayload
+    Assert-Equal ([IO.File]::ReadAllText($checkpointFixture)) '{"checkpoint":"first"}' 'initial checkpoint was not created'
+    try { Write-CnMonMsixSessionCheckpoint -Path $checkpointFixture -Bytes ([Text.UTF8Encoding]::new($false).GetBytes('{"checkpoint":"collision"}')); throw 'unowned initial checkpoint was replaced' } catch { if ($_.Exception.Message -ceq 'unowned initial checkpoint was replaced') { throw } }
+    Assert-Equal ([IO.File]::ReadAllText($checkpointFixture)) '{"checkpoint":"first"}' 'CreateNew collision altered the prior checkpoint'
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $locked = [IO.File]::Open($checkpointFixture, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        try {
+            try { Write-CnMonMsixSessionCheckpoint -Path $checkpointFixture -Bytes ([Text.UTF8Encoding]::new($false).GetBytes('{"checkpoint":"failed"}')) -ReplaceExisting; throw 'locked checkpoint replacement unexpectedly succeeded' } catch { if ($_.Exception.Message -ceq 'locked checkpoint replacement unexpectedly succeeded') { throw } }
+        } finally { $locked.Dispose() }
+        Assert-Equal ([IO.File]::ReadAllText($checkpointFixture)) '{"checkpoint":"first"}' 'failed replacement damaged the previously readable checkpoint'
+    }
+    Write-CnMonMsixSessionCheckpoint -Path $checkpointFixture -Bytes ([Text.UTF8Encoding]::new($false).GetBytes('{"checkpoint":"second"}')) -ReplaceExisting
+    Assert-Equal ([IO.File]::ReadAllText($checkpointFixture)) '{"checkpoint":"second"}' 'checkpoint replacement did not preserve the new complete state'
+    $temporaryPattern = '^' + [regex]::Escape((Split-Path $checkpointFixture -Leaf)) + '\.[0-9a-f]{32}\.tmp$'
+    Assert-Equal (@(Get-ChildItem -LiteralPath (Split-Path $checkpointFixture) | Where-Object { $_.Name -match $temporaryPattern }).Count) 0 'checkpoint left a temporary file behind'
+} finally { Remove-Item -LiteralPath $checkpointFixture -Force -ErrorAction SilentlyContinue }
+
+$bounds = [pscustomobject]@{ X = 1920; Y = 0; Width = 1920; Height = 1080 }
+Assert-Equal (Get-CnMonMsixSessionCaptureBounds -WindowHandle ([IntPtr]42) -ForegroundHandle ([IntPtr]42) -MonitorBounds $bounds).X 1920 'capture did not select the verified window monitor bounds'
+Assert-True ($null -eq (Get-CnMonMsixSessionCaptureBounds -WindowHandle ([IntPtr]42) -ForegroundHandle ([IntPtr]43) -MonitorBounds $bounds)) 'capture accepted a window that was not foreground'
+
 $requiredCommands = @('Add-AppxPackage', 'Remove-AppxPackage', 'CopyFromScreen', 'ms-settings:appsfeatures', 'CNMON_MSIX_APPDATA_PHASE')
 $sourceText = [IO.File]::ReadAllText($scriptPath)
 foreach ($required in $requiredCommands) {
     Assert-True ($sourceText.Contains($required, [StringComparison]::Ordinal)) "driver is missing actual desktop operation: $required"
 }
+Assert-True ($sourceText.Contains('[Windows.Forms.Screen]::FromHandle($WindowHandle).Bounds', [StringComparison]::Ordinal) -and
+    -not $sourceText.Contains('[Windows.Forms.Screen]::PrimaryScreen.Bounds', [StringComparison]::Ordinal)) 'screenshots must use the verified window monitor bounds'
+Assert-True ($sourceText.Contains('Get-CnMonMsixSessionSignerNotAfter -Certificate $signerCertificate', [StringComparison]::Ordinal) -and
+    -not $sourceText.Contains("Parse('2026-10-16T13:22:32Z')", [StringComparison]::Ordinal)) 'completion expiry must come from the verified signer certificate'
+Assert-True ($sourceText.Contains('[string]$ResultsPath', [StringComparison]::Ordinal) -and
+    [regex]::IsMatch($sourceText, 'if \(\$Phase -eq ''Run''\) \{\r?\n\s+if \(\[string\]::IsNullOrWhiteSpace\(\$ResultsPath\)\)', [Text.RegularExpressions.RegexOptions]::CultureInvariant)) 'ResultsPath must only be resolved during Run'
 foreach ($forbidden in @('Reset-AppxPackage', 'Register-AppxPackage', 'Unregister-AppxPackage', 'Invoke-Expression', 'SendKeys')) {
     Assert-True (-not $sourceText.Contains($forbidden, [StringComparison]::Ordinal)) "driver contains forbidden action: $forbidden"
 }
@@ -185,7 +228,7 @@ function Open-CnMonMsixSessionSettings { $p = [Diagnostics.Process]::GetCurrentP
 function Wait-CnMonMsixSessionUserConfirmation {}
 function Get-CnMonMsixSessionAutomationWindows { ,@([pscustomobject]@{ verified = $true }) }
 function Set-CnMonMsixSessionWindowForeground {}
-function Save-CnMonMsixSessionScreenshot { param($Name) return $Name }
+function Save-CnMonMsixSessionScreenshot { param($Name, $WindowHandle, [switch]$Listing) return $Name }
 function Invoke-CnMonMsixSessionShellSet { if ($script:AliasMockNativeFails) { throw 'mock native failure' }; return @{} }
 function Save-CnMonMsixSessionState {}
 function Write-CnMonMsixSessionSupplement {}
@@ -214,7 +257,7 @@ function Get-CnMonMsixSessionDataDigest { 'fixture-digest' }
 function Save-CnMonMsixSessionRepairUiTrace {}
 function Get-CnMonMsixSessionRepairObservation { $script:RepairObservationCalls++; $script:RepairMockEvents.Add('observation'); throw 'stop after observed confirmation ordering' }
 function Set-CnMonMsixSessionWindowForeground { $script:RepairMockEvents.Add('foreground') }
-function Save-CnMonMsixSessionScreenshot { $script:RepairScreenshotCalls++; $script:RepairMockEvents.Add('screenshot'); return 'fixture.png' }
+function Save-CnMonMsixSessionScreenshot { param($Name, $WindowHandle, [switch]$Listing) $script:RepairScreenshotCalls++; $script:RepairMockEvents.Add('screenshot'); return 'fixture.png' }
 function Wait-CnMonMsixSessionUserConfirmation { if ($script:RejectRepairConfirmation) { throw 'desktop observation was not confirmed' }; $script:RepairConfirmed = $true; $script:RepairMockEvents.Add('confirmation') }
 function Initialize-RepairMockState {
     $script:State = @{ completed = @{ prepare = $true; alias_off = $true; alias_on = $true }; owned_files = @(); screenshots = [Collections.ArrayList]::new(); package_full_name = 'fixture'; observations = @{ repair = @{ data_before_sha256 = $null } } }
