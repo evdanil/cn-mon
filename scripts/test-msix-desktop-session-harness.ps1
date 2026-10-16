@@ -24,6 +24,7 @@ $helperNames = @(
     'New-CnMonMsixSessionRepairBreadcrumbMetadata',
     'Test-CnMonMsixSessionRepairActionAllowed',
     'Test-CnMonMsixSessionRepairObservationAllowsInvoke',
+    'Get-CnMonMsixSessionSeedRequestId',
     'Test-CnMonMsixSessionSettingsWindowBinding',
     'Select-CnMonMsixSessionSettingsWindowContext',
     'Test-CnMonMsixOwnedShellProcess',
@@ -57,6 +58,7 @@ Assert-True ($sourceText.Contains('CreateNew', [StringComparison]::Ordinal)) 'dr
 Assert-True ($sourceText.Contains('PackageFullName', [StringComparison]::Ordinal)) 'driver does not bind cleanup to the exact registered package full name'
 Assert-True (-not $sourceText.Contains('$LASTEXITCODE -ne 0', [StringComparison]::Ordinal)) 'driver uses a native exit-code variable to judge a PowerShell preflight script'
 Assert-True ($sourceText.Contains("'-w', 'new'", [StringComparison]::Ordinal)) 'listing screenshots do not use a dedicated Windows Terminal window'
+Assert-True ($sourceText.Contains("'--title', `$terminalTitle, '--suppressApplicationTitle'", [StringComparison]::Ordinal)) 'owned Windows Terminal title can be overridden by the application title'
 Assert-True ($sourceText.Contains('Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $before', [StringComparison]::Ordinal)) 'repair activation is not gated by the observed button shape'
 Assert-True ($sourceText.Contains('Export-Clixml', [StringComparison]::Ordinal)) 'private desktop failure diagnostics are not preserved before cleanup'
 $repairObservationAst = $sourceAst.Find({
@@ -91,6 +93,15 @@ $terminalWindowAst = $sourceAst.Find({
         $candidate.Name -ceq 'Find-CnMonMsixSessionWindowHandle'
 }, $true)
 Assert-True ($terminalWindowAst.Extent.Text.Contains('Get-CnMonMsixSessionAutomationWindows -Process $Process', [StringComparison]::Ordinal)) 'Terminal UIA process-window behavior changed'
+$terminalFunction = . ([scriptblock]::Create($terminalWindowAst.Extent.Text))
+function Get-CnMonMsixSessionAutomationWindows { return $script:TerminalMockWindows }
+$unrelatedTerminalWindow = [pscustomobject]@{ Current = [pscustomobject]@{ Name = 'Windows Terminal'; NativeWindowHandle = [IntPtr]101 } }
+$ownedTerminalWindow = [pscustomobject]@{ Current = [pscustomobject]@{ Name = 'cnmon-12345678-help pwsh.exe'; NativeWindowHandle = [IntPtr]202 } }
+$script:TerminalMockWindows = @($unrelatedTerminalWindow, $ownedTerminalWindow)
+$terminalHandle = Find-CnMonMsixSessionWindowHandle -Process ([Diagnostics.Process]::GetCurrentProcess()) -TitleToken 'cnmon-12345678-help'
+Assert-Equal ([int64]$terminalHandle) 202 'Terminal lookup selected an unrelated window ahead of the exact owned title'
+$script:TerminalMockWindows = @($unrelatedTerminalWindow)
+try { $null = Find-CnMonMsixSessionWindowHandle -Process ([Diagnostics.Process]::GetCurrentProcess()) -TitleToken 'cnmon-12345678-help'; throw 'unmatched Terminal window was accepted' } catch { if ($_.Exception.Message -ceq 'unmatched Terminal window was accepted') { throw } }
 $prepareAst = $sourceAst.Find({
     param($candidate)
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -242,6 +253,11 @@ $repairObservation.repair_button.enabled = $true
 Assert-True (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $repairObservation) 'enabled button from the real observation shape did not authorize Invoke'
 $repairObservation.repair_button.PSObject.Properties.Remove('name')
 Assert-True (-not (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $repairObservation)) 'observation missing its bound Repair name authorized Invoke'
+$seededRequestId = Get-CnMonMsixSessionSeedRequestId -Json '{"requests":[{"id":"77db8c93"}]}'
+Assert-Equal $seededRequestId '77db8c93' 'history listing request id did not use the published JSON schema field'
+foreach ($badRequestJson in @('{"requests":[{"request_id":"77db8c93"}]}', '{"requests":[{"id":"bad-id"}]}', '{"requests":[]}')) {
+    try { $null = Get-CnMonMsixSessionSeedRequestId -Json $badRequestJson; throw 'invalid history request ID was accepted' } catch { if ($_.Exception.Message -ceq 'invalid history request ID was accepted') { throw } }
+}
 
 $ownedRunner = 'C:\private\desktop-session-terminal-command.ps1'
 $shellIdentity = @{

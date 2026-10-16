@@ -115,3 +115,5 @@ The sidecar is `packaging/windows/cn-mon.exe.manifest` beside the unchanged PE, 
 Store upload, listing assets/content, restricted-capability approval and certification/publication remain a separate stage. Package identity reservation and successful local qualification do not establish CLI-only Store eligibility or public availability.
 
 For the private visible-desktop supplement, `settings_verified` records that the operator confirmed the requested alias state in the exact verified Settings window, the window was captured, and the matching native command behavior passed. It does not indicate that UI Automation changed or read the Settings toggle; an unavailable UIA toggle pattern does not invalidate otherwise complete evidence.
+
+The requested `repair-progress.png` capture occurs after the driver observes repair progress; the UI may already show completion by capture time. Identical bytes are allowed only for the `repair-progress.png` and `repair-complete.png` pair. Independent review must verify the driver-bound progress observation and capture provenance rather than infer a progress state from the image alone.

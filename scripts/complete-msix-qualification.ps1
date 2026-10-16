@@ -321,6 +321,34 @@ function Test-CnMonMsixJsonInteger {
     return ($Value -is [int] -or $Value -is [long])
 }
 
+function Assert-CnMonMsixScreenshotHashGroups {
+    param([Parameter(Mandatory = $true)][object[]]$Screenshots)
+
+    $namesByHash = @{}
+    foreach ($screenshot in $Screenshots) {
+        if ($null -eq $screenshot -or $screenshot.name -isnot [string] -or $screenshot.sha256 -isnot [string]) {
+            throw 'screenshot hash group is invalid'
+        }
+        if (-not $namesByHash.ContainsKey($screenshot.sha256)) {
+            $namesByHash[$screenshot.sha256] = [Collections.Generic.List[string]]::new()
+        }
+        $namesByHash[$screenshot.sha256].Add($screenshot.name)
+    }
+
+    $duplicateGroups = @($namesByHash.GetEnumerator() | Where-Object { $_.Value.Count -gt 1 })
+    if ($duplicateGroups.Count -eq 0) { return }
+    $allowedPair = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $null = $allowedPair.Add('repair-progress.png')
+    $null = $allowedPair.Add('repair-complete.png')
+    if ($duplicateGroups.Count -ne 1 -or $duplicateGroups[0].Value.Count -ne 2) {
+        throw 'screenshot captures are not distinct'
+    }
+    foreach ($name in $duplicateGroups[0].Value) {
+        if (-not $allowedPair.Remove($name)) { throw 'screenshot captures are not distinct' }
+    }
+    if ($allowedPair.Count -ne 0) { throw 'screenshot captures are not distinct' }
+}
+
 function Get-CnMonMsixDesktopCompletionReport {
     [CmdletBinding()]
     param(
@@ -522,9 +550,7 @@ function Get-CnMonMsixDesktopCompletionReport {
         }
         $manifestHashes += $manifest.sha256
     }
-    if (@($manifestHashes | Select-Object -Unique).Count -ne $requiredScreenshots.Count) {
-        throw 'screenshot captures are not distinct'
-    }
+    Assert-CnMonMsixScreenshotHashGroups -Screenshots @($manifestByName.Values)
 
     if (-not (Test-CnMonMsixExactKeys $ReviewAttestation @(
             'schema_version', 'mode', 'authority', 'supplement_sha256', 'screenshot_review_completed',

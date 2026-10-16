@@ -67,6 +67,7 @@ $requiredFunctions = @(
     'Get-CnMonMsixNativeHelperSha256',
     'Test-CnMonMsixExactKeys',
     'Test-CnMonMsixJsonInteger',
+    'Assert-CnMonMsixScreenshotHashGroups',
     'Get-CnMonMsixDesktopCompletionReport',
     'Get-CnMonMsixReviewedCompletionReport'
 )
@@ -85,6 +86,24 @@ Assert-True ($parsed.nested.ok -eq $true) 'strict JSON reader changed a valid ob
 Assert-Throws { ConvertFrom-CnMonMsixStrictJson -Json '{"schema_version":1,"schema_version":2}' } 'duplicate JSON fields were accepted'
 Assert-Throws { ConvertFrom-CnMonMsixStrictJson -Json '{not-json}' } 'malformed JSON was accepted'
 Write-Host 'PASS strict JSON parsing rejects duplicate and malformed fields'
+
+Assert-CnMonMsixScreenshotHashGroups -Screenshots @(
+    [pscustomobject]@{ name = 'repair-progress.png'; sha256 = 'd' * 64 },
+    [pscustomobject]@{ name = 'repair-complete.png'; sha256 = 'd' * 64 }
+)
+foreach ($case in @(
+    @{ Names = @('alias-off-settings.png', 'alias-on-settings.png'); Message = 'alias screenshots' },
+    @{ Names = @('01-cli-help.png', '02-icmp-table.png'); Message = 'Store screenshots' },
+    @{ Names = @('repair-start.png', 'repair-progress.png', 'repair-complete.png'); Message = 'three repair screenshots' },
+    @{ Names = @('alias-off-settings.png', 'repair-start.png'); Message = 'an unrelated screenshot pair' }
+)) {
+    $duplicateScreenshots = @($case.Names | ForEach-Object {
+        [pscustomobject]@{ name = $_; sha256 = 'd' * 64 }
+    })
+    Assert-Throws { Assert-CnMonMsixScreenshotHashGroups -Screenshots $duplicateScreenshots } `
+        "$($case.Message) with duplicate hashes were accepted"
+}
+Write-Host 'PASS only the repair progress/completion screenshot pair may share a hash'
 
 $directoryTemp = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-evidence-dir-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $directoryTemp
@@ -219,7 +238,7 @@ $screenshots = @(
     [ordered]@{ name = 'alias-on-settings.png'; sha256 = 'b' * 64; width = 900; height = 700 },
     [ordered]@{ name = 'repair-start.png'; sha256 = 'c' * 64; width = 900; height = 700 },
     [ordered]@{ name = 'repair-progress.png'; sha256 = 'd' * 64; width = 900; height = 700 },
-    [ordered]@{ name = 'repair-complete.png'; sha256 = 'e' * 64; width = 900; height = 700 },
+    [ordered]@{ name = 'repair-complete.png'; sha256 = 'd' * 64; width = 900; height = 700 },
     [ordered]@{ name = '01-cli-help.png'; sha256 = 'f' * 64; width = 1366; height = 768 },
     [ordered]@{ name = '02-icmp-table.png'; sha256 = '1' * 64; width = 1366; height = 768 },
     [ordered]@{ name = '03-json-tcp.png'; sha256 = '2' * 64; width = 1366; height = 768 },
@@ -316,6 +335,17 @@ Assert-True ((@($report.gates.Keys).Count) -eq 19) 'completion report gate set c
 Assert-True ($report.candidate.packaging_revision -ceq $packagingRevision) 'completion report changed the candidate packaging revision'
 Assert-True ($report.qualification_scripts.helper_verification -ceq 'local_bytes_verified') 'locally hashed helper provenance was not recorded'
 Assert-True ($report.gates.repair -ceq 'pass' -and $report.gates.conflicts -ceq 'pass') 'completion report did not promote the two permitted gates'
+Assert-True ($attestation.reviewed_screenshot_sha256s.Count -eq 10 -and
+    @($attestation.reviewed_screenshot_sha256s | Where-Object { $_ -ceq ('d' * 64) }).Count -eq 2) `
+    'review attestation did not preserve both repair screenshot hash entries'
+$badReview = [ordered]@{} + $attestation
+$reviewedHashes = [Collections.Generic.List[string]]::new()
+foreach ($hash in $attestation.reviewed_screenshot_sha256s) { $reviewedHashes.Add($hash) }
+$null = $reviewedHashes.Remove('d' * 64)
+$badReview.reviewed_screenshot_sha256s = $reviewedHashes.ToArray()
+$bad = @{} + $validArgs; $bad.ReviewAttestation = $badReview
+Assert-Throws { Get-CnMonMsixDesktopCompletionReport @bad } `
+    'review attestation that collapsed the two repair hashes to a nine-entry list was accepted'
 foreach ($gate in $qualificationGates | Where-Object { $_ -notin @('repair', 'conflicts') }) {
     Assert-True ($report.gates[$gate] -ceq $certifyResult.gates[$gate]) "completion report changed unrelated gate '$gate'"
 }

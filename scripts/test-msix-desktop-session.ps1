@@ -87,6 +87,15 @@ function Test-CnMonMsixSessionRepairObservationAllowsInvoke {
         -RepairButtonName ([string]$Observation.repair_button.name) -RepairButtonEnabled ([bool]$Observation.repair_button.enabled)
 }
 
+function Get-CnMonMsixSessionSeedRequestId {
+    param([string]$Json)
+    $report = ConvertFrom-Json -InputObject $Json -ErrorAction Stop
+    if (@($report.requests).Count -lt 1 -or [string]$report.requests[0].id -notmatch '^[0-9a-fA-F]{4,64}$') {
+        throw 'seeded request ID was not available for the history screenshots'
+    }
+    return [string]$report.requests[0].id
+}
+
 function Test-CnMonMsixOwnedShellProcess {
     param(
         [System.Collections.IDictionary]$Shell,
@@ -548,7 +557,8 @@ function Find-CnMonMsixSessionWindowHandle {
     param([Diagnostics.Process]$Process, [string]$TitleToken)
     $windows = Get-CnMonMsixSessionAutomationWindows -Process $Process
     foreach ($window in $windows) {
-        if ([string]$window.Current.Name -and [string]$window.Current.Name.Contains($TitleToken, [StringComparison]::Ordinal)) {
+        $windowName = [string]$window.Current.Name
+        if ($windowName -and $windowName.Contains($TitleToken, [StringComparison]::Ordinal)) {
             $handle = [IntPtr]$window.Current.NativeWindowHandle
             if ($handle -ne [IntPtr]::Zero) { return $handle }
         }
@@ -938,6 +948,7 @@ function Invoke-CnMonMsixSessionRepair {
             throw 'observed Repair control has no InvokePattern'
         }
         $invokePattern.Invoke()
+        Write-Host ('CNMON_MSIX_REPAIR_EVENT=invoke_returned UTC=' + [DateTime]::UtcNow.ToString('o'))
         $script:State.observations.repair.activation_observed = $true
         Save-CnMonMsixSessionState
 
@@ -947,6 +958,7 @@ function Invoke-CnMonMsixSessionRepair {
             $current = Get-CnMonMsixSessionRepairObservation -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
             if ($current.progress_visible -or ($null -ne $current.repair_button -and -not $current.repair_button.enabled)) {
                 $sawProgress = $true
+                Write-Host ('CNMON_MSIX_REPAIR_EVENT=progress_observed UTC=' + [DateTime]::UtcNow.ToString('o'))
                 Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
                 $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-progress.png'))
                 Save-CnMonMsixSessionState
@@ -961,6 +973,7 @@ function Invoke-CnMonMsixSessionRepair {
                 $current = Get-CnMonMsixSessionRepairObservation -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
                 if (-not $current.progress_visible -and $null -ne $current.repair_button -and
                     (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $current)) {
+                    Write-Host ('CNMON_MSIX_REPAIR_EVENT=completion_observed UTC=' + [DateTime]::UtcNow.ToString('o'))
                     Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
                     $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-complete.png'))
                     $script:State.observations.repair.completion_observed = $true
@@ -1260,9 +1273,7 @@ function Invoke-CnMonMsixSessionListingScreenshots {
     $listProcess.WaitForExit()
     if ($listProcess.ExitCode -ne 0 -or $listError) { $listProcess.Dispose(); throw 'history listing could not be prepared' }
     $listProcess.Dispose()
-    $list = $listOutput | ConvertFrom-Json -ErrorAction Stop
-    if (@($list.requests).Count -lt 1 -or [string]$list.requests[0].request_id -notmatch '^[0-9a-fA-F]{4,64}$') { throw 'seeded request ID was not available for the history screenshots' }
-    $requestId = [string]$list.requests[0].request_id
+    $requestId = Get-CnMonMsixSessionSeedRequestId -Json $listOutput
 
     $runnerPath = Join-Path $script:ArtifactFullPath 'desktop-session-terminal-command.ps1'
     $runner = @'
@@ -1310,7 +1321,7 @@ exit $code
         $start = [Diagnostics.ProcessStartInfo]::new()
         $start.FileName = $wt.Source
         $start.UseShellExecute = $false
-        foreach ($arg in @('-w', 'new', 'new-tab', '--title', $terminalTitle, '--startingDirectory', $workDirectory,
+        foreach ($arg in @('-w', 'new', 'new-tab', '--title', $terminalTitle, '--suppressApplicationTitle', '--startingDirectory', $workDirectory,
                 $script:PwshExe, '-NoLogo', '-NoProfile', '-File', $runnerPath,
                 '-Mode', $screen.Mode, '-AliasPath', $script:AliasPath, '-HistoryPath', $history,
                 '-LogPath', $logPath, '-Port', [string]$port, '-RequestId', $requestId,
