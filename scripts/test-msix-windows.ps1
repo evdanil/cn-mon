@@ -40,8 +40,12 @@ $script:IdentityName = $null
 $script:DiagnosticIdentity = $null
 $script:OwnedProfileFiles = @()
 $script:LastSdkToolExitCode = $null
+$script:LastSdkToolName = $null
+$script:LastSdkToolLogPath = $null
 $script:LastSignatureVerifyExitCode = $null
 $script:CurrentDiagnosticPhase = 'preflight'
+$script:CurrentDiagnosticOperation = 'none'
+$script:SignedCatalogFootprintPresent = $false
 $script:TrustPresenceChecked = $false
 $script:TrustedCertificatePresent = $false
 $script:LastSignatureLogPath = $null
@@ -170,6 +174,8 @@ function Assert-CnMonMsixReceipt {
 function Invoke-CnMonMsixTool {
     param([string]$Executable, [string[]]$Arguments, [string]$LogPath)
     $script:LastSdkToolExitCode = $null
+    $script:LastSdkToolName = $null
+    $script:LastSdkToolLogPath = $null
     $module = Get-Module -Name 'msix-package'
     $exit = & $module {
         param([string]$Path, [string[]]$ToolArguments, [string]$PrivateLog)
@@ -177,17 +183,74 @@ function Invoke-CnMonMsixTool {
     } $Executable $Arguments $LogPath
     if ($exit -ne 0) {
         $script:LastSdkToolExitCode = [int]$exit
+        $script:LastSdkToolName = switch ([IO.Path]::GetFileName($Executable).ToLowerInvariant()) {
+            'signtool.exe' { 'signtool'; break }
+            'makeappx.exe' { 'makeappx'; break }
+            default { 'other' }
+        }
+        $script:LastSdkToolLogPath = $LogPath
         throw 'a Windows SDK packaging tool failed; private output was retained'
     }
 }
 
+function Get-CnMonMsixSignedPayloadExpectedFiles {
+    param([string]$Root, [System.Collections.IDictionary]$ExpectedFiles)
+    $catalogRelative = 'AppxMetadata/CodeIntegrity.cat'
+    if ($null -eq $ExpectedFiles -or $ExpectedFiles.Contains($catalogRelative)) {
+        throw 'signed payload map already contains the Code Integrity catalog'
+    }
+    $catalogPath = Join-Path (Join-Path $Root 'AppxMetadata') 'CodeIntegrity.cat'
+    $script:SignedCatalogFootprintPresent = Test-Path -LiteralPath $catalogPath -PathType Leaf
+    $files = [ordered]@{}
+    foreach ($path in $ExpectedFiles.Keys) { $files[[string]$path] = $ExpectedFiles[$path] }
+    if ($script:SignedCatalogFootprintPresent) {
+        $catalogHash = (Get-FileHash -LiteralPath $catalogPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($catalogHash -notmatch '^[0-9a-f]{64}$') {
+            throw 'signed package Code Integrity catalog hash is invalid'
+        }
+        $files[$catalogRelative] = $catalogHash
+    }
+    return $files
+}
+
 function Assert-CnMonMsixPackagePayload {
-    param([string]$Path, [System.Collections.IDictionary]$Files)
+    param([string]$Path, [System.Collections.IDictionary]$Files, [switch]$Signed)
     $signatureBlock = Join-Path $Path 'AppxSignature.p7x'
     if (Test-Path -LiteralPath $signatureBlock -PathType Leaf) {
         Remove-Item -LiteralPath $signatureBlock -Force
     }
-    msix-package\Assert-CnMonMsixPayload -Root $Path -ExpectedFiles $Files
+    $expectedFiles = if ($Signed) { Get-CnMonMsixSignedPayloadExpectedFiles -Root $Path -ExpectedFiles $Files } else { $Files }
+    msix-package\Assert-CnMonMsixPayload -Root $Path -ExpectedFiles $expectedFiles
+}
+
+function Get-CnMonMsixDiagnosticErrorCategory {
+    param([string]$Message, [string]$ExceptionType, [string]$FailureKind)
+    if ($FailureKind -in @('sdk_nonzero', 'sdk_invocation_error', 'trusted_certificate_missing')) { return $FailureKind }
+    if ($ExceptionType -in @('ParameterBindingException', 'ParameterBindingValidationException', 'ParameterBindingArgumentTransformationException')) {
+        return 'parameter_binding'
+    }
+    $prefixes = [ordered]@{
+        'payload root does not exist' = 'payload_root_missing'
+        'expected payload map contains an invalid path or SHA-256' = 'payload_expected_map_invalid'
+        'payload contains a reparse point' = 'payload_reparse_point'
+        'payload file missing:' = 'payload_missing'
+        'payload hash mismatch:' = 'payload_hash_mismatch'
+        'payload unexpected file:' = 'payload_unexpected'
+        'signed package Code Integrity catalog is missing' = 'payload_catalog_missing'
+        'signed package Code Integrity catalog hash is invalid' = 'payload_catalog_invalid'
+    }
+    foreach ($prefix in $prefixes.Keys) {
+        if ($Message.StartsWith([string]$prefix, [StringComparison]::OrdinalIgnoreCase)) { return [string]$prefixes[$prefix] }
+    }
+    switch ($ExceptionType) {
+        'InvalidOperationException' { return 'invalid_operation' }
+        { $_ -in @('IOException', 'FileLoadException') } { return 'io' }
+        'UnauthorizedAccessException' { return 'access_denied' }
+        { $_ -in @('PathTooLongException', 'DirectoryNotFoundException') } { return 'path' }
+        'ArgumentException' { return 'argument' }
+        { $_ -match 'Security' } { return 'security' }
+        default { return 'stage_exception' }
+    }
 }
 
 function Get-CnMonMsixFixtureFiles {
@@ -502,12 +565,16 @@ function Save-CnMonMsixSignatureDiagnosticStatus {
         [string]$ArtifactDirectory,
         [System.Collections.IDictionary]$Guard,
         [ValidateSet('candidate-verify', 'user-trust-presence', 'user-verify', 'candidate-setup', 'candidate-post-verify', 'user-post-verify', 'other')][string]$Phase,
+        [ValidateSet('none', 'signed_unpack_directory', 'signed_makeappx_unpack', 'signed_payload_validation', 'signed_package_hash', 'signed_receipt_construction', 'signed_receipt_serialization', 'signed_receipt_write')][string]$Operation = 'none',
         [ValidateSet('sdk_nonzero', 'sdk_invocation_error', 'trusted_certificate_missing', 'stage_exception')][string]$FailureKind,
         [ValidateSet('none', 'invalid_operation', 'io', 'access_denied', 'path', 'argument', 'security', 'other')][string]$ExceptionKind,
+        [ValidateSet('sdk_nonzero', 'sdk_invocation_error', 'trusted_certificate_missing', 'parameter_binding', 'payload_root_missing', 'payload_expected_map_invalid', 'payload_reparse_point', 'payload_missing', 'payload_hash_mismatch', 'payload_unexpected', 'payload_catalog_missing', 'payload_catalog_invalid', 'invalid_operation', 'io', 'access_denied', 'path', 'argument', 'security', 'stage_exception')][string]$ErrorCategory = 'stage_exception',
+        [ValidateSet('none', 'signtool', 'makeappx', 'certificate_store', 'other')][string]$ToolName = 'none',
         [bool]$SdkExitCaptured,
         [bool]$PrivateLogRetained,
         [bool]$TrustPresenceChecked,
         [bool]$TrustedCertificatePresent,
+        [bool]$CatalogFootprintPresent,
         [ValidateSet('not_attempted', 'success', 'failure')][string]$SaveStatus,
         [ValidateSet('none', 'io', 'access_denied', 'path', 'argument', 'other')][string]$SaveErrorKind,
         [bool]$PublicDiagnosticWritten
@@ -518,15 +585,19 @@ function Save-CnMonMsixSignatureDiagnosticStatus {
     }
     $statusPath = Join-Path $ArtifactDirectory 'msix-signature-diagnostic-status.json'
     if (Test-Path -LiteralPath $statusPath -PathType Leaf) { return }
-    $status = [ordered]@{ schema_version = 2 }
+    $status = [ordered]@{ schema_version = 3 }
     foreach ($key in $Guard.Keys) { $status["guard_$key"] = [bool]$Guard[$key] }
     $status.phase = $Phase
+    $status.operation = $Operation
     $status.failure_kind = $FailureKind
     $status.exception_kind = $ExceptionKind
+    $status.error_category = $ErrorCategory
+    $status.tool_name = $ToolName
     $status.sdk_exit_captured = $SdkExitCaptured
     $status.private_log_retained = $PrivateLogRetained
     $status.trust_presence_checked = $TrustPresenceChecked
     $status.trusted_certificate_present = $TrustedCertificatePresent
+    $status.catalog_footprint_present = $CatalogFootprintPresent
     $status.save_status = $SaveStatus
     $status.save_error_kind = $SaveErrorKind
     $status.public_diagnostic_written = $PublicDiagnosticWritten
@@ -556,16 +627,27 @@ function Save-CnMonMsixSignatureFailureEvidence {
         default { 'other' }
     }
     $isSignatureVerify = $Phase -in @('candidate-verify', 'user-verify')
+    $knownOperations = @('signed_unpack_directory', 'signed_makeappx_unpack', 'signed_payload_validation', 'signed_package_hash', 'signed_receipt_construction', 'signed_receipt_serialization', 'signed_receipt_write')
+    $operation = if ($Phase -eq 'candidate-post-verify' -and $script:CurrentDiagnosticOperation -in $knownOperations) { $script:CurrentDiagnosticOperation } else { 'none' }
+    $catalogFootprintPresent = [bool]$script:SignedCatalogFootprintPresent
+    $makeAppxFailure = $Phase -eq 'candidate-post-verify' -and $operation -eq 'signed_makeappx_unpack' -and
+        $script:LastSdkToolName -ceq 'makeappx' -and $null -ne $script:LastSdkToolExitCode -and $script:LastSdkToolLogPath
     $sdkExitCode = if ($isSignatureVerify) { $script:LastSignatureVerifyExitCode }
-        elseif ($Phase -eq 'candidate-setup') { $script:LastSdkToolExitCode }
+        elseif ($Phase -eq 'candidate-setup' -or $makeAppxFailure) { $script:LastSdkToolExitCode }
         else { $null }
     $sdkExitCaptured = $null -ne $sdkExitCode
+    $toolName = if ($isSignatureVerify) { 'signtool' }
+        elseif ($Phase -eq 'user-trust-presence') { 'certificate_store' }
+        elseif ($sdkExitCaptured -and $script:LastSdkToolName -in @('signtool', 'makeappx', 'other')) { $script:LastSdkToolName }
+        else { 'none' }
+    $sdkLogPath = if ($isSignatureVerify) { $script:LastSignatureLogPath } else { $script:LastSdkToolLogPath }
     $failureKind = if ($sdkExitCaptured) { 'sdk_nonzero' }
         elseif ($isSignatureVerify) { 'sdk_invocation_error' }
         else { 'stage_exception' }
     if ($Phase -eq 'user-trust-presence' -and $TrustPresenceChecked -and -not $TrustedCertificatePresent) {
         $failureKind = 'trusted_certificate_missing'
     }
+    $errorCategory = Get-CnMonMsixDiagnosticErrorCategory -Message $Exception.Message -ExceptionType $Exception.GetType().Name -FailureKind $failureKind
     $saveStatus = 'not_attempted'
     $saveErrorKind = 'none'
     $privateLog = $null
@@ -581,33 +663,38 @@ function Save-CnMonMsixSignatureFailureEvidence {
                 $publicDiagnostic.exception_kind = $exceptionKind
                 $publicDiagnostic.trust_presence_checked = $TrustPresenceChecked
                 $publicDiagnostic.trusted_certificate_present = $TrustedCertificatePresent
+                $publicDiagnostic.operation = $operation
+                $publicDiagnostic.error_category = $errorCategory
+                $publicDiagnostic.catalog_footprint_present = $catalogFootprintPresent
                 [IO.File]::WriteAllText($publicPath, (ConvertTo-Json -InputObject $publicDiagnostic -Depth 4) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
             }
         }
-        elseif ($sdkExitCaptured -and $Phase -eq 'candidate-setup' -and $script:LastSignatureLogPath -and (Test-Path -LiteralPath $script:LastSignatureLogPath -PathType Leaf)) {
+        elseif ($sdkExitCaptured -and $sdkLogPath -and (Test-Path -LiteralPath $sdkLogPath -PathType Leaf)) {
             $privateDirectory = Join-Path $ArtifactDirectory 'private-signature-diagnostics'
             New-Item -ItemType Directory -Force -Path $privateDirectory | Out-Null
-            $privateLog = Join-Path $privateDirectory "$Phase.log"
-            Copy-Item -LiteralPath $script:LastSignatureLogPath -Destination $privateLog -ErrorAction Stop
+            $privateName = if ($Phase -eq 'candidate-post-verify') { "$Phase-$toolName.log" } else { "$Phase.log" }
+            $privateLog = Join-Path $privateDirectory $privateName
+            Copy-Item -LiteralPath $sdkLogPath -Destination $privateLog -ErrorAction Stop
             $saveStatus = 'success'
         }
         if (-not $guard.all) { return }
 
         if (-not ($sdkExitCaptured -and $isSignatureVerify) -and -not (Test-Path -LiteralPath $publicPath -PathType Leaf)) {
-            $reason = if ($failureKind -eq 'trusted_certificate_missing') { 'trusted_certificate_missing' } else { 'stage_exception' }
+            $reason = if ($failureKind -in @('sdk_nonzero', 'sdk_invocation_error')) { 'sdk_error_unclassified' } else { $errorCategory }
             $diagnostic = [ordered]@{
                 schema_version = 1
                 phase = $Phase
-                tool = if ($Phase -eq 'user-trust-presence') { 'certificate-store' }
-                    elseif ($Phase -in @('candidate-verify', 'user-verify') -or $sdkExitCaptured) { 'signtool' }
-                    else { 'preflight' }
+                operation = $operation
+                tool = $toolName
                 exit_code = if ($sdkExitCaptured) { [int]$sdkExitCode } else { $null }
                 hresults = @()
-                reason = if ($failureKind -in @('sdk_nonzero', 'sdk_invocation_error')) { 'sdk_error_unclassified' } else { $reason }
+                reason = $reason
                 failure_kind = $failureKind
                 exception_kind = $exceptionKind
+                error_category = $errorCategory
                 trust_presence_checked = $TrustPresenceChecked
                 trusted_certificate_present = $TrustedCertificatePresent
+                catalog_footprint_present = $catalogFootprintPresent
             }
             [IO.File]::WriteAllText($publicPath, (ConvertTo-Json -InputObject $diagnostic -Depth 4) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
             $saveStatus = 'success'
@@ -625,7 +712,7 @@ function Save-CnMonMsixSignatureFailureEvidence {
     }
     $privateLogRetained = $null -ne $privateLog -and (Test-Path -LiteralPath $privateLog -PathType Leaf)
     try {
-        Save-CnMonMsixSignatureDiagnosticStatus -ArtifactDirectory $ArtifactDirectory -Guard $guard -Phase $Phase -FailureKind $failureKind -ExceptionKind $exceptionKind -SdkExitCaptured:$sdkExitCaptured -PrivateLogRetained:$privateLogRetained -TrustPresenceChecked:$TrustPresenceChecked -TrustedCertificatePresent:$TrustedCertificatePresent -SaveStatus $saveStatus -SaveErrorKind $saveErrorKind -PublicDiagnosticWritten:(Test-Path -LiteralPath $publicPath -PathType Leaf)
+        Save-CnMonMsixSignatureDiagnosticStatus -ArtifactDirectory $ArtifactDirectory -Guard $guard -Phase $Phase -Operation $operation -FailureKind $failureKind -ExceptionKind $exceptionKind -ErrorCategory $errorCategory -ToolName $toolName -SdkExitCaptured:$sdkExitCaptured -PrivateLogRetained:$privateLogRetained -TrustPresenceChecked:$TrustPresenceChecked -TrustedCertificatePresent:$TrustedCertificatePresent -CatalogFootprintPresent:$catalogFootprintPresent -SaveStatus $saveStatus -SaveErrorKind $saveErrorKind -PublicDiagnosticWritten:(Test-Path -LiteralPath $publicPath -PathType Leaf)
     } catch { }
 }
 
@@ -839,7 +926,7 @@ function New-CnMonMsixFixture {
     $fixtureUnpacked = Join-Path $script:PrivateRoot 'fixture-signed-unpacked'
     New-Item -ItemType Directory -Path $fixtureUnpacked | Out-Null
     Invoke-CnMonMsixTool $makeappx @('unpack', '/p', $Destination, '/d', $fixtureUnpacked, '/no') (Join-Path $script:PrivateRoot 'fixture-signed-unpack.log')
-    Assert-CnMonMsixPackagePayload $fixtureUnpacked $fixtureFiles
+    Assert-CnMonMsixPackagePayload $fixtureUnpacked $fixtureFiles -Signed
     $packageHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
     $fixtureReceipt = [ordered]@{
         schema_version = 1
@@ -1396,11 +1483,17 @@ function Invoke-CnMonMsixHostedMode {
     $script:LastSignatureLogPath = Join-Path $script:PrivateRoot 'candidate-verify.log'
     Assert-CnMonMsixSignature $candidate $script:LastSignatureLogPath -Phase 'candidate-verify' -Identity $identity
     $script:CurrentDiagnosticPhase = 'candidate-post-verify'
+    $script:CurrentDiagnosticOperation = 'signed_unpack_directory'
     $signedUnpacked = Join-Path $script:PrivateRoot 'signed-unpacked'
     New-Item -ItemType Directory -Path $signedUnpacked | Out-Null
+    $script:CurrentDiagnosticOperation = 'signed_makeappx_unpack'
     Invoke-CnMonMsixTool $makeappx @('unpack', '/p', $candidate, '/d', $signedUnpacked, '/no') (Join-Path $script:PrivateRoot 'signed-unpack.log')
-    Assert-CnMonMsixPackagePayload $signedUnpacked $receipt.files
+    $script:CurrentDiagnosticOperation = 'signed_payload_validation'
+    $script:SignedCatalogFootprintPresent = $false
+    Assert-CnMonMsixPackagePayload $signedUnpacked $receipt.files -Signed
+    $script:CurrentDiagnosticOperation = 'signed_package_hash'
     $signedHash = (Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant()
+    $script:CurrentDiagnosticOperation = 'signed_receipt_construction'
     $signedReceipt = [ordered]@{}
     foreach ($key in $receipt.Keys) { $signedReceipt[$key] = $receipt[$key] }
     $signedReceipt.package_sha256 = $signedHash
@@ -1410,10 +1503,15 @@ function Invoke-CnMonMsixHostedMode {
         unsigned_package_sha256 = [string]$receipt.package_sha256
         signed_package_sha256 = $signedHash
     }
-    [IO.File]::WriteAllText($signedReceiptPath, (ConvertTo-Json -InputObject $signedReceipt -Depth 12) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    $script:CurrentDiagnosticOperation = 'signed_receipt_serialization'
+    $signedReceiptJson = ConvertTo-Json -InputObject $signedReceipt -Depth 12
+    $script:CurrentDiagnosticOperation = 'signed_receipt_write'
+    [IO.File]::WriteAllText($signedReceiptPath, $signedReceiptJson + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
     $script:CreatedReceipt = $true
     $script:SignedOutputsReady = $true
     Set-CnMonMsixGate 'signature' 'pass'
+    $script:CurrentDiagnosticPhase = 'other'
+    $script:CurrentDiagnosticOperation = 'none'
 
     $fixturePath = Join-Path $ArtifactDirectory '.cn-mon-1.2.999.0-fixture.msix'
     $fixtureReceiptPath = Join-Path $ArtifactDirectory '.cn-mon-1.2.999.0-fixture-receipt.json'
@@ -1498,7 +1596,7 @@ function Invoke-CnMonMsixCertifyMode {
     $unpacked = Join-Path $script:PrivateRoot 'signed-unpacked'
     New-Item -ItemType Directory -Path $unpacked | Out-Null
     Invoke-CnMonMsixTool $makeappx @('unpack', '/p', $PackagePath, '/d', $unpacked, '/no') (Join-Path $script:PrivateRoot 'signed-unpack.log')
-    Assert-CnMonMsixPackagePayload $unpacked $receipt.files
+    Assert-CnMonMsixPackagePayload $unpacked $receipt.files -Signed
     $script:CurrentGate = 'account'
     $certifyIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $certifyPrincipal = [Security.Principal.WindowsPrincipal]::new($certifyIdentity)

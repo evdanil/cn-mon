@@ -60,16 +60,21 @@ function Write-CnMonMsixSignatureDiagnosticStatus([string]$Path) {
         )
         $booleanNames = @($guardNames | ForEach-Object { "guard_$_" }) + @(
             'sdk_exit_captured', 'private_log_retained', 'trust_presence_checked',
-            'trusted_certificate_present', 'public_diagnostic_written'
+            'trusted_certificate_present', 'catalog_footprint_present', 'public_diagnostic_written'
         )
-        $expectedNames = @('schema_version', 'phase', 'failure_kind', 'exception_kind', 'save_status', 'save_error_kind') + $booleanNames
+        $expectedNames = @('schema_version', 'phase', 'operation', 'failure_kind', 'exception_kind', 'error_category', 'tool_name', 'save_status', 'save_error_kind') + $booleanNames
         $actualNames = @($status.PSObject.Properties.Name | Sort-Object)
         $expectedNames = @($expectedNames | Sort-Object)
+        $operations = @('none', 'signed_unpack_directory', 'signed_makeappx_unpack', 'signed_payload_validation', 'signed_package_hash', 'signed_receipt_construction', 'signed_receipt_serialization', 'signed_receipt_write')
+        $errorCategories = @('sdk_nonzero', 'sdk_invocation_error', 'trusted_certificate_missing', 'parameter_binding', 'payload_root_missing', 'payload_expected_map_invalid', 'payload_reparse_point', 'payload_missing', 'payload_hash_mismatch', 'payload_unexpected', 'payload_catalog_missing', 'payload_catalog_invalid', 'invalid_operation', 'io', 'access_denied', 'path', 'argument', 'security', 'stage_exception')
         if (($actualNames -join "`n") -cne ($expectedNames -join "`n") -or
-            $status.schema_version -ne 2 -or
+            $status.schema_version -ne 3 -or
             $status.phase -notin @('candidate-verify', 'user-trust-presence', 'user-verify', 'candidate-setup', 'candidate-post-verify', 'user-post-verify', 'other') -or
+            $status.operation -notin $operations -or
             $status.failure_kind -notin @('sdk_nonzero', 'sdk_invocation_error', 'trusted_certificate_missing', 'stage_exception') -or
             $status.exception_kind -notin @('none', 'invalid_operation', 'io', 'access_denied', 'path', 'argument', 'security', 'other') -or
+            $status.error_category -notin $errorCategories -or
+            $status.tool_name -notin @('none', 'signtool', 'makeappx', 'certificate_store', 'other') -or
             $status.save_status -notin @('not_attempted', 'success', 'failure') -or
             $status.save_error_kind -notin @('none', 'io', 'access_denied', 'path', 'argument', 'other')) {
             Write-Host 'MSIX signature diagnostic status: invalid'
@@ -87,9 +92,15 @@ function Write-CnMonMsixSignatureDiagnosticStatus([string]$Path) {
             default { [bool]($status.guard_mode_hosted -or $status.guard_mode_user) }
         }
         if ($status.guard_mode_hosted -eq $status.guard_mode_user -or -not $phaseMatchesMode -or
+            ($status.operation -ne 'none' -and $status.phase -ne 'candidate-post-verify') -or
             (($status.failure_kind -eq 'sdk_nonzero') -ne $status.sdk_exit_captured) -or
+            ($status.failure_kind -in @('sdk_nonzero', 'sdk_invocation_error') -and $status.error_category -ne $status.failure_kind) -or
+            ($status.phase -in @('candidate-verify', 'user-verify') -and $status.tool_name -ne 'signtool') -or
+            ($status.operation -eq 'signed_makeappx_unpack' -and $status.tool_name -notin @('none', 'makeappx')) -or
+            ($status.operation -eq 'signed_makeappx_unpack' -and $status.failure_kind -eq 'sdk_nonzero' -and $status.tool_name -ne 'makeappx') -or
             ($status.failure_kind -eq 'sdk_invocation_error' -and ($status.sdk_exit_captured -or $status.phase -notin @('candidate-verify', 'user-verify'))) -or
             ($status.failure_kind -eq 'trusted_certificate_missing') -ne ($status.phase -eq 'user-trust-presence' -and $status.trust_presence_checked -and -not $status.trusted_certificate_present) -or
+            ($status.failure_kind -eq 'trusted_certificate_missing' -and $status.error_category -ne 'trusted_certificate_missing') -or
             ($status.trusted_certificate_present -and -not $status.trust_presence_checked) -or
             ($status.save_status -eq 'failure') -ne ($status.save_error_kind -ne 'none') -or
             ($status.save_status -ne 'failure' -and $status.save_error_kind -ne 'none')) {
@@ -100,7 +111,7 @@ function Write-CnMonMsixSignatureDiagnosticStatus([string]$Path) {
             $value = if ($status.$name) { 'true' } else { 'false' }
             "$name=$value"
         }
-        Write-Host ("MSIX signature diagnostic status: phase={0} failure_kind={1} exception_kind={2} {3} save_status={4} save_error_kind={5}" -f ($status.phase, $status.failure_kind, $status.exception_kind, ($flags -join ' '), $status.save_status, $status.save_error_kind))
+        Write-Host ("MSIX signature diagnostic status: phase={0} operation={1} failure_kind={2} exception_kind={3} error_category={4} tool_name={5} {6} save_status={7} save_error_kind={8}" -f ($status.phase, $status.operation, $status.failure_kind, $status.exception_kind, $status.error_category, $status.tool_name, ($flags -join ' '), $status.save_status, $status.save_error_kind))
     }
     catch {
         Write-Host 'MSIX signature diagnostic status: invalid'

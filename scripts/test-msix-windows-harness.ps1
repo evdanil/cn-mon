@@ -172,6 +172,9 @@ $requiredFunctions = @(
     'Assert-CnMonMsixTargetsAbsent',
     'Get-CnMonMsixProfileTargets',
     'Invoke-CnMonMsixNativeTests',
+    'Get-CnMonMsixSignedPayloadExpectedFiles',
+    'Get-CnMonMsixDiagnosticErrorCategory',
+    'Assert-CnMonMsixPackagePayload',
     'Assert-CnMonMsixSignature',
     'Get-CnMonMsixSyntheticPrDiagnosticGuard',
     'Test-CnMonMsixSyntheticPrDiagnostic',
@@ -235,6 +238,7 @@ $null = New-Item -ItemType Directory -Path $tempRoot
 $helperPath = Join-Path $tempRoot 'extracted-helpers.ps1'
 $helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFunctionAsts) + @($ciStatusFunctionAsts) + @($ciResultsFunctionAsts) + @($ciGateOutputFunctionAsts) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
 [IO.File]::WriteAllText($helperPath, $helperText, [Text.UTF8Encoding]::new($false))
+Import-Module $modulePath -Force -ErrorAction Stop
 . $helperPath
 $script:MakeAppxFootprint = @('[Content_Types].xml', 'AppxBlockMap.xml')
 $ArtifactDirectory = $tempRoot
@@ -514,6 +518,47 @@ exit 0
         Assert-True ($fixtureReader.Extent.Text -match "purpose\s*-cne\s*'test-fixture'") 'fixture receipt validator accepts a non-test purpose'
     }
 
+    Invoke-Check 'signed payload accepts only the exact CodeIntegrity catalog footprint' {
+        $sourceRoot = Join-Path $tempRoot 'signed-catalog-source'
+        $null = New-Item -ItemType Directory -Path $sourceRoot
+        $binaryPath = Join-Path $sourceRoot 'cn-mon.exe'
+        $manifestPath = Join-Path $sourceRoot 'AppxManifest.xml'
+        [IO.File]::WriteAllText($binaryPath, 'approved binary bytes', [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($manifestPath, '<manifest />', [Text.UTF8Encoding]::new($false))
+        $sourceFiles = [ordered]@{
+            'cn-mon.exe' = Get-CnMonMsixSha256 $binaryPath
+            'AppxManifest.xml' = Get-CnMonMsixSha256 $manifestPath
+        }
+        $signedRoot = Join-Path $tempRoot 'signed-catalog-package'
+        $catalogDirectory = Join-Path $signedRoot 'AppxMetadata'
+        $null = New-Item -ItemType Directory -Path $catalogDirectory -Force
+        Copy-Item -LiteralPath $binaryPath, $manifestPath -Destination $signedRoot
+        [IO.File]::WriteAllText((Join-Path $catalogDirectory 'CodeIntegrity.cat'), 'signature-bound catalog bytes', [Text.UTF8Encoding]::new($false))
+        $signedExpected = Get-CnMonMsixSignedPayloadExpectedFiles -Root $signedRoot -ExpectedFiles $sourceFiles
+        Assert-True $signedExpected.Contains('AppxMetadata/CodeIntegrity.cat') 'signed payload map omitted the exact catalog path'
+        Assert-Equal $sourceFiles.Count 2 'signed expected-map helper changed the original receipt map'
+        Assert-True (-not $sourceFiles.Contains('AppxMetadata/CodeIntegrity.cat')) 'signed expected-map helper mutated the source receipt map'
+        Assert-CnMonMsixPackagePayload -Path $signedRoot -Files $sourceFiles -Signed
+        Assert-ThrowsMatching { Assert-CnMonMsixPackagePayload -Path $signedRoot -Files $sourceFiles } 'payload unexpected file: AppxMetadata/CodeIntegrity.cat' 'unsigned wrapper unexpectedly allowed the signing catalog'
+
+        $unsignedFootprintRoot = Join-Path $tempRoot 'signed-catalog-optional-package'
+        $null = New-Item -ItemType Directory -Path $unsignedFootprintRoot
+        Copy-Item -LiteralPath $binaryPath, $manifestPath -Destination $unsignedFootprintRoot
+        $optionalCatalogExpected = Get-CnMonMsixSignedPayloadExpectedFiles -Root $unsignedFootprintRoot -ExpectedFiles $sourceFiles
+        Assert-Equal $optionalCatalogExpected.Count $sourceFiles.Count 'signed expected map changed when the optional catalog was absent'
+        Assert-True (-not $script:SignedCatalogFootprintPresent) 'missing optional catalog was reported as present'
+        Assert-CnMonMsixPackagePayload -Path $unsignedFootprintRoot -Files $sourceFiles -Signed
+        Assert-Equal $sourceFiles.Count 2 'signed validation without a catalog mutated the source receipt map'
+
+        [IO.File]::WriteAllText((Join-Path $catalogDirectory 'unexpected.dat'), 'unexpected sibling', [Text.UTF8Encoding]::new($false))
+        Assert-ThrowsMatching { Assert-CnMonMsixPackagePayload -Path $signedRoot -Files $sourceFiles -Signed } 'payload unexpected file: AppxMetadata/unexpected.dat' 'signed payload acceptance allowed an arbitrary AppxMetadata sibling'
+        Remove-Item -LiteralPath (Join-Path $catalogDirectory 'unexpected.dat') -Force
+
+        [IO.File]::AppendAllText($binaryPath, ' changed')
+        Copy-Item -LiteralPath $binaryPath -Destination $signedRoot -Force
+        Assert-ThrowsMatching { Assert-CnMonMsixPackagePayload -Path $signedRoot -Files $sourceFiles -Signed } 'payload hash mismatch: cn-mon.exe' 'signed payload acceptance weakened the source binary hash check'
+    }
+
     Invoke-Check 'ordinary-user guard rejects Administrators SID even when token membership is deny-only' {
         Assert-True (Test-CnMonMsixAdministratorsMembership @('S-1-5-32-544')) 'Administrators group SID was not detected'
         Assert-True (-not (Test-CnMonMsixAdministratorsMembership @('S-1-5-32-545', 'S-1-5-32-546'))) 'ordinary built-in groups were treated as Administrators'
@@ -696,6 +741,10 @@ stderr:
             $SdkBinDirectory = $sdkDirectory
             $ArtifactDirectory = $privateArtifactDirectory
             $Mode = 'Hosted'
+            $script:CurrentDiagnosticOperation = 'none'
+            $script:SignedCatalogFootprintPresent = $false
+            $script:LastSdkToolName = $null
+            $script:LastSdkToolLogPath = $null
             $script:LastSdkToolExitCode = $null
             $script:CurrentDiagnosticPhase = 'candidate-verify'
             $script:TrustPresenceChecked = $false
@@ -725,8 +774,12 @@ stderr:
             $publicText = [IO.File]::ReadAllText($publicPath)
             $statusText = [IO.File]::ReadAllText($statusPath)
             $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json -AsHashtable
-            Assert-Equal $status.schema_version 2 'diagnostic status schema version was invalid'
+            Assert-Equal $status.schema_version 3 'diagnostic status schema version was invalid'
             Assert-Equal $status.phase 'candidate-verify' 'diagnostic status omitted the failing signature phase'
+            Assert-Equal $status.operation 'none' 'signature verification status had an unexpected post-verify operation'
+            Assert-Equal $status.error_category 'sdk_nonzero' 'signature verification status omitted its fixed error category'
+            Assert-Equal $status.tool_name 'signtool' 'signature verification status omitted its tool identity'
+            Assert-True (-not $status.catalog_footprint_present) 'signature verification status unexpectedly reported a catalog footprint'
             Assert-Equal $status.exception_kind 'other' 'diagnostic exception type was not mapped to a closed category'
             Assert-True $status.guard_all 'diagnostic status did not record the complete synthetic guard'
             Assert-True $status.sdk_exit_captured 'diagnostic status did not record the child exit capture'
@@ -748,22 +801,83 @@ stderr:
             [IO.File]::WriteAllText($successfulVerifyLog, 'successful SignTool verification log', [Text.UTF8Encoding]::new($false))
             $script:mockSignatureExitMode = 'success'
             $script:LastSdkToolExitCode = $null
-            Assert-CnMonMsixSignature -Path 'candidate.msix' -LogPath $successfulVerifyLog -Identity $syntheticIdentity
+            $null = Assert-CnMonMsixSignature -Path 'candidate.msix' -LogPath $successfulVerifyLog -Identity $syntheticIdentity
             $script:LastSdkToolExitCode = 1 # Simulate a distinct, later MakeAppx failure.
             $script:LastSignatureLogPath = $successfulVerifyLog
             Save-CnMonMsixSignatureFailureEvidence -Mode 'Hosted' -ArtifactDirectory $postVerifyDirectory -Phase 'candidate-post-verify' -Identity $syntheticIdentity -Exception ([InvalidOperationException]::new('private MakeAppx failure')) -TrustPresenceChecked:$false -TrustedCertificatePresent:$false
             $postVerifyDiagnostic = Get-Content -LiteralPath (Join-Path $postVerifyDirectory 'msix-signature-diagnostic.json') -Raw | ConvertFrom-Json -AsHashtable
             $postVerifyStatus = Get-Content -LiteralPath (Join-Path $postVerifyDirectory 'msix-signature-diagnostic-status.json') -Raw | ConvertFrom-Json -AsHashtable
             Assert-Equal $postVerifyDiagnostic.failure_kind 'stage_exception' 'post-verification MakeAppx failure was attributed to SignTool'
-            Assert-Equal $postVerifyDiagnostic.tool 'preflight' 'post-verification failure was attributed to the signature tool'
+            Assert-Equal $postVerifyDiagnostic.tool 'none' 'post-verification failure was attributed to a tool without SDK failure provenance'
             Assert-True ($null -eq $postVerifyDiagnostic.exit_code) 'post-verification failure reused a stale SignTool exit code'
             Assert-Equal $postVerifyStatus.failure_kind 'stage_exception' 'status attributed a post-verification failure to SignTool'
             Assert-True (-not $postVerifyStatus.sdk_exit_captured) 'status reused a stale SignTool exit code after successful verification'
             Assert-True (-not (Test-Path -LiteralPath (Join-Path (Join-Path $postVerifyDirectory 'private-signature-diagnostics') 'candidate-post-verify.log'))) 'post-verification failure retained the stale SignTool log as MakeAppx evidence'
 
+            $makeAppxDirectory = Join-Path $tempRoot 'signature-makeappx-diagnostic-artifacts'
+            $makeAppxSource = Join-Path $tempRoot 'signature-makeappx-diagnostic-source'
+            $null = New-Item -ItemType Directory -Path $makeAppxDirectory, $makeAppxSource
+            $makeAppxLog = Join-Path $makeAppxSource 'signed-unpack.log'
+            [IO.File]::WriteAllText($makeAppxLog, 'private MakeAppx output with a private path C:\runner\temp\signed-unpacked', [Text.UTF8Encoding]::new($false))
+            $script:CurrentDiagnosticOperation = 'signed_makeappx_unpack'
+            $script:LastSdkToolName = 'makeappx'
+            $script:LastSdkToolExitCode = 23
+            $script:LastSdkToolLogPath = $makeAppxLog
+            Save-CnMonMsixSignatureFailureEvidence -Mode 'Hosted' -ArtifactDirectory $makeAppxDirectory -Phase 'candidate-post-verify' -Identity $syntheticIdentity -Exception ([InvalidOperationException]::new('private MakeAppx failure at C:\runner\temp')) -TrustPresenceChecked:$false -TrustedCertificatePresent:$false
+            $makeAppxDiagnosticPath = Join-Path $makeAppxDirectory 'msix-signature-diagnostic.json'
+            $makeAppxStatusPath = Join-Path $makeAppxDirectory 'msix-signature-diagnostic-status.json'
+            $makeAppxDiagnostic = Get-Content -LiteralPath $makeAppxDiagnosticPath -Raw | ConvertFrom-Json -AsHashtable
+            $makeAppxStatus = Get-Content -LiteralPath $makeAppxStatusPath -Raw | ConvertFrom-Json -AsHashtable
+            Assert-Equal $makeAppxDiagnostic.operation 'signed_makeappx_unpack' 'MakeAppx failure lost its fixed operation provenance'
+            Assert-Equal $makeAppxDiagnostic.tool 'makeappx' 'MakeAppx failure was attributed to the wrong SDK tool'
+            Assert-Equal $makeAppxDiagnostic.exit_code 23 'MakeAppx failure lost its SDK exit code'
+            Assert-Equal $makeAppxDiagnostic.failure_kind 'sdk_nonzero' 'MakeAppx nonzero exit was classified as a generic stage failure'
+            Assert-Equal $makeAppxStatus.operation 'signed_makeappx_unpack' 'closed status lost MakeAppx operation provenance'
+            Assert-Equal $makeAppxStatus.tool_name 'makeappx' 'closed status omitted MakeAppx tool provenance'
+            Assert-Equal $makeAppxStatus.error_category 'sdk_nonzero' 'closed status omitted the fixed SDK failure category'
+            Assert-True $makeAppxStatus.sdk_exit_captured 'closed status did not retain MakeAppx exit capture'
+            Assert-True $makeAppxStatus.private_log_retained 'closed status did not retain MakeAppx output privately'
+            Assert-True (Test-Path -LiteralPath (Join-Path (Join-Path $makeAppxDirectory 'private-signature-diagnostics') 'candidate-post-verify-makeappx.log')) 'MakeAppx private log was not retained under its fixed name'
+            $makeAppxSerialized = [IO.File]::ReadAllText($makeAppxDiagnosticPath) + [IO.File]::ReadAllText($makeAppxStatusPath)
+            Assert-True ($makeAppxSerialized -notmatch [regex]::Escape('C:\runner\temp')) 'MakeAppx diagnostic exposed private output paths'
+
+            $categoryCases = @(
+                @('payload root does not exist: C:\private\x', 'InvalidOperationException', 'stage_exception', 'payload_root_missing'),
+                @('payload file missing: C:\private\x', 'InvalidOperationException', 'stage_exception', 'payload_missing'),
+                @('payload hash mismatch: C:\private\x', 'InvalidOperationException', 'stage_exception', 'payload_hash_mismatch'),
+                @('payload unexpected file: C:\private\x', 'InvalidOperationException', 'stage_exception', 'payload_unexpected'),
+                @('payload contains a reparse point: C:\private\x', 'InvalidOperationException', 'stage_exception', 'payload_reparse_point'),
+                @('private argument value at C:\private\x', 'ParameterBindingException', 'stage_exception', 'parameter_binding')
+            )
+            foreach ($categoryCase in $categoryCases) {
+                $category = Get-CnMonMsixDiagnosticErrorCategory -Message $categoryCase[0] -ExceptionType $categoryCase[1] -FailureKind $categoryCase[2]
+                Assert-Equal $category $categoryCase[3] 'known post-verify failure did not map to its fixed safe category'
+                Assert-True ($category -notmatch [regex]::Escape('C:\private')) 'error category retained private path content'
+            }
+
+            $payloadDiagnosticDirectory = Join-Path $tempRoot 'signature-payload-diagnostic-artifacts'
+            $null = New-Item -ItemType Directory -Path $payloadDiagnosticDirectory
+            $script:CurrentDiagnosticOperation = 'signed_payload_validation'
+            $payloadErrorMessage = 'payload hash mismatch: C:\runner\temp\private\signed-unpacked\AppxManifest.xml'
+            Save-CnMonMsixSignatureFailureEvidence -Mode 'Hosted' -ArtifactDirectory $payloadDiagnosticDirectory -Phase 'candidate-post-verify' -Identity $syntheticIdentity -Exception ([InvalidOperationException]::new($payloadErrorMessage)) -TrustPresenceChecked:$false -TrustedCertificatePresent:$false
+            $payloadDiagnosticPath = Join-Path $payloadDiagnosticDirectory 'msix-signature-diagnostic.json'
+            $payloadStatusPath = Join-Path $payloadDiagnosticDirectory 'msix-signature-diagnostic-status.json'
+            $payloadDiagnostic = Get-Content -LiteralPath $payloadDiagnosticPath -Raw | ConvertFrom-Json -AsHashtable
+            $payloadStatus = Get-Content -LiteralPath $payloadStatusPath -Raw | ConvertFrom-Json -AsHashtable
+            Assert-Equal $payloadDiagnostic.operation 'signed_payload_validation' 'post-verification diagnostic omitted the failing fixed operation'
+            Assert-Equal $payloadDiagnostic.error_category 'payload_hash_mismatch' 'known payload error prefix was not mapped to a fixed category'
+            Assert-Equal $payloadStatus.operation 'signed_payload_validation' 'closed status omitted the failing fixed operation'
+            Assert-Equal $payloadStatus.error_category 'payload_hash_mismatch' 'closed status omitted the fixed payload category'
+            $payloadSerialized = [IO.File]::ReadAllText($payloadDiagnosticPath) + [IO.File]::ReadAllText($payloadStatusPath)
+            Assert-True ($payloadSerialized -notmatch [regex]::Escape('C:\runner\temp\private')) 'post-verification diagnostic exposed a private payload path'
+
             $ciStatusOutput = (Write-CnMonMsixSignatureDiagnosticStatus -Path $statusPath 6>&1 | Out-String).Trim()
             Assert-True ($ciStatusOutput.Contains('guard_image_os_windows=true')) 'CI status did not expose the verified Windows boolean'
             Assert-True ($ciStatusOutput.Contains('phase=candidate-verify')) 'CI status did not expose the fixed hosted phase'
+            Assert-True ($ciStatusOutput.Contains('operation=none')) 'CI status did not expose the fixed operation'
+            Assert-True ($ciStatusOutput.Contains('error_category=sdk_nonzero')) 'CI status did not expose the fixed error category'
+            Assert-True ($ciStatusOutput.Contains('tool_name=signtool')) 'CI status did not expose the fixed tool name'
+            Assert-True ($ciStatusOutput.Contains('catalog_footprint_present=false')) 'CI status did not expose the safe catalog-presence boolean'
             Assert-True ($ciStatusOutput.Contains('save_status=success')) 'CI status did not expose the fixed save result'
             $invalidStatusPath = Join-Path $privateArtifactDirectory 'invalid-diagnostic-status.json'
             $invalidStatus = [ordered]@{}

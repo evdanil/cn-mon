@@ -318,6 +318,7 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertIn('function Write-CnMonMsixSignatureDiagnosticStatus', helper)
         for field in ('identity_publisher_env_matches', 'expected_pfn_matches', 'mode_user',
                       'phase', 'trust_presence_checked', 'trusted_certificate_present',
+                      'operation', 'error_category', 'tool_name', 'catalog_footprint_present',
                       'sdk_exit_captured', 'private_log_retained', 'save_error_kind',
                       'public_diagnostic_written'):
             self.assertIn(field, helper)
