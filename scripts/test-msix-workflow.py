@@ -174,6 +174,16 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertIn('steps.route.outputs.controller_path', completion)
         self.assertIn('GH_TOKEN: ${{ github.token }}', completion)
         self.assertIn('EXPECTED_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}', completion)
+        qualify_steps = step_blocks(qualify)
+        self.assertEqual(qualify_steps.index(completion), qualify_steps.index(route) + 1)
+        reviewed_summary = named_step(qualify, 'Upload reviewed completion summary')
+        self.assertEqual(qualify_steps.index(reviewed_summary), qualify_steps.index(completion) + 1)
+        for name in (
+            'Test workflow and artifact allowlist',
+            'Test desktop preflight privacy and safety',
+            'Test desktop surface privacy and safety',
+        ):
+            self.assertGreater(qualify_steps.index(named_step(qualify, name)), qualify_steps.index(reviewed_summary), name)
 
         normal_steps = (
             'Download exact synthetic package artifact',
@@ -189,7 +199,6 @@ class MsixWorkflowTests(unittest.TestCase):
         )
         for name in normal_steps:
             self.assertIn("steps.route.outputs.mode == 'Qualification'", named_step(qualify, name), name)
-        reviewed_summary = named_step(qualify, 'Upload reviewed completion summary')
         self.assertIn("if: success() && steps.route.outputs.mode == 'ReviewedRecord'", reviewed_summary)
         self.assertIn('cn-mon-msix-reviewed-completion-summary-${{ github.run_id }}-${{ github.run_attempt }}', reviewed_summary)
         self.assertIn('reviewed-completion-summary.json', reviewed_summary)

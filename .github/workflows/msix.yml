@@ -104,7 +104,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 60
     env:
-      CONTROLLER_REVISION: 82f58a5b824ae65e58611afca73a6b7614ed72ed
+      CONTROLLER_REVISION: REVIEWED_COMPLETION_CONTROLLER_REVISION
     permissions:
       actions: read
       contents: read
@@ -146,19 +146,6 @@ jobs:
           if ($process.ExitCode -ne 0) { Remove-Item $script -Force -ErrorAction SilentlyContinue; throw 'reviewed completion controller could not be read' }
           "controller_path=$script" | Add-Content -Path $env:GITHUB_OUTPUT
           pwsh -NoProfile -File $script -Mode SelectRoute -ConfigurationPath packaging/windows/qualification/completion.json -RepositoryRoot $env:GITHUB_WORKSPACE -PullRequestBaseRevision '${{ github.event.pull_request.base.sha }}' -PullRequestHeadRevision '${{ github.event.pull_request.head.sha }}' -ControllerRevision $revision
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: '1.27.2'
-          cache: false
-      - name: Test workflow and artifact allowlist
-        shell: pwsh
-        run: python scripts/test-msix-workflow.py
-      - name: Test desktop preflight privacy and safety
-        shell: pwsh
-        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
-      - name: Test desktop surface privacy and safety
-        shell: pwsh
-        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1
       - name: Validate reviewed MSIX completion record
         id: complete
         if: steps.route.outputs.mode == 'ReviewedRecord'
@@ -175,6 +162,19 @@ jobs:
           path: ${{ runner.temp }}\cn-mon-msix-reviewed-completion-${{ github.run_id }}-${{ github.run_attempt }}\reviewed-completion-summary.json
           if-no-files-found: error
           retention-days: 14
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test workflow and artifact allowlist
+        shell: pwsh
+        run: python scripts/test-msix-workflow.py
+      - name: Test desktop preflight privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
+      - name: Test desktop surface privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-surface-harness.ps1
       - name: Download exact synthetic package artifact
         if: steps.route.outputs.mode == 'Qualification'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

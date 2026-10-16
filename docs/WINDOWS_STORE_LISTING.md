@@ -1,6 +1,6 @@
 # Microsoft Store listing draft
 
-Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Current synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; strict WACK parsing passes all 24 tests, including DPI awareness. The actual visible-desktop run completed alias OFF/ON checks, Repair with data preserved and all five screenshots. LocalAudit reports 19/19 PASS; the hosted CI ReviewedRecord remains pending, trust cleanup is pending, and runtime PerMonitorV2 behavior is unmeasured. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
+Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Frozen synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; the later hosted MSIX workflow passes 19/19; strict WACK parsing passes all 24 tests, including DPI awareness. The actual visible-desktop run completed alias OFF/ON checks, Repair with data preserved and all five screenshots. LocalAudit, its replayed ReviewedRecord and the hosted MSIX workflow pass 19/19; trust cleanup remains pending, and runtime PerMonitorV2 behavior is unmeasured. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
 
 ## Copy-ready English listing
 
@@ -77,7 +77,7 @@ The following capability justification is ready for certification notes:
 
 > The package declares the `runFullTrust` restricted capability to run the existing native command-line executable as a full-trust desktop process. This allows the invoking command-line session to pass arguments and standard streams and lets cn-mon resolve hostnames, send native ICMP probes, make TCP connection attempts for user-selected targets, and use configuration, history, and log files. The package installs no service or driver.
 
-This capability justification describes intended desktop execution; current hosted qualification covers installation and core alias/ICMP behavior for the tested candidates, but it does not establish Store eligibility. Actual repair and alias conflict/recovery checks ran against the installed candidate. LocalAudit reports 19/19 PASS; the hosted CI ReviewedRecord remains pending. The strict WACK parser passes all 24 tests for both current candidates, and five genuine screenshots have been captured and independently approved. Runtime DPI state is unmeasured. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for run details.
+This capability justification describes intended desktop execution; hosted qualification covers installation and core alias/ICMP behavior for the tested candidates, but it does not establish Store eligibility. Actual repair and alias conflict/recovery checks ran against the installed candidate. LocalAudit and the hosted MSIX workflow report 19/19 PASS. The strict WACK parser passes all 24 tests for both frozen candidates, and five genuine screenshots have been captured and independently approved. Runtime DPI state is unmeasured. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for run details.
 
 ~~~powershell
 $reviewDir = Join-Path $env:TEMP ("cn-mon-store-review-" + [guid]::NewGuid().ToString("N"))
@@ -143,6 +143,6 @@ Checked 2026-10-16 against Microsoft's current MSIX documentation:
 - [MSIX categories](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/categories-and-subcategories): a primary category is required; “Developer tools > Networking” is available.
 - [MSIX age ratings](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/age-ratings): the first submission requires the IARC questionnaire; the rating is based on questionnaire answers, including for a free app.
 
-Before publishing the privacy URL, verify the actual history, log, and configuration paths under the installed package identity. The policy describes the CLI's local-file behavior; CI ReviewedRecord and trust cleanup remain open.
+Before publishing the privacy URL, verify the actual history, log, and configuration paths under the installed package identity. The policy describes the CLI's local-file behavior; trust cleanup remains open.
 
 This file prepares listing content only. It does not write to Partner Center, reserve a name, or submit or publish the product.
