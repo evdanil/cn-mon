@@ -108,6 +108,12 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if _, err := fmt.Sscanf(ready, "CNMON_WINDOWS_CONSOLE_READY pid=%d private_console=true input_mode=%x output_mode=%x cursor_visible=%t default_attr=%x", &childPID, &baselineInput, &baselineOutput, &baselineCursor, &baselineAttr); err != nil || childPID <= 0 {
 		t.Fatalf("parse bootstrap readiness %q: pid=%d err=%v", ready, childPID, err)
 	}
+	if os.Getenv("CNMON_MSIX_TEST") == "1" {
+		if err := nativeMSIXRequireProcessPackageIdentity(uint32(childPID)); err != nil {
+			t.Fatalf("private-console child package identity: %v", err)
+		}
+		t.Logf("CNMON_NATIVE_MSIX_CONSOLE_CHILD package-family=verified pid=%d", childPID)
+	}
 	if baselineCursor || baselineOutput&nativeWindowsEnableVT != 0 {
 		t.Fatalf("custom private console baseline is cursor_visible=%t output_mode=%#x; want hidden cursor and VT disabled", baselineCursor, baselineOutput)
 	}
@@ -322,7 +328,7 @@ func TestNativeCommandWindowsPrivateConsoleQRestoresConsole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query private-console test role: %v", err)
 	}
-	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful report=complete display=state-icmp idle-row=stable bottom-anchor=footer edge-row=width-filled edge-update=changed-anchored buffer=viewport=33x7 final-cell=p cursor=footer-start no-scroll=pass geometry=restored resize=tiny-restored input=restored output=restored cursor=restored history=stopped sid=%s", role.sid)
+	t.Logf("CNMON_NATIVE_COMMAND_WINDOWS_CONSOLE q=graceful view=v-and-V report=complete display=state-icmp idle-row=stable bottom-anchor=footer edge-row=width-filled edge-update=changed-anchored buffer=viewport=33x7 final-cell=p cursor=footer-start no-scroll=pass geometry=restored resize=tiny-restored input=restored output=restored cursor=restored history=stopped sid=%s", role.sid)
 }
 
 func TestNativeCommandWindowsPrivateConsoleQLeavesWriterActive(t *testing.T) {
@@ -1145,8 +1151,14 @@ func TestNativeWindowsConsoleBootstrap(t *testing.T) {
 	}
 	stdinFile := os.NewFile(uintptr(stdinHandle), "CONIN$")
 	stderrFile := os.NewFile(uintptr(stderrHandle), "CONOUT$")
-	productEnv := nativeCommandEnv(t, privateDirectory,
-		os.Getenv("CNMON_NATIVE_HISTORY"), os.Getenv("CNMON_NATIVE_LOG"))
+	var productEnv []string
+	if os.Getenv("CNMON_MSIX_TEST") == "1" {
+		productEnv = nativeMSIXCommandEnvironment(t, privateDirectory,
+			os.Getenv("CNMON_NATIVE_HISTORY"), os.Getenv("CNMON_NATIVE_LOG"))
+	} else {
+		productEnv = nativeCommandEnv(t, privateDirectory,
+			os.Getenv("CNMON_NATIVE_HISTORY"), os.Getenv("CNMON_NATIVE_LOG"))
+	}
 	rawProduct := os.Getenv("CNMON_WINDOWS_PRODUCT_RAW_HANDLES") == "1"
 	var childPID int
 	var childWait func() error
@@ -1694,7 +1706,11 @@ func startNativeWindowsConsoleBootstrap(t *testing.T, directory, database, logPa
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestNativeWindowsConsoleBootstrap$")
 	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windowsCreateNewConsole}
-	command.Env = nativeCommandEnv(t, directory, database, logPath)
+	if os.Getenv("CNMON_MSIX_TEST") == "1" {
+		command.Env = nativeMSIXCommandEnvironment(t, directory, database, logPath)
+	} else {
+		command.Env = nativeCommandEnv(t, directory, database, logPath)
+	}
 	for key, value := range extra {
 		command.Env = append(command.Env, key+"="+value)
 	}
