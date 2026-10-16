@@ -242,7 +242,8 @@ class MsixWorkflowTests(unittest.TestCase):
         certify = named_step(qualify, 'Run WACK certification gate')
         self.assertIn('scripts/msix-ci.ps1 -Mode Certify', certify)
         evidence = named_step(qualify, 'Upload synthetic qualification evidence')
-        self.assertIn("if: always() && !cancelled() && steps.qualify.outcome == 'success'", evidence)
+        self.assertIn("if: always() && !cancelled()", evidence)
+        self.assertNotIn("steps.qualify.outcome", evidence)
         helper = CI_HELPER_PATH.read_text(encoding='utf-8')
         for requirement in ('scripts/test-msix-windows.ps1', '-Mode Hosted', '-Mode Certify',
                             'package_sha256', 'archive_sha256', 'binary_sha256',
@@ -284,11 +285,11 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertEqual(path_entries(qualify_uploads[1]), [summary])
         self.assertEqual(path_entries(manual_uploads[0]), [summary])
         self.assertIn("if: steps.package.outcome == 'success'", package_uploads[0])
-        self.assertIn("if: always() && !cancelled() && steps.qualify.outcome == 'success'", qualify_uploads[0])
+        self.assertIn("if: always() && !cancelled()", qualify_uploads[0])
+        self.assertNotIn("steps.qualify.outcome", qualify_uploads[0])
         for upload in package_uploads[1:] + qualify_uploads[1:] + manual_uploads:
             self.assertIn('if: always()', upload)
         self.assertIn("steps.package.outcome == 'success'", package_uploads[0])
-        self.assertIn("steps.qualify.outcome == 'success'", qualify_uploads[0])
         for upload in package_uploads + qualify_uploads + manual_uploads:
             self.assertNotRegex(upload.lower(), r'\.pfx|\.p12|\.key|wack\.xml|wack\.html|\.log')
 
