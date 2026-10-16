@@ -28,6 +28,8 @@ $script:InjectedFailure = $false
 $script:GateUpdates = [ordered]@{}
 $script:OwnedPackageSpecs = [Collections.Generic.List[object]]::new()
 $script:CreatedCandidate = $false
+$script:CandidateOutputPath = $null
+$script:ReleaseMetadataPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'packaging/windows/release.json'
 $script:CreatedReceipt = $false
 $script:SignedOutputsReady = $false
 $script:CreatedFixture = $false
@@ -252,6 +254,20 @@ function Get-CnMonMsixReceipt {
     }
 }
 
+function Get-CnMonMsixSignedCandidatePath {
+    param([string]$Directory, [string]$PackageVersion)
+    if ($PackageVersion -cnotmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'candidate package version is invalid' }
+    return Join-Path $Directory ("cn-mon_{0}_x64-signed.msix" -f $PackageVersion)
+}
+
+function Get-CnMonMsixReleasePackageVersion {
+    param([string]$ReleasePath = $script:ReleaseMetadataPath)
+    try { $version = [string]((Get-Content -LiteralPath $ReleasePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop).package_version) }
+    catch { throw 'release package version could not be read' }
+    if ($version -cnotmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+    return $version
+}
+
 function Assert-CnMonMsixReceipt {
     param(
         [System.Collections.IDictionary]$Receipt,
@@ -261,13 +277,14 @@ function Assert-CnMonMsixReceipt {
     )
     $script:CurrentGate = 'identity'
     $identity = Read-CnMonMsixIdentity
+    $expectedPackageVersion = Get-CnMonMsixReleasePackageVersion -ReleasePath $script:ReleaseMetadataPath
     if ([int]$Receipt.schema_version -ne 1 -or
         [string]$Receipt.name -cne $identity.Name -or
         [string]$Receipt.publisher -cne $identity.Publisher -or
         [string]$Receipt.publisher_display_name -cne $identity.PublisherDisplayName -or
         [string]$Receipt.expected_pfn -cne $identity.ExpectedPFN -or
         [string]$Receipt.architecture -cne 'x64' -or
-        [string]$Receipt.package_version -cne '1.3.0.0' -or
+        [string]$Receipt.package_version -cne $expectedPackageVersion -or
         [string]$Receipt.cli_version -cne '0.3.0' -or
         [string]$Receipt.cli_revision -cne 'bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed' -or
         [string]$Receipt.binary_sha256 -cne '8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d' -or
@@ -2056,7 +2073,21 @@ function Remove-CnMonMsixTemporaryUser {
         }
     }
     if ($Name) {
-        Remove-LocalUser -Name $Name -ErrorAction Stop
+        $userExists = $false
+        $localUser = $null
+        try {
+            $localUser = Get-LocalUser -Name $Name -ErrorAction Stop
+            $userExists = $null -ne $localUser
+        }
+        catch {
+            if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) { throw }
+        }
+        if ($userExists -and [string]$localUser.SID -ceq $Sid) {
+            try { Remove-LocalUser -Name $Name -ErrorAction Stop }
+            catch {
+                if ($_.CategoryInfo.Category -ne [System.Management.Automation.ErrorCategory]::ObjectNotFound) { throw }
+            }
+        }
     }
     if ($Sid) {
         $profile = Get-CimInstance -ClassName Win32_UserProfile -Filter "SID='$Sid'" -ErrorAction SilentlyContinue
@@ -2477,7 +2508,8 @@ function Invoke-CnMonMsixHostedMode {
     Invoke-CnMonMsixTool $makeappx @('unpack', '/p', $PackagePath, '/d', $unpacked, '/no') (Join-Path $script:PrivateRoot 'unsigned-unpack.log')
     Assert-CnMonMsixPackagePayload $unpacked $receipt.files
 
-    $candidate = Join-Path $ArtifactDirectory 'cn-mon_1.3.0.0_x64-signed.msix'
+    $candidate = Get-CnMonMsixSignedCandidatePath -Directory $ArtifactDirectory -PackageVersion ([string]$receipt.package_version)
+    $script:CandidateOutputPath = $candidate
     $signedReceiptPath = Join-Path $ArtifactDirectory 'msix-signed-receipt.json'
     if ((Test-Path -LiteralPath $candidate) -or (Test-Path -LiteralPath $signedReceiptPath)) {
         throw 'signed candidate output already exists'
@@ -2801,8 +2833,8 @@ finally {
                 if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
             }
         }
-        if ($script:CreatedCandidate -and -not $script:SignedOutputsReady -and (Test-Path -LiteralPath (Join-Path $ArtifactDirectory 'cn-mon_1.3.0.0_x64-signed.msix'))) {
-            Remove-Item -LiteralPath (Join-Path $ArtifactDirectory 'cn-mon_1.3.0.0_x64-signed.msix') -Force -ErrorAction SilentlyContinue
+        if ($script:CreatedCandidate -and -not $script:SignedOutputsReady -and $script:CandidateOutputPath -and (Test-Path -LiteralPath $script:CandidateOutputPath)) {
+            Remove-Item -LiteralPath $script:CandidateOutputPath -Force -ErrorAction SilentlyContinue
         }
         if ($script:CreatedReceipt -and -not $script:SignedOutputsReady -and (Test-Path -LiteralPath (Join-Path $ArtifactDirectory 'msix-signed-receipt.json'))) {
             Remove-Item -LiteralPath (Join-Path $ArtifactDirectory 'msix-signed-receipt.json') -Force -ErrorAction SilentlyContinue

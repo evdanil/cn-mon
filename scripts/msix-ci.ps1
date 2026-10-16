@@ -27,6 +27,12 @@ function Get-ReleaseMetadata {
     return Get-Content -LiteralPath $releasePath -Raw | ConvertFrom-Json
 }
 
+function Get-MsixPackageFileName([string]$PackageVersion, [switch]$Signed) {
+    if ($PackageVersion -cnotmatch '^\d+\.\d+\.\d+\.\d+$') { throw 'release package version is invalid' }
+    $suffix = if ($Signed) { '-signed' } else { '' }
+    return "cn-mon_${PackageVersion}_x64${suffix}.msix"
+}
+
 function Get-SourceRevision {
     $output = @(& git -C $repositoryRoot rev-parse --verify HEAD 2>&1)
     if ($LASTEXITCODE -ne 0 -or $output.Count -ne 1) {
@@ -351,7 +357,7 @@ switch ($Mode) {
             throw 'MSIX package build failed; details remain job-local'
         }
 
-        $packagePath = Join-Path $packageDirectoryPath 'cn-mon_1.3.0.0_x64.msix'
+        $packagePath = Join-Path $packageDirectoryPath (Get-MsixPackageFileName -PackageVersion $release.package_version)
         $receiptPath = Join-Path $packageDirectoryPath 'msix-receipt.json'
         if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf) -or
             -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
@@ -361,10 +367,11 @@ switch ($Mode) {
     }
     'Hosted' {
         $directory = Get-JobDirectory
+        $release = Get-ReleaseMetadata
         $packageDirectoryPath = Join-Path $directory $PackageDirectory
         $evidenceDirectory = Join-Path $directory 'evidence'
         New-Item -ItemType Directory -Force -Path $evidenceDirectory | Out-Null
-        $packagePath = Join-Path $packageDirectoryPath 'cn-mon_1.3.0.0_x64.msix'
+        $packagePath = Join-Path $packageDirectoryPath (Get-MsixPackageFileName -PackageVersion $release.package_version)
         $receiptPath = Join-Path $packageDirectoryPath 'msix-receipt.json'
         if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf) -or
             -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
@@ -380,7 +387,7 @@ switch ($Mode) {
             throw 'hosted installed-package qualification did not pass; details remain job-local'
         }
 
-        $signedPackage = Join-Path $evidenceDirectory 'cn-mon_1.3.0.0_x64-signed.msix'
+        $signedPackage = Join-Path $evidenceDirectory (Get-MsixPackageFileName -PackageVersion $release.package_version -Signed)
         $signedReceipt = Join-Path $evidenceDirectory 'msix-signed-receipt.json'
         $resultsPath = Join-Path $evidenceDirectory 'msix-native-results.json'
         foreach ($path in @($signedPackage, $signedReceipt, $resultsPath)) {
@@ -418,8 +425,9 @@ switch ($Mode) {
     }
     'Certify' {
         $directory = Get-JobDirectory
+        $release = Get-ReleaseMetadata
         $evidenceDirectory = Join-Path $directory 'evidence'
-        $packagePath = Join-Path $evidenceDirectory 'cn-mon_1.3.0.0_x64-signed.msix'
+        $packagePath = Join-Path $evidenceDirectory (Get-MsixPackageFileName -PackageVersion $release.package_version -Signed)
         $receiptPath = Join-Path $evidenceDirectory 'msix-signed-receipt.json'
         $resultsPath = Join-Path $evidenceDirectory 'msix-native-results.json'
         if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf) -or -not (Test-Path -LiteralPath $receiptPath -PathType Leaf) -or

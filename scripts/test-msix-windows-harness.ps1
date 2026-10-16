@@ -204,7 +204,21 @@ function Invoke-MockedPackageLifecycle {
 }
 
 function Invoke-MockedPartialUserCleanup {
+    param([switch]$SameNameWrongSid)
     $script:partialUserCleanupCalls = [Collections.Generic.List[string]]::new()
+    $script:partialUserExists = $true
+    $script:partialUserSid = if ($SameNameWrongSid) { 'S-1-5-21-123-456-789-2002' } else { 'S-1-5-21-123-456-789-1001' }
+    $script:partialProfileExists = $true
+    $script:failFirstPartialProfileRemoval = $true
+
+    function Get-LocalUser {
+        [CmdletBinding()]
+        param([string]$Name)
+        if ($script:partialUserExists) { return [pscustomobject]@{ Name = $Name; SID = $script:partialUserSid } }
+        $exception = [System.Management.Automation.ItemNotFoundException]::new('local user is already absent')
+        $record = [System.Management.Automation.ErrorRecord]::new($exception, 'UserNotFound', [System.Management.Automation.ErrorCategory]::ObjectNotFound, $Name)
+        $PSCmdlet.ThrowTerminatingError($record)
+    }
 
     function Get-AppxPackage {
         [CmdletBinding()]
@@ -220,19 +234,27 @@ function Invoke-MockedPartialUserCleanup {
         [CmdletBinding()]
         param([string]$Name)
         $script:partialUserCleanupCalls.Add("user:$Name")
+        $script:partialUserExists = $false
     }
     function Get-CimInstance {
         [CmdletBinding()]
         param([string]$ClassName, [string]$Filter)
         $script:partialUserCleanupCalls.Add("profile-query:$Filter")
-        return [pscustomobject]@{ Special = $false; LocalPath = 'mock-profile' }
+        if ($script:partialProfileExists) { return [pscustomobject]@{ Special = $false; LocalPath = 'mock-profile' } }
+        return $null
     }
     function Remove-CimInstance {
         [CmdletBinding()]
         param([object]$InputObject)
         $script:partialUserCleanupCalls.Add("profile:$($InputObject.LocalPath)")
+        if ($script:failFirstPartialProfileRemoval) {
+            $script:failFirstPartialProfileRemoval = $false
+            throw 'simulated profile deletion failure after account removal'
+        }
+        $script:partialProfileExists = $false
     }
 
+    try { Remove-CnMonMsixTemporaryUser -Name 'owned-user' -Sid 'S-1-5-21-123-456-789-1001' -IdentityName 'Example.CnMon' } catch { }
     Remove-CnMonMsixTemporaryUser -Name 'owned-user' -Sid 'S-1-5-21-123-456-789-1001' -IdentityName 'Example.CnMon'
     return @($script:partialUserCleanupCalls)
 }
@@ -416,6 +438,8 @@ $requiredFunctions = @(
     'Save-CnMonMsixQualificationFailureEvidence',
     'Set-CnMonMsixCaughtGateFailure',
     'Remove-CnMonMsixTemporaryUser',
+    'Get-CnMonMsixSignedCandidatePath',
+    'Get-CnMonMsixReleasePackageVersion',
     'Assert-CnMonMsixPackagePayload',
     'Assert-CnMonMsixSignature',
     'Get-CnMonMsixSyntheticPrDiagnosticGuard',
@@ -450,13 +474,18 @@ $ciGateOutputFunctionAsts = @($ciAst.FindAll({
     $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
         $candidate.Name -eq 'Write-GateOutput'
 }, $true))
+$ciPackageFileNameAst = $ciAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -eq 'Get-MsixPackageFileName'
+}, $true)
 if ($ciStatusFunctionAsts.Count -ne 1) {
     throw 'safe CI diagnostic status writer is missing'
 }
 if ($ciResultsFunctionAsts.Count -ne 1) {
     throw 'schema-only native result reader is missing'
 }
-if ($ciGateOutputFunctionAsts.Count -ne 1) {
+if ($ciGateOutputFunctionAsts.Count -ne 1 -or $null -eq $ciPackageFileNameAst) {
     throw 'validated WACK gate output writer is missing'
 }
 $moduleHelperNames = @('Get-CnMonMsixSha256', 'Test-CnMonMsixHash', 'Assert-CnMonMsixPayload')
@@ -478,11 +507,29 @@ if ($missingFunctions.Count -gt 0) {
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('cn-mon-msix-harness-test-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $tempRoot
 $helperPath = Join-Path $tempRoot 'extracted-helpers.ps1'
-$helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFunctionAsts) + @($ciStatusFunctionAsts) + @($ciResultsFunctionAsts) + @($ciGateOutputFunctionAsts) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+$helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFunctionAsts) + @($ciStatusFunctionAsts) + @($ciResultsFunctionAsts) + @($ciGateOutputFunctionAsts) + @($ciPackageFileNameAst) | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
 [IO.File]::WriteAllText($helperPath, $helperText, [Text.UTF8Encoding]::new($false))
 Import-Module $modulePath -Force -ErrorAction Stop
 $qualificationGates = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair', 'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack')
 . $helperPath
+$signedCandidatePath = Get-CnMonMsixSignedCandidatePath -Directory $tempRoot -PackageVersion '1.3.1.0'
+Assert-Equal ([IO.Path]::GetFileName($signedCandidatePath)) 'cn-mon_1.3.1.0_x64-signed.msix' 'ordinary-user signed output filename did not follow the receipt package version'
+try { $null = Get-CnMonMsixSignedCandidatePath -Directory $tempRoot -PackageVersion 'bad-version'; throw 'invalid signed candidate package version was accepted' } catch { if ($_.Exception.Message -ceq 'invalid signed candidate package version was accepted') { throw } }
+$releaseFixturePath = Join-Path $tempRoot 'release-fixture.json'
+[IO.File]::WriteAllText($releaseFixturePath, '{"package_version":"1.3.1.0"}')
+Assert-Equal (Get-CnMonMsixReleasePackageVersion -ReleasePath $releaseFixturePath) '1.3.1.0' 'qualification receipt version did not follow release metadata'
+[IO.File]::WriteAllText($releaseFixturePath, '{"package_version":"not-a-version"}')
+try { $null = Get-CnMonMsixReleasePackageVersion -ReleasePath $releaseFixturePath; throw 'invalid release metadata version was accepted' } catch { if ($_.Exception.Message -ceq 'invalid release metadata version was accepted') { throw } }
+$qualificationSource = [IO.File]::ReadAllText($targetPath)
+Assert-True ($qualificationSource.Contains('$expectedPackageVersion = Get-CnMonMsixReleasePackageVersion')) 'receipt validation is not bound to release metadata'
+Assert-True (-not $qualificationSource.Contains("[string]$Receipt.package_version -cne '1.3.0.0'")) 'ordinary qualification still pins the frozen package version'
+$expectedUnsignedPackageName = Get-MsixPackageFileName -PackageVersion '1.3.1.0'
+$expectedSignedPackageName = Get-MsixPackageFileName -PackageVersion '1.3.1.0' -Signed
+Assert-Equal $expectedUnsignedPackageName 'cn-mon_1.3.1.0_x64.msix' 'CI unsigned package filename did not follow release metadata'
+Assert-Equal $expectedSignedPackageName 'cn-mon_1.3.1.0_x64-signed.msix' 'CI signed package filename did not follow release metadata'
+try { $null = Get-MsixPackageFileName -PackageVersion 'bad-version'; throw 'invalid package version was accepted for filename generation' } catch { if ($_.Exception.Message -ceq 'invalid package version was accepted for filename generation') { throw } }
+$ciSource = [IO.File]::ReadAllText($ciHelperPath)
+Assert-True ($ciSource.Contains('Get-MsixPackageFileName -PackageVersion $release.package_version')) 'CI package paths are not derived from release metadata'
 $script:MakeAppxFootprint = @('[Content_Types].xml', 'AppxBlockMap.xml')
 $ArtifactDirectory = $tempRoot
 
@@ -2344,9 +2391,12 @@ panic: test timed out after 10m0s
         Assert-True ($outerCleanup.Count -ge 1) 'Hosted rollback does not pass the independently owned SID when profile initialization fails'
 
         $cleanupCalls = @(Invoke-MockedPartialUserCleanup)
-        Assert-True ($cleanupCalls -contains 'user:owned-user') 'partial-user cleanup did not remove its owned account'
-        Assert-True ($cleanupCalls -contains "profile-query:SID='S-1-5-21-123-456-789-1001'") 'partial-user cleanup did not query the owned SID profile'
-        Assert-True ($cleanupCalls -contains 'profile:mock-profile') 'partial-user cleanup did not remove an existing partially initialized profile'
+        Assert-Equal (@($cleanupCalls | Where-Object { $_ -ceq 'user:owned-user' }).Count) 1 'resumed cleanup retried removal of an already-removed account'
+        Assert-Equal (@($cleanupCalls | Where-Object { $_ -ceq "profile-query:SID='S-1-5-21-123-456-789-1001'" }).Count) 2 'resumed cleanup did not retry the owned SID profile query'
+        Assert-Equal (@($cleanupCalls | Where-Object { $_ -ceq 'profile:mock-profile' }).Count) 2 'resumed cleanup did not retry the profile deletion after the first partial failure'
+        $wrongSidCleanupCalls = @(Invoke-MockedPartialUserCleanup -SameNameWrongSid)
+        Assert-True (-not ($wrongSidCleanupCalls -contains 'user:owned-user')) 'cleanup removed a same-name account whose SID did not match the owned SID'
+        Assert-True ($wrongSidCleanupCalls -contains 'profile:mock-profile') 'wrong-name-account SID blocked cleanup of the separately owned profile'
 
         if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
             $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
