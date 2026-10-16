@@ -131,6 +131,28 @@ function Test-CnMonMsixOwnedFileCleanup {
         $ExpectedSha256 -ceq $ActualSha256
 }
 
+function Remove-CnMonMsixSessionOwnedWorkDirectory {
+    param([string]$Path, [bool]$OwnedByThisRun, [object[]]$WorkFiles)
+    if (-not (Test-Path -LiteralPath $Path)) { return $true }
+    $directory = Get-Item -LiteralPath $Path -Force
+    if (-not $OwnedByThisRun -or -not $directory.PSIsContainer -or (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { return $false }
+    $owned = @{}
+    foreach ($file in $WorkFiles) { $owned[[IO.Path]::GetFullPath([string]$file.path)] = $file }
+    $ok = $true
+    foreach ($name in @('history.db', 'history.db-wal', 'history.db-shm', 'history.db-journal', 'cn.log')) {
+        $filePath = Join-Path $Path $name
+        if (-not (Test-Path -LiteralPath $filePath -PathType Leaf)) { continue }
+        $item = Get-Item -LiteralPath $filePath -Force
+        $entry = $owned[[IO.Path]::GetFullPath($filePath)]
+        if ($null -eq $entry -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+            -not (Test-CnMonMsixOwnedFileCleanup -OwnedByThisRun:([bool]$entry.owned) -ExpectedSha256 ([string]$entry.sha256) -ActualSha256 (Get-CnMonMsixSessionHash -Path $filePath))) { $ok = $false }
+        else { Remove-Item -LiteralPath $filePath -Force -ErrorAction Stop }
+    }
+    if (@(Get-ChildItem -LiteralPath $Path -Force).Count -eq 0) { Remove-Item -LiteralPath $Path -Force -ErrorAction Stop }
+    else { $ok = $false }
+    return $ok
+}
+
 function Test-CnMonMsixSessionRecoveryPaths {
     param(
         [System.Collections.IDictionary]$State,
@@ -161,7 +183,7 @@ function Test-CnMonMsixSessionRecoveryPaths {
         foreach ($file in @($State.work_files)) {
             $name = [IO.Path]::GetFileName([string]$file.path)
             $path = [IO.Path]::GetFullPath([string]$file.path)
-            if ($name -notin @('history.db', 'cn.log') -or
+            if ($name -notin @('history.db', 'history.db-wal', 'history.db-shm', 'history.db-journal', 'cn.log') -or
                 [IO.Path]::GetDirectoryName($path) -cne $expectedWork -or -not $seenWork.Add($path) -or
                 [string]$file.sha256 -cnotmatch '^[0-9a-f]{64}$' -or $file.owned -ne $true) { return $false }
         }
@@ -796,11 +818,18 @@ function Set-CnMonMsixSessionWorkFileHashes {
     param([string[]]$Paths)
     $items = [Collections.Generic.List[object]]::new()
     foreach ($existing in @($script:State.work_files)) { $items.Add($existing) }
+    $pathsToHash = [Collections.Generic.List[string]]::new()
     foreach ($path in $Paths) {
+        $pathsToHash.Add([IO.Path]::GetFullPath($path))
+        if ([IO.Path]::GetFileName($path) -ceq 'history.db') {
+            foreach ($sidecar in @('history.db-wal', 'history.db-shm', 'history.db-journal')) { $pathsToHash.Add((Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($path))) $sidecar)) }
+        }
+    }
+    foreach ($path in $pathsToHash) {
         if (Test-Path -LiteralPath $path -PathType Leaf) {
             $fullPath = [IO.Path]::GetFullPath($path)
             if ([IO.Path]::GetDirectoryName($fullPath) -cne [IO.Path]::GetFullPath([string]$script:State.work_directory) -or
-                [IO.Path]::GetFileName($fullPath) -notin @('history.db', 'cn.log')) { throw 'listing work output escaped its owned directory' }
+                [IO.Path]::GetFileName($fullPath) -notin @('history.db', 'history.db-wal', 'history.db-shm', 'history.db-journal', 'cn.log')) { throw 'listing work output escaped its owned directory' }
             $match = @($items | Where-Object { [string]$_.path -ieq $fullPath })
             $witness = [ordered]@{ path = $fullPath; sha256 = Get-CnMonMsixSessionHash -Path $path; owned = $true }
             if ($match.Count -gt 0) { $items[$items.IndexOf($match[0])] = $witness }
@@ -1271,6 +1300,7 @@ function Invoke-CnMonMsixSessionListingScreenshots {
     $listOutput = $listProcess.StandardOutput.ReadToEnd()
     $listError = $listProcess.StandardError.ReadToEnd()
     $listProcess.WaitForExit()
+    Set-CnMonMsixSessionWorkFileHashes -Paths @($history, $logPath)
     if ($listProcess.ExitCode -ne 0 -or $listError) { $listProcess.Dispose(); throw 'history listing could not be prepared' }
     $listProcess.Dispose()
     $requestId = Get-CnMonMsixSessionSeedRequestId -Json $listOutput
@@ -1515,23 +1545,7 @@ function Invoke-CnMonMsixSessionCleanup {
     if ($script:State.work_directory) {
         $workPath = [IO.Path]::GetFullPath([string]$script:State.work_directory)
         if (Test-Path -LiteralPath $workPath) {
-            $dirItem = Get-Item -LiteralPath $workPath -Force
-            if (-not $script:State.work_directory_owned -or -not $dirItem.PSIsContainer -or (($dirItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) { $ok = $false }
-            else {
-                $ownedWork = @{}
-                foreach ($file in @($script:State.work_files)) { $ownedWork[[IO.Path]::GetFullPath([string]$file.path)] = $file }
-                foreach ($name in @('history.db', 'cn.log')) {
-                    $path = Join-Path $workPath $name
-                    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-                    $item = Get-Item -LiteralPath $path -Force
-                    $entry = $ownedWork[[IO.Path]::GetFullPath($path)]
-                    if ($null -eq $entry -or (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
-                        -not (Test-CnMonMsixOwnedFileCleanup -OwnedByThisRun:([bool]$entry.owned) -ExpectedSha256 ([string]$entry.sha256) -ActualSha256 (Get-CnMonMsixSessionHash -Path $path))) { $ok = $false }
-                    else { Remove-Item -LiteralPath $path -Force -ErrorAction Stop }
-                }
-                if (@(Get-ChildItem -LiteralPath $workPath -Force).Count -eq 0) { Remove-Item -LiteralPath $workPath -Force -ErrorAction Stop }
-                else { $ok = $false }
-            }
+            if (-not (Remove-CnMonMsixSessionOwnedWorkDirectory -Path $workPath -OwnedByThisRun ([bool]$script:State.work_directory_owned) -WorkFiles @($script:State.work_files))) { $ok = $false }
         }
     }
 

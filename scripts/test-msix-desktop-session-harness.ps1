@@ -25,6 +25,8 @@ $helperNames = @(
     'Test-CnMonMsixSessionRepairActionAllowed',
     'Test-CnMonMsixSessionRepairObservationAllowsInvoke',
     'Get-CnMonMsixSessionSeedRequestId',
+    'Get-CnMonMsixSessionHash',
+    'Set-CnMonMsixSessionWorkFileHashes',
     'Test-CnMonMsixSessionSettingsWindowBinding',
     'Select-CnMonMsixSessionSettingsWindowContext',
     'Test-CnMonMsixOwnedShellProcess',
@@ -32,6 +34,7 @@ $helperNames = @(
     'Test-CnMonMsixSessionRecoveryPaths',
     'Invoke-CnMonMsixSessionReadOnlyPreflight',
     'Test-CnMonMsixOwnedFileCleanup',
+'Remove-CnMonMsixSessionOwnedWorkDirectory',
     'Get-CnMonMsixCompletionScreenshotNames',
     'New-CnMonMsixDesktopCompletionSupplement'
 )
@@ -258,6 +261,49 @@ Assert-Equal $seededRequestId '77db8c93' 'history listing request id did not use
 foreach ($badRequestJson in @('{"requests":[{"request_id":"77db8c93"}]}', '{"requests":[{"id":"bad-id"}]}', '{"requests":[]}')) {
     try { $null = Get-CnMonMsixSessionSeedRequestId -Json $badRequestJson; throw 'invalid history request ID was accepted' } catch { if ($_.Exception.Message -ceq 'invalid history request ID was accepted') { throw } }
 }
+$workFixture = Join-Path ([IO.Path]::GetTempPath()) ('cnmon-workhash fixture ' + [Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($workFixture) | Out-Null
+try {
+    $historyFixture = Join-Path $workFixture 'history.db'; $logFixture = Join-Path $workFixture 'cn.log'
+    [IO.File]::WriteAllText($historyFixture, 'history-before'); [IO.File]::WriteAllText($logFixture, 'log-before')
+    foreach ($sidecar in @('history.db-wal', 'history.db-shm', 'history.db-journal')) { [IO.File]::WriteAllText((Join-Path $workFixture $sidecar), $sidecar) }
+    $script:State = @{ work_directory = $workFixture; work_files = @(
+        @{ path = $historyFixture; sha256 = (Get-CnMonMsixSessionHash $historyFixture); owned = $true },
+        @{ path = $logFixture; sha256 = (Get-CnMonMsixSessionHash $logFixture); owned = $true }) }
+    [IO.File]::AppendAllText($logFixture, ' appended by listing')
+    Set-CnMonMsixSessionWorkFileHashes -Paths @($historyFixture, $logFixture)
+    Assert-True (@($script:State.work_files | Where-Object { [IO.Path]::GetFileName([string]$_.path) -in @('history.db-wal', 'history.db-shm', 'history.db-journal') }).Count -eq 3) 'listing output refresh did not record present known SQLite companions'
+    try { $null = Get-CnMonMsixSessionSeedRequestId -Json '{malformed'; throw 'malformed listing JSON was accepted' } catch { if ($_.Exception.Message -ceq 'malformed listing JSON was accepted') { throw } }
+    $recordedLogHash = [string](@($script:State.work_files | Where-Object { $_.path -ceq $logFixture })[0].sha256)
+    Assert-Equal $recordedLogHash (Get-CnMonMsixSessionHash $logFixture) 'listing log output was not refreshed before parser failure'
+    Assert-True (Test-CnMonMsixOwnedFileCleanup -OwnedByThisRun $true -ExpectedSha256 $recordedLogHash -ActualSha256 (Get-CnMonMsixSessionHash $logFixture)) 'refreshed listing log did not remain eligible for owned cleanup'
+} finally { Remove-Item -LiteralPath $workFixture -Recurse -Force -ErrorAction SilentlyContinue }
+
+$cleanupFixture = Join-Path ([IO.Path]::GetTempPath()) ('cnmon-workcleanup fixture ' + [Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($cleanupFixture) | Out-Null
+try {
+    $workEntries = @()
+    foreach ($name in @('history.db', 'history.db-wal', 'history.db-shm', 'history.db-journal', 'cn.log')) {
+        $path = Join-Path $cleanupFixture $name; [IO.File]::WriteAllText($path, $name)
+        $workEntries += [ordered]@{ path = $path; sha256 = Get-CnMonMsixSessionHash $path; owned = $true }
+    }
+    $unknownPath = Join-Path $cleanupFixture 'unexpected.tmp'; [IO.File]::WriteAllText($unknownPath, 'preserve')
+    Assert-True (-not (Remove-CnMonMsixSessionOwnedWorkDirectory -Path $cleanupFixture -OwnedByThisRun $true -WorkFiles $workEntries)) 'unknown work file did not keep cleanup incomplete'
+    foreach ($name in @('history.db', 'history.db-wal', 'history.db-shm', 'history.db-journal', 'cn.log')) { Assert-True (-not (Test-Path (Join-Path $cleanupFixture $name))) "known hash-matched file '$name' was not removed" }
+    Assert-Equal ([IO.File]::ReadAllText($unknownPath)) 'preserve' 'cleanup altered an unknown work file'
+    Remove-Item -LiteralPath $unknownPath -Force
+} finally { Remove-Item -LiteralPath $cleanupFixture -Recurse -Force -ErrorAction SilentlyContinue }
+
+$mismatchFixture = Join-Path ([IO.Path]::GetTempPath()) ('cnmon-workmismatch fixture ' + [Guid]::NewGuid().ToString('N'))
+[IO.Directory]::CreateDirectory($mismatchFixture) | Out-Null
+try {
+    $changedSidecar = Join-Path $mismatchFixture 'history.db-shm'; $matchingSidecar = Join-Path $mismatchFixture 'history.db-wal'
+    [IO.File]::WriteAllText($changedSidecar, 'changed'); [IO.File]::WriteAllText($matchingSidecar, 'wal')
+    $entries = @(@{ path = $changedSidecar; sha256 = ('0' * 64); owned = $true }, @{ path = $matchingSidecar; sha256 = (Get-CnMonMsixSessionHash $matchingSidecar); owned = $true })
+    Assert-True (-not (Remove-CnMonMsixSessionOwnedWorkDirectory -Path $mismatchFixture -OwnedByThisRun $true -WorkFiles $entries)) 'changed sidecar did not block cleanup'
+    Assert-True (Test-Path -LiteralPath $changedSidecar) 'changed sidecar was deleted despite a hash mismatch'
+    Assert-True (-not (Test-Path -LiteralPath $matchingSidecar)) 'matching sidecar was not removed'
+} finally { Remove-Item -LiteralPath $mismatchFixture -Recurse -Force -ErrorAction SilentlyContinue }
 
 $ownedRunner = 'C:\private\desktop-session-terminal-command.ps1'
 $shellIdentity = @{
@@ -318,7 +364,10 @@ $recoveryState = [ordered]@{
     planned_appdata_paths = @($appNames | ForEach-Object { [IO.Path]::GetFullPath((Join-Path $appRoot $_)) })
     owned_appdata_files = @([ordered]@{ path = [IO.Path]::GetFullPath((Join-Path $appRoot $appNames[0])); sha256 = $hashB; owned = $true })
     work_directory = [IO.Path]::GetFullPath((Join-Path $profileRoot ('cn-mon-msix-desktop-session-' + $runId))); work_directory_owned = $true
-    work_files = @([ordered]@{ path = [IO.Path]::GetFullPath((Join-Path (Join-Path $profileRoot ('cn-mon-msix-desktop-session-' + $runId)) 'history.db')); sha256 = $hashA; owned = $true })
+    work_files = @(
+        [ordered]@{ path = [IO.Path]::GetFullPath((Join-Path (Join-Path $profileRoot ('cn-mon-msix-desktop-session-' + $runId)) 'history.db')); sha256 = $hashA; owned = $true },
+        [ordered]@{ path = [IO.Path]::GetFullPath((Join-Path (Join-Path $profileRoot ('cn-mon-msix-desktop-session-' + $runId)) 'history.db-wal')); sha256 = $hashA; owned = $true },
+        [ordered]@{ path = [IO.Path]::GetFullPath((Join-Path (Join-Path $profileRoot ('cn-mon-msix-desktop-session-' + $runId)) 'history.db-shm')); sha256 = $hashB; owned = $true })
     owned_shells = @([ordered]@{ pid = 100; parent_pid = 200; token = $runId; runner_path = (Join-Path $artifactRoot 'desktop-session-terminal-command.ps1'); mode = 'help'; exited = $true })
 }
 Assert-True (Test-CnMonMsixSessionRecoveryPaths -State $recoveryState -UserProfile $profileRoot -LocalAppData $localRoot -ArtifactDirectory $artifactRoot) 'valid recovery state paths were rejected'
@@ -327,6 +376,9 @@ $sentinelPath = Join-Path $profileRoot 'unrelated-sentinel.txt'
 $recoveryState.owned_files[0].path = $sentinelPath
 Assert-True (-not (Test-CnMonMsixSessionRecoveryPaths -State $recoveryState -UserProfile $profileRoot -LocalAppData $localRoot -ArtifactDirectory $artifactRoot)) 'tampered recovery state accepted an unrelated sentinel path'
 Assert-Equal ([IO.File]::ReadAllText($sentinelPath)) 'keep' 'state validation altered an unrelated sentinel'
+$recoveryState.owned_files[0].path = [IO.Path]::GetFullPath((Join-Path $profileRoot '.cn'))
+$recoveryState.work_files += [ordered]@{ path = [IO.Path]::GetFullPath((Join-Path $recoveryState.work_directory 'history.db-unexpected')); sha256 = $hashA; owned = $true }
+Assert-True (-not (Test-CnMonMsixSessionRecoveryPaths -State $recoveryState -UserProfile $profileRoot -LocalAppData $localRoot -ArtifactDirectory $artifactRoot)) 'state validation accepted an unknown SQLite sidecar suffix'
 
 $preflightStub = Join-Path $testRoot 'preflight-stub.ps1'
 $stubSource = @'
