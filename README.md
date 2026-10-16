@@ -10,7 +10,7 @@ Earlier [0.1.0](https://github.com/evdanil/gotest/releases/tag/v0.1.0) and [0.2.
 
 ### Microsoft Store status
 
-The x64 MSIX candidate (`1.3.0.0` for CLI `0.3.0`) is in qualification. The latest synthetic run passed all 16 core gates and all 24 WACK tests, including the required DPI-awareness test, but the formal WACK gate remains incomplete pending exact-schema parsing; repair and command-conflict/Settings alias recovery also remain incomplete. The desktop-surface probe could not inspect Settings or Repair, and no MSIX has been submitted; see the [MSIX packaging plan](docs/MSIX_PACKAGING_PLAN.md) for evidence.
+The x64 MSIX candidate (`1.3.0.0` for CLI `0.3.0`) remains in qualification. The current synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; strict WACK parsing passes all 24 tests, including DPI awareness. Repair and command-conflict/Settings alias recovery remain incomplete, the desktop supplement and Store screenshots are pending, and runtime PerMonitorV2 behavior is unmeasured. No MSIX has been submitted; see the [MSIX packaging plan](docs/MSIX_PACKAGING_PLAN.md) for evidence.
 
 ### Install cn-mon 0.3.0
 
