@@ -104,7 +104,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 60
     env:
-      CONTROLLER_REVISION: REVIEWED_COMPLETION_CONTROLLER_REVISION
+      CONTROLLER_REVISION: d8d56d0957146a2066d50fc277d4f8546865f42e
     permissions:
       actions: read
       contents: read
