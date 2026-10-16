@@ -2,6 +2,8 @@
 
 This note records the current package design and remaining validation before `cn-mon` can be submitted to Microsoft Store. The [MSIX packaging specification](MSIX_PACKAGING_SPEC.md) and [implementation plan](MSIX_PACKAGING_PLAN.md) incorporate the approved scope and repository privacy requirement. Synthetic and real-identity MakeAppx builds pass; the private real-identity candidate remains unsigned. Hosted installed-package qualification fails at test-signature verification. Available diagnostics do not establish the failing phase or cause, and no complete installed-package result is established. Native Linux and Windows portable-archive qualification passed at `dad4e13`, but does not establish MSIX behavior. Store certification, upload and publication remain pending.
 
+The [Microsoft Store listing draft](WINDOWS_STORE_LISTING.md) contains copy-ready submission text and reviewer notes. The [cn-mon privacy policy](PRIVACY.md) is a proposed standalone policy; its publication URL remains pending review and merge.
+
 ## Current application facts
 
 - `cn-mon` is a Go command-line network monitor. The supported Windows target is x86-64; the current public release is 0.3.0.
