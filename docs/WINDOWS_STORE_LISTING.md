@@ -1,6 +1,6 @@
 # Microsoft Store listing draft
 
-Working editorial copy for the initial x64 MSIX package, version 1.3.0.0, which contains the unchanged cn-mon CLI 0.3.0. Package construction and payload verification are implemented. Frozen synthetic and protected real-identity runs each report 17 passed, 0 failed and 2 incomplete gates; the later hosted MSIX workflow passes 19/19; strict WACK parsing passes all 24 tests, including DPI awareness. The actual visible-desktop run completed alias OFF/ON checks, Repair with data preserved and all five screenshots. LocalAudit, its replayed ReviewedRecord and the hosted MSIX workflow pass 19/19; test-signer trust cleanup is complete, and runtime PerMonitorV2 behavior is unmeasured. No Store submission or publication has occurred; hosted evidence is in the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence).
+Working editorial copy for the current x64 MSIX package, version 1.3.1.0, which contains the unchanged cn-mon CLI 0.3.0. Store upload rejected historical package 1.3.0.0 because its hidden Start entry required headless-app permission that is not granted to this app. Fresh WACK and installed-package qualification for 1.3.1.0 is pending; certification and publication have not occurred. Frozen records and earlier hosted results apply to 1.3.0.0 only. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for evidence.
 
 ## Copy-ready English listing
 
