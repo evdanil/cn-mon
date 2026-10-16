@@ -1,0 +1,262 @@
+name: Windows MSIX packaging
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-package:
+    if: github.event_name == 'pull_request'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test workflow and artifact allowlist
+        shell: pwsh
+        run: python scripts/test-msix-workflow.py
+      - name: Configure synthetic identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+          $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+          $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+          $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+          try {
+            Import-Module ./scripts/msix-package.psm1 -Force
+            $identity = Read-CnMonMsixIdentity
+          } catch {
+            throw 'synthetic identity validation failed'
+          }
+          $values = @(
+            "CNMON_MSIX_IDENTITY_NAME=$($identity.Name)",
+            "CNMON_MSIX_IDENTITY_PUBLISHER=$($identity.Publisher)",
+            "CNMON_MSIX_PUBLISHER_DISPLAY_NAME=$($identity.PublisherDisplayName)",
+            "CNMON_MSIX_EXPECTED_PFN=$($identity.ExpectedPFN)"
+          )
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($values -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+      - name: Initialize Windows SDK and runner evidence
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize
+      - name: Download and hash the published Windows release
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode DownloadRelease
+      - name: Build synthetic unsigned MSIX
+        id: package
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Build
+      - name: Upload synthetic unsigned package and receipt
+        if: steps.package.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}\cn-mon-msix-job\package\cn-mon_1.3.0.0_x64.msix
+            ${{ runner.temp }}\cn-mon-msix-job\package\msix-receipt.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Write sanitized package summary
+        if: always()
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          JOB_STATUS: ${{ job.status }}
+          PACKAGE_STATUS: ${{ steps.package.outcome || 'skipped' }}
+          QUALIFICATION_STATUS: not_applicable
+          WACK_STATUS: not_applicable
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Summary
+      - name: Upload sanitized package summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-package-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+  synthetic-qualification:
+    if: github.event_name == 'pull_request'
+    needs: synthetic-package
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test workflow and artifact allowlist
+        shell: pwsh
+        run: python scripts/test-msix-workflow.py
+      - name: Download exact synthetic package artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cn-mon-msix-synthetic-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\input
+      - name: Configure synthetic identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+          $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+          $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+          $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+          try {
+            Import-Module ./scripts/msix-package.psm1 -Force
+            $identity = Read-CnMonMsixIdentity
+          } catch {
+            throw 'synthetic identity validation failed'
+          }
+          $values = @(
+            "CNMON_MSIX_IDENTITY_NAME=$($identity.Name)",
+            "CNMON_MSIX_IDENTITY_PUBLISHER=$($identity.Publisher)",
+            "CNMON_MSIX_PUBLISHER_DISPLAY_NAME=$($identity.PublisherDisplayName)",
+            "CNMON_MSIX_EXPECTED_PFN=$($identity.ExpectedPFN)"
+          )
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($values -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+      - name: Initialize Windows SDK and runner evidence
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize
+      - name: Qualify the downloaded package bytes
+        id: qualify
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted -PackageDirectory input
+      - name: Run WACK certification gate
+        id: certify
+        if: steps.qualify.outcome == 'success'
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
+      - name: Upload synthetic qualification evidence
+        if: steps.qualify.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-qualification-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Write sanitized qualification summary
+        if: always()
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          JOB_STATUS: ${{ job.status }}
+          PACKAGE_STATUS: ${{ needs.synthetic-package.result }}
+          QUALIFICATION_STATUS: ${{ steps.qualify.outcome || 'skipped' }}
+          WACK_STATUS: ${{ steps.certify.outputs.gate_status || steps.certify.outcome || 'skipped' }}
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Summary
+      - name: Upload sanitized qualification summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-synthetic-qualification-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
+  trusted-manual:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'evdanil/cn-mon'
+    environment: msix-packaging
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test workflow and artifact allowlist
+        shell: pwsh
+        run: python scripts/test-msix-workflow.py
+      - name: Configure trusted identity
+        shell: pwsh
+        env:
+          CNMON_MSIX_IDENTITY_NAME: ${{ secrets.CNMON_MSIX_IDENTITY_NAME }}
+          CNMON_MSIX_IDENTITY_PUBLISHER: ${{ secrets.CNMON_MSIX_IDENTITY_PUBLISHER }}
+          CNMON_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.CNMON_MSIX_PUBLISHER_DISPLAY_NAME }}
+          CNMON_MSIX_EXPECTED_PFN: ${{ secrets.CNMON_MSIX_EXPECTED_PFN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $names = @(
+            'CNMON_MSIX_IDENTITY_NAME',
+            'CNMON_MSIX_IDENTITY_PUBLISHER',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME',
+            'CNMON_MSIX_EXPECTED_PFN'
+          )
+          foreach ($name in $names) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) { throw "required identity input is missing: $name" }
+            $masked = $value.Replace('%', '%25').Replace([string][char]13, '%0D').Replace([string][char]10, '%0A')
+            Write-Host "::add-mask::$masked"
+          }
+          try {
+            Import-Module ./scripts/msix-package.psm1 -Force
+            $identity = Read-CnMonMsixIdentity
+          } catch {
+            throw 'trusted identity validation failed'
+          }
+          $values = @(
+            "CNMON_MSIX_IDENTITY_NAME=$($identity.Name)",
+            "CNMON_MSIX_IDENTITY_PUBLISHER=$($identity.Publisher)",
+            "CNMON_MSIX_PUBLISHER_DISPLAY_NAME=$($identity.PublisherDisplayName)",
+            "CNMON_MSIX_EXPECTED_PFN=$($identity.ExpectedPFN)"
+          )
+          [IO.File]::AppendAllText($env:GITHUB_ENV, ($values -join [Environment]::NewLine) + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+      - name: Initialize Windows SDK and runner evidence
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize
+      - name: Download and hash the published Windows release
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode DownloadRelease
+      - name: Build trusted unsigned MSIX
+        id: package
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Build
+      - name: Qualify the trusted package in this job
+        id: qualify
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted
+      - name: Run WACK certification gate
+        id: certify
+        if: steps.qualify.outcome == 'success'
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify
+      - name: Write sanitized trusted-run summary
+        if: always()
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          JOB_STATUS: ${{ job.status }}
+          PACKAGE_STATUS: ${{ steps.package.outcome || 'skipped' }}
+          QUALIFICATION_STATUS: ${{ steps.qualify.outcome || 'skipped' }}
+          WACK_STATUS: ${{ steps.certify.outputs.gate_status || steps.certify.outcome || 'skipped' }}
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Summary
+      - name: Upload sanitized trusted-run summary
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cn-mon-msix-trusted-manual-summary-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json
+          if-no-files-found: error
+          retention-days: 14
