@@ -106,6 +106,9 @@ jobs:
       - name: Test workflow and artifact allowlist
         shell: pwsh
         run: python scripts/test-msix-workflow.py
+      - name: Test desktop preflight privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
       - name: Download exact synthetic package artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -139,6 +142,15 @@ jobs:
         id: qualify
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted -PackageDirectory input
+      - name: Record read-only desktop prerequisite inventory
+        if: always() && !cancelled()
+        shell: pwsh
+        run: >-
+          pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1
+          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix'
+          -ReceiptPath '${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json'
+          -SdkBinDirectory 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
+          -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
       - name: Run WACK certification gate
         id: certify
         if: steps.qualify.outcome == 'success'
@@ -153,6 +165,7 @@ jobs:
             ${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json
             ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json
+            ${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json
           if-no-files-found: ignore
           retention-days: 14
       - name: Write sanitized qualification summary
@@ -203,6 +216,9 @@ jobs:
       - name: Test native MSIX harness safety
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/test-msix-windows-harness.ps1
+      - name: Test desktop preflight privacy and safety
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1
       - name: Configure trusted identity
         shell: pwsh
         env:
@@ -251,6 +267,15 @@ jobs:
         id: qualify
         shell: pwsh
         run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted
+      - name: Record read-only desktop prerequisite inventory
+        if: always() && !cancelled()
+        shell: pwsh
+        run: >-
+          pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1
+          -PackagePath '${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix'
+          -ReceiptPath '${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json'
+          -SdkBinDirectory 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
+          -ArtifactDirectory '${{ runner.temp }}\cn-mon-msix-job\evidence'
       - name: Run WACK certification gate
         id: certify
         if: steps.qualify.outcome == 'success'

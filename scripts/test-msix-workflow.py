@@ -257,6 +257,33 @@ class MsixWorkflowTests(unittest.TestCase):
         self.assertLess(certify_branch.index('Write-GateOutput'),
                         certify_branch.index('Assert-NativeResults'))
 
+    def test_desktop_inventory_runs_after_hosted_even_on_failure_and_stays_private(self):
+        text = workflow_text()
+        qualify = job_block(text, 'synthetic-qualification')
+        manual = job_block(text, 'trusted-manual')
+        expected_command = 'pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight.ps1'
+        for job, hosted_name in ((qualify, 'Qualify the downloaded package bytes'),
+                                 (manual, 'Qualify the trusted package in this job')):
+            hosted = named_step(job, hosted_name)
+            inventory = named_step(job, 'Record read-only desktop prerequisite inventory')
+            self.assertLess(job.index(hosted), job.index(inventory))
+            self.assertIn('if: always() && !cancelled()', inventory)
+            self.assertNotIn('steps.qualify.outcome', inventory)
+            self.assertIn(expected_command, inventory)
+            for argument in ('-PackagePath ', '-ReceiptPath ', '-SdkBinDirectory ', '-ArtifactDirectory '):
+                self.assertIn(argument, inventory)
+
+        qualification_upload = named_step(qualify, 'Upload synthetic qualification evidence')
+        self.assertIn(r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json',
+                      path_entries(qualification_upload))
+        self.assertNotIn('msix-desktop-preflight.json', manual)
+        self.assertEqual(path_entries(upload_steps(manual)[0]), [
+            r'${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json',
+        ])
+        for job in (qualify, manual):
+            test_step = named_step(job, 'Test desktop preflight privacy and safety')
+            self.assertIn('pwsh -NoProfile -File ./scripts/test-msix-desktop-preflight-harness.ps1', test_step)
+
     def test_public_artifact_paths_are_exact_and_manual_uploads_summary_only(self):
         text = workflow_text()
         package = job_block(text, 'synthetic-package')
@@ -279,6 +306,7 @@ class MsixWorkflowTests(unittest.TestCase):
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\cn-mon_1.3.0.0_x64-signed.msix',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-signed-receipt.json',
             r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-native-results.json',
+            r'${{ runner.temp }}\cn-mon-msix-job\evidence\msix-desktop-preflight.json',
         })
         summary = r'${{ runner.temp }}\cn-mon-msix-job\summary\msix-public-summary.json'
         self.assertEqual(path_entries(package_uploads[1]), [summary])
