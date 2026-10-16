@@ -478,6 +478,20 @@ function Get-CnMonMsixResultEvidence {
     }
 }
 
+function ConvertTo-CnMonMsixNumericToolVersion {
+    param([object]$VersionInfo)
+    if ($null -eq $VersionInfo) { return $null }
+    try {
+        $parts = @($VersionInfo.FileMajorPart, $VersionInfo.FileMinorPart, $VersionInfo.FileBuildPart, $VersionInfo.FilePrivatePart)
+        if ($parts.Count -ne 4 -or $parts[0] -le 0) { return $null }
+        foreach ($part in $parts) {
+            if ($part -isnot [int] -or $part -lt 0 -or $part -gt 99999) { return $null }
+        }
+        return ($parts -join '.')
+    }
+    catch { return $null }
+}
+
 function Get-CnMonMsixWackStructureDiagnostic {
     param(
         [string]$ReportPath,
@@ -519,6 +533,26 @@ function Get-CnMonMsixWackStructureDiagnostic {
     $xmlParsed = $false
     $identityMatches = $false
     $versionMatches = $false
+    $reportOverallResult = 'missing'
+    $reportPartialRun = 'missing'
+    $reportVersion = $null
+    $testResults = [Collections.Generic.List[object]]::new()
+    $testOrdinal = 0
+    $currentRequirementNumber = $null
+    $currentRequirementTitle = $null
+    $currentTest = $null
+    $currentDirectResultText = $null
+    $wackCategories = @{
+        'DPIAwarenessValidation' = 'dpi_awareness'
+        'High DPI test' = 'dpi_awareness'
+        'Digitally signed file test' = 'digital_signature'
+        'Debug configuration test' = 'debug_configuration'
+        'Blocked executables' = 'blocked_executables'
+        'Special use capabilities' = 'special_use_capabilities'
+        'App Capabilities test (special use capabilities)' = 'special_use_capabilities'
+        'Compatibility and resiliency test' = 'compatibility'
+        'Compatibility & resiliency' = 'compatibility'
+    }
     $hierarchy = [Collections.Generic.List[object]]::new()
     $attributeNames = [Collections.Generic.List[string]]::new()
     $statusObservations = [Collections.Generic.List[object]]::new()
@@ -553,10 +587,49 @@ function Get-CnMonMsixWackStructureDiagnostic {
                         if ($statusObservations.Count -lt $maxStatuses) {
                             $statusObservations.Add([ordered]@{ source = 'element'; status = $token; depth = $stack.Count })
                         } else { $truncated = $true }
+                        if ($null -ne $currentTest -and $null -ne $currentDirectResultText -and $stack.Count -eq 5 -and
+                            ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT/TEST/RESULT') {
+                            if ($currentDirectResultText.Length + $reader.Value.Length -gt 64) { $truncated = $true; break }
+                            $null = $currentDirectResultText.Append($reader.Value)
+                        }
                     }
                     continue
                 }
                 if ($reader.NodeType -eq [Xml.XmlNodeType]::EndElement) {
+                    if ($reader.LocalName -ceq 'RESULT' -and $reader.Depth -eq 4 -and $null -ne $currentTest -and
+                        $null -ne $currentDirectResultText -and $stack.Count -eq 5 -and
+                        ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT/TEST/RESULT') {
+                        if ($currentTest.direct_results.Count -ge 8) { $truncated = $true; break }
+                        $statusText = $currentDirectResultText.ToString().Trim().ToUpperInvariant()
+                        $directToken = switch ($statusText) {
+                            { $_ -in @('PASS', 'PASSED') } { 'pass'; break }
+                            { $_ -in @('FAIL', 'FAILED') } { 'fail'; break }
+                            { $_ -in @('WARNING', 'WARN') } { 'warning'; break }
+                            'NOT_APPLICABLE' { 'not_applicable'; break }
+                            default { 'other' }
+                        }
+                        $currentTest.direct_results.Add($directToken)
+                        $currentDirectResultText = $null
+                    }
+                    if ($reader.LocalName -ceq 'TEST' -and $reader.Depth -eq 3 -and $null -ne $currentTest -and
+                        $stack.Count -eq 4 -and ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT/TEST') {
+                        $testResults.Add([ordered]@{
+                            ordinal = $currentTest.ordinal
+                            requirement_number = $currentTest.requirement_number
+                            test_index = $currentTest.test_index
+                            optional = $currentTest.optional
+                            category = $currentTest.category
+                            direct_result_count = $currentTest.direct_results.Count
+                            direct_results = @($currentTest.direct_results.ToArray())
+                            direct_message_count = $currentTest.direct_message_count
+                        })
+                        $currentTest = $null
+                    }
+                    if ($reader.LocalName -ceq 'REQUIREMENT' -and $reader.Depth -eq 2 -and
+                        $stack.Count -eq 3 -and ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT') {
+                        $currentRequirementNumber = $null
+                        $currentRequirementTitle = $null
+                    }
                     while ($stack.Count -gt $reader.Depth) { $stack.RemoveAt($stack.Count - 1) }
                     continue
                 }
@@ -581,9 +654,109 @@ function Get-CnMonMsixWackStructureDiagnostic {
                     }
                     $hierarchy.Add([ordered]@{ depth = $depth + 1; path = @($safePath.ToArray()) })
                 }
-                if ($localName -ceq 'REPORT') {
+                if ($localName -ceq 'REPORT' -and $depth -eq 0 -and ($stack -join '/') -ceq 'REPORT') {
                     $identityMatches = $reader.GetAttribute('APP_NAME') -ceq [string]$Identity.Name
                     $versionMatches = $reader.GetAttribute('APP_VERSION') -ceq $ExpectedVersion
+                    $overallValue = $reader.GetAttribute('OVERALL_RESULT')
+                    if ([string]::IsNullOrWhiteSpace($overallValue)) { $reportOverallResult = 'missing' }
+                    else {
+                        $reportOverallResult = switch ($overallValue.Trim().ToUpperInvariant()) {
+                            { $_ -in @('PASS', 'PASSED') } { 'pass'; break }
+                            { $_ -in @('FAIL', 'FAILED') } { 'fail'; break }
+                            { $_ -in @('WARNING', 'WARN') } { 'warning'; break }
+                            { $_ -in @('PASS WITH WARNINGS', 'PASS_WITH_WARNINGS', 'PASSWITHWARNINGS', 'PASSED WITH WARNINGS', 'PASSED_WITH_WARNINGS', 'PASSEDWITHWARNINGS') } { 'pass_with_warnings'; break }
+                            'NOT_APPLICABLE' { 'not_applicable'; break }
+                            default { 'other' }
+                        }
+                    }
+                    $partialValue = $reader.GetAttribute('PARTIAL_RUN')
+                    if ($null -eq $partialValue -or [string]::IsNullOrWhiteSpace($partialValue)) { $reportPartialRun = 'missing' }
+                    else {
+                        $reportPartialRun = switch ($partialValue.Trim().ToUpperInvariant()) {
+                            'TRUE' { 'true'; break }
+                            'FALSE' { 'false'; break }
+                            default { 'other' }
+                        }
+                    }
+                    $versionValue = $reader.GetAttribute('VERSION')
+                    if ($versionValue -cmatch '^[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}$' -and $versionValue.Length -le 23) {
+                        $reportVersion = $versionValue
+                    }
+                }
+                if ($localName -ceq 'REQUIREMENT' -and $stack.Count -eq 3 -and ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT') {
+                    $numberValue = $reader.GetAttribute('NUMBER')
+                    if ($numberValue -cmatch '^[0-9]{1,4}(?:\.[0-9]{1,4}){0,3}$') { $currentRequirementNumber = $numberValue }
+                    else { $currentRequirementNumber = $null }
+                    $currentRequirementTitle = $reader.GetAttribute('TITLE')
+                }
+                if ($localName -ceq 'TEST' -and $stack.Count -eq 4 -and ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT/TEST') {
+                    if ($testResults.Count -ge 64) { $truncated = $true; break }
+                    $testOrdinal++
+                    $indexValue = $reader.GetAttribute('INDEX')
+                    $testIndex = $null
+                    if ($indexValue -cmatch '^[0-9]{1,4}$') {
+                        $parsedIndex = 0
+                        if ([int]::TryParse($indexValue, [ref]$parsedIndex) -and $parsedIndex -le 9999) { $testIndex = $parsedIndex }
+                    }
+                    $optionalValue = $reader.GetAttribute('OPTIONAL')
+                    $optional = if ($null -eq $optionalValue -or [string]::IsNullOrWhiteSpace($optionalValue)) { 'missing' }
+                        elseif ($optionalValue.Trim().ToUpperInvariant() -ceq 'TRUE') { 'true' }
+                        elseif ($optionalValue.Trim().ToUpperInvariant() -ceq 'FALSE') { 'false' }
+                        else { 'other' }
+                    $category = 'unknown'
+                    $testName = $reader.GetAttribute('NAME')
+                    if ($null -ne $testName) {
+                        foreach ($knownName in $wackCategories.Keys) {
+                            if ($testName.Trim() -ceq [string]$knownName) {
+                                $category = $wackCategories[$knownName]
+                                break
+                            }
+                        }
+                    }
+                    if ($category -ceq 'unknown' -and $null -ne $currentRequirementTitle) {
+                        foreach ($knownTitle in $wackCategories.Keys) {
+                            if ($currentRequirementTitle.Trim() -ceq [string]$knownTitle) {
+                                $category = $wackCategories[$knownTitle]
+                                break
+                            }
+                        }
+                    }
+                    $currentTest = [ordered]@{
+                        ordinal = $testOrdinal
+                        requirement_number = $currentRequirementNumber
+                        test_index = $testIndex
+                        optional = $optional
+                        category = $category
+                        direct_results = [Collections.Generic.List[string]]::new()
+                        direct_message_count = 0
+                    }
+                    if ($reader.IsEmptyElement) {
+                        if ($testResults.Count -ge 64) { $truncated = $true; break }
+                        $testResults.Add([ordered]@{
+                            ordinal = $currentTest.ordinal
+                            requirement_number = $currentTest.requirement_number
+                            test_index = $currentTest.test_index
+                            optional = $currentTest.optional
+                            category = $currentTest.category
+                            direct_result_count = 0
+                            direct_results = @()
+                            direct_message_count = 0
+                        })
+                        $currentTest = $null
+                    }
+                }
+                if ($null -ne $currentTest -and $localName -ceq 'RESULT' -and $reader.Depth -eq 4 -and $stack.Count -eq 5 -and
+                    ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT/TEST/RESULT') {
+                    if ($reader.IsEmptyElement) {
+                        if ($currentTest.direct_results.Count -ge 8) { $truncated = $true; break }
+                        $currentTest.direct_results.Add('other')
+                    } else {
+                        $currentDirectResultText = [Text.StringBuilder]::new()
+                    }
+                }
+                if ($null -ne $currentTest -and $localName -ceq 'MESSAGE' -and $stack.Count -eq 6 -and
+                    ($stack -join '/') -ceq 'REPORT/REQUIREMENTS/REQUIREMENT/TEST/MESSAGES/MESSAGE') {
+                    $currentTest.direct_message_count++
                 }
                 if ($reader.HasAttributes) {
                     while ($reader.MoveToNextAttribute()) {
@@ -614,6 +787,9 @@ function Get-CnMonMsixWackStructureDiagnostic {
                     $reader.MoveToElement() | Out-Null
                     if ($truncated) { break }
                 }
+                if ($reader.IsEmptyElement -and $stack.Count -gt 0) {
+                    $stack.RemoveAt($stack.Count - 1)
+                }
             }
             if (-not $truncated) { $xmlParsed = $true }
         }
@@ -623,7 +799,7 @@ function Get-CnMonMsixWackStructureDiagnostic {
             if ($null -ne $stream) { $stream.Dispose() }
         }
     }
-    $safeVersion = if ($ToolVersion -match '^\d+(?:\.\d+){1,3}$') { $ToolVersion } else { $null }
+    $safeVersion = if ($ToolVersion -cmatch '^[0-9]{1,5}(?:\.[0-9]{1,5}){1,3}$' -and $ToolVersion.Length -le 23) { $ToolVersion } else { $null }
     return [ordered]@{
         schema_version = 1
         phase = $Phase
@@ -636,6 +812,10 @@ function Get-CnMonMsixWackStructureDiagnostic {
         report_sha256 = $reportHash
         identity_value_matches = [bool]$identityMatches
         version_value_matches = [bool]$versionMatches
+        report_overall_result = $reportOverallResult
+        report_partial_run = $reportPartialRun
+        report_version = $reportVersion
+        test_results = @($testResults.ToArray())
         element_count = $elementCount
         attribute_count = $attributeCount
         maximum_depth = $maximumDepth
@@ -2268,6 +2448,8 @@ public static class CnMonMsixActiveSession
     $script:CurrentGate = 'wack'
     $helpLog = Join-Path $ArtifactDirectory 'msix-wack-help.log'
     $report = Join-Path $ArtifactDirectory 'wack.xml'
+    $appcertToolVersion = $null
+    try { $appcertToolVersion = ConvertTo-CnMonMsixNumericToolVersion ([Diagnostics.FileVersionInfo]::GetVersionInfo($appcert)) } catch { }
     if (Test-Path -LiteralPath $report -PathType Leaf) {
         Set-CnMonMsixGate 'wack' 'incomplete'
         throw 'WACK report destination already exists'
@@ -2280,11 +2462,11 @@ public static class CnMonMsixActiveSession
         $resetExitCode = [int]$LASTEXITCODE
     }
     catch {
-        try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $null -ToolVersion ([Diagnostics.FileVersionInfo]::GetVersionInfo($appcert).FileVersion) -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase reset } catch { }
+        try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $null -ToolVersion $appcertToolVersion -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase reset } catch { }
         throw
     }
     if ($resetExitCode -ne 0) {
-        try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $resetExitCode -ToolVersion ([Diagnostics.FileVersionInfo]::GetVersionInfo($appcert).FileVersion) -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase reset } catch { }
+        try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $resetExitCode -ToolVersion $appcertToolVersion -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase reset } catch { }
         Set-CnMonMsixGate 'wack' 'fail'
         throw 'WACK reset failed'
     }
@@ -2295,7 +2477,7 @@ public static class CnMonMsixActiveSession
     } catch { }
     $reportPresent = Test-Path -LiteralPath $report -PathType Leaf
     $diagnosticPhase = if ($reportPresent) { 'test' } else { 'report_missing' }
-    try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $wackExit -ToolVersion ([Diagnostics.FileVersionInfo]::GetVersionInfo($appcert).FileVersion) -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase $diagnosticPhase } catch { }
+    try { Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode $wackExit -ToolVersion $appcertToolVersion -Identity $identity -ExpectedVersion ([string]$receipt.package_version) -Phase $diagnosticPhase } catch { }
     if ($null -eq $wackExit) { throw 'WACK test invocation failed' }
     $wackStatus = Get-CnMonMsixWackStatus $report $wackExit $identity.Name $receipt.package_version
     Set-CnMonMsixGate 'wack' $wackStatus

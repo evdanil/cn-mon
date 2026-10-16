@@ -203,6 +203,7 @@ $requiredFunctions = @(
     'Read-CnMonMsixHostedResultSnapshot',
     'Get-CnMonMsixWackStatus',
     'Get-CnMonMsixWackStructureDiagnostic',
+    'ConvertTo-CnMonMsixNumericToolVersion',
     'Save-CnMonMsixWackStructureDiagnostic',
     'Get-CnMonMsixTrustAction',
     'Test-CnMonMsixAdministratorsMembership',
@@ -742,6 +743,90 @@ exit 0
             $env:GITHUB_EVENT_NAME = 'workflow_dispatch'
             Save-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0' -Phase test
             Assert-True (-not (Test-Path -LiteralPath $structurePath)) 'trusted manual WACK report produced a public structure diagnostic'
+        }
+        finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') } }
+    }
+
+    Invoke-Check 'WACK structure projection correlates bounded direct tests without raw labels' {
+        $keys = @('GITHUB_ACTIONS', 'GITHUB_EVENT_NAME', 'GITHUB_REPOSITORY', 'ImageOS', 'CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER', 'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN')
+        $old = @{}
+        foreach ($key in $keys) { $old[$key] = [Environment]::GetEnvironmentVariable($key) }
+        try {
+            $env:GITHUB_ACTIONS = 'true'; $env:GITHUB_EVENT_NAME = 'pull_request'; $env:GITHUB_REPOSITORY = 'evdanil/cn-mon'; $env:ImageOS = 'win25'
+            $env:CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'; $env:CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            $env:CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'; $env:CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+            $identity = [pscustomobject]@{ Name = 'Example.CnMon'; Publisher = 'CN=Example, O=Example'; PublisherDisplayName = 'Example Publisher'; ExpectedPFN = 'Example.CnMon_518g7wxbxvqf6' }
+            $xml = [Text.StringBuilder]::new()
+            $null = $xml.Append('<REPORT OVERALL_RESULT="PASS WITH WARNINGS" PARTIAL_RUN="FALSE" VERSION="10.0.26100.8249" APP_NAME="Example.CnMon" APP_VERSION="1.3.0.0"><REQUIREMENTS>')
+            $testCounts = @(3, 3, 3, 3, 2, 2, 2, 2, 2, 2)
+            $ordinal = 0
+            for ($requirement = 1; $requirement -le 10; $requirement++) {
+                $number = if ($requirement -eq 1) { 'PrivateRequirementCanary' } else { [string]$requirement }
+                $title = if ($requirement -eq 8) { 'Compatibility &amp; resiliency' } elseif ($requirement -eq 9) { 'Compatibility and resiliency test' } elseif ($requirement -eq 10) { 'High DPI test' } else { 'PrivateRequirementTitleCanary' }
+                $null = $xml.Append('<REQUIREMENT NUMBER="').Append($number).Append('" TITLE="').Append($title).Append('">')
+                for ($withinRequirement = 0; $withinRequirement -lt $testCounts[$requirement - 1]; $withinRequirement++) {
+                    $ordinal++
+                    $testName = if ($ordinal -eq 18) { 'dpiawarenessvalidation' } elseif ($ordinal -eq 20) { 'App Capabilities test (special use capabilities)' } elseif ($ordinal -eq 21) { 'DPIAwarenessValidation' } else { 'PrivateTestCanary' }
+                    $status = if ($ordinal -eq 24) { 'WARNING' } else { 'PASS' }
+                    $testIndex = if ($ordinal -eq 2) { 'NotAnIndexCanary' } else { [string]$ordinal }
+                    $optional = if ($ordinal -eq 3) { 'PrivateOptionalCanary' } elseif ($ordinal % 2 -eq 0) { 'FALSE' } else { 'TRUE' }
+                    if ($ordinal -eq 3) {
+                        $null = $xml.Append('<TEST NAME="').Append($testName).Append('" INDEX="').Append($testIndex).Append('" OPTIONAL="').Append($optional).Append('"/>')
+                    } else {
+                        $resultXml = if ($ordinal -eq 1) { '<RESULT/>' } elseif ($ordinal -eq 2) { '<RESULT>PA<![CDATA[SS]]></RESULT>' } else { '<RESULT>' + $status + '</RESULT>' }
+                        $null = $xml.Append('<TEST NAME="').Append($testName).Append('" INDEX="').Append($testIndex).Append('" OPTIONAL="').Append($optional).Append('"><MESSAGES><MESSAGE>PrivateMessageCanary CN=Example</MESSAGE></MESSAGES>').Append($resultXml).Append('</TEST>')
+                    }
+                }
+                $null = $xml.Append('</REQUIREMENT>')
+            }
+            $null = $xml.Append('</REQUIREMENTS><EMBEDDED><REPORT OVERALL_RESULT="FAIL" PARTIAL_RUN="TRUE" VERSION="CanaryVersion" APP_NAME="NestedCanary" APP_VERSION="9.9.9.9"><REQUIREMENTS><REQUIREMENT NUMBER="999"><TEST NAME="DPIAwarenessValidation" INDEX="999" OPTIONAL="TRUE"><RESULT>FAIL</RESULT></TEST></REQUIREMENT></REQUIREMENTS></REPORT><TEST NAME="PrivateEmbeddedCanary"><RESULT>FAIL</RESULT></TEST></EMBEDDED></REPORT>')
+            $report = Join-Path $tempRoot 'wack-projection.xml'
+            [IO.File]::WriteAllText($report, $xml.ToString(), [Text.UTF8Encoding]::new($false))
+
+            Assert-Equal (ConvertTo-CnMonMsixNumericToolVersion ([pscustomobject]@{ FileMajorPart = 10; FileMinorPart = 0; FileBuildPart = 26100; FilePrivatePart = 8249 })) '10.0.26100.8249' 'numeric AppCert file version components were not retained'
+            $diagnostic = Get-CnMonMsixWackStructureDiagnostic -ReportPath $report -ExitCode 0 -ToolVersion '10.0.26100.8249' -Identity $identity -ExpectedVersion '1.3.0.0'
+            Assert-Equal $diagnostic.report_overall_result 'pass_with_warnings' 'WACK overall result was not mapped to the fixed warning token'
+            Assert-Equal $diagnostic.report_partial_run 'false' 'WACK partial-run attribute was not normalized'
+            Assert-Equal $diagnostic.report_version '10.0.26100.8249' 'bounded numeric report version was omitted'
+            Assert-Equal $diagnostic.test_results.Count 24 'projection did not retain exactly the 24 direct WACK tests'
+            $first = $diagnostic.test_results[0]
+            Assert-Equal $first.ordinal 1 'first direct WACK test ordinal was not captured'
+            Assert-Equal $first.requirement_number $null 'non-numeric requirement number was retained'
+            Assert-Equal $first.test_index 1 'first test index was not normalized'
+            Assert-Equal $first.optional 'true' 'optional boolean was not normalized'
+            Assert-Equal $first.direct_result_count 1 'direct result count was not retained'
+            Assert-Equal $first.direct_results[0] 'other' 'empty direct RESULT element was not retained as an unknown token'
+            Assert-Equal $first.direct_message_count 1 'direct message count was not retained'
+            Assert-Equal $first.category 'unknown' 'unknown raw test name was not mapped to a closed category'
+            $invalidIndex = $diagnostic.test_results[1]
+            Assert-Equal $invalidIndex.test_index $null 'non-numeric test index was retained'
+            Assert-Equal $invalidIndex.direct_result_count 1 'split text/CDATA was counted as multiple direct RESULT elements'
+            Assert-Equal $invalidIndex.direct_results[0] 'pass' 'split direct RESULT text was not normalized as one token'
+            $unknownOptional = $diagnostic.test_results[2]
+            Assert-Equal $unknownOptional.optional 'other' 'unknown OPTIONAL value was treated as a boolean'
+            Assert-Equal $unknownOptional.direct_result_count 0 'empty direct TEST unexpectedly gained a RESULT element'
+            Assert-True $diagnostic.identity_value_matches 'nested REPORT overwrote the root identity match'
+            Assert-True $diagnostic.version_value_matches 'nested REPORT overwrote the root version match'
+            Assert-Equal $diagnostic.report_overall_result 'pass_with_warnings' 'nested REPORT overwrote the root result'
+            Assert-Equal $diagnostic.report_partial_run 'false' 'nested REPORT overwrote the root partial-run result'
+            Assert-Equal $diagnostic.report_version '10.0.26100.8249' 'nested REPORT overwrote the root version'
+            Assert-Equal $diagnostic.test_results.Count 24 'nested REPORT tests were included in the direct root projection'
+            Assert-Equal $diagnostic.test_results[17].category 'unknown' 'test category matching was not ordinal and exact'
+            Assert-Equal $diagnostic.test_results[18].category 'compatibility' 'documented compatibility title fallback did not map to a fixed category'
+            Assert-Equal $diagnostic.test_results[19].category 'special_use_capabilities' 'documented App Capabilities test name did not map to a fixed category'
+            Assert-Equal $diagnostic.test_results[20].category 'dpi_awareness' 'exact internal DPI validation name did not map to its fixed category'
+            Assert-Equal $diagnostic.test_results[21].category 'compatibility' 'alternate documented compatibility title did not map to a fixed category'
+            $warning = $diagnostic.test_results[23]
+            Assert-Equal $warning.requirement_number '10' 'warning test requirement NUMBER did not correlate to its TEST'
+            Assert-Equal $warning.test_index 24 'warning test INDEX did not correlate to its TEST'
+            Assert-Equal $warning.direct_results[0] 'warning' 'warning result was not retained as a fixed token'
+            Assert-Equal $warning.category 'dpi_awareness' 'closed requirement-title category fallback did not map the WACK test'
+            Assert-True $diagnostic.unknown_schema 'bounded projection accidentally marked the WACK schema as qualified'
+
+            $json = ConvertTo-Json -InputObject $diagnostic -Depth 20
+            foreach ($canary in @('Example.CnMon', 'CN=Example', 'Example Publisher', '518g7wxbxvqf6', '1.3.0.0', 'PrivateRequirementCanary', 'PrivateRequirementTitleCanary', 'PrivateTestCanary', 'NotAnIndexCanary', 'PrivateOptionalCanary', 'PrivateMessageCanary', 'PrivateEmbeddedCanary', 'NestedCanary', 'CanaryVersion', '9.9.9.9')) {
+                Assert-True (-not $json.Contains($canary)) "WACK projection leaked a raw report value '$canary'"
+            }
         }
         finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $old[$key], 'Process') } }
     }
