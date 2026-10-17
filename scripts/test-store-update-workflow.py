@@ -88,6 +88,12 @@ class StoreUpdateWorkflowTests(unittest.TestCase):
             'Example.CnMon_518g7wxbxvqf6',
             'package-tests.log',
             'package-build.log',
+            'hosted-qualification.log',
+            'wack-certification.log',
+            "evidence/msix-native-results.json",
+            "qualification-summary mode=",
+            "gate $name=$($result.gates.$name)",
+            'LOG ',
         ):
             self.assertIn(setting, diagnostics)
         self.assertNotIn('Get-ChildItem', diagnostics)

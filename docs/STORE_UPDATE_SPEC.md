@@ -1,6 +1,6 @@
 # Automatic Microsoft Store updates
 
-Status: implemented on `feat/store-update-ci`; automated tests and Linux-side package/controller harnesses pass. The owner reported successful submission of package `1.3.2.0` on 2026-10-17. This is not evidence that Store certification or publication has completed. The package contains CLI `0.3.0` and uses the reserved display name `cn-mon — Network Monitor`. Store API credentials are not configured; no live Store API call has been made. The actual Windows SDK packaging and qualification job remains a required PR-CI check.
+Status: implementation is complete; automated tests and Linux-side package/controller harnesses pass. The owner reported successful submission of package `1.3.2.0` on 2026-10-17. This is not evidence that Store certification or publication has completed. The package contains CLI `0.3.0` and uses the reserved display name `cn-mon — Network Monitor`. Native Windows SDK/install/WACK qualification runs in PR CI. Authenticated Store API validation requires owner credentials and remains unverified; no live Store API call has been made.
 
 ## Outcome and scope
 

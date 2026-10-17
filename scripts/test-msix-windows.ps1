@@ -42,6 +42,8 @@ $script:CreatedTrustedCertificate = $false
 $script:CreatedUser = $null
 $script:CreatedUserSid = $null
 $script:CreatedProfile = $null
+$script:UserReleaseMetadataPath = $null
+$script:CreatedUserReleaseMetadataPath = $null
 $script:OriginalArtifactAcl = $null
 $script:PrivateRoot = $null
 $script:IdentityName = $null
@@ -1895,6 +1897,65 @@ function New-CnMonMsixTemporaryUser {
     return [pscustomobject]@{ Name = $name; SID = $sid; Credential = $credential; Profile = $script:CreatedProfile.Path }
 }
 
+function Get-CnMonMsixUserReleaseMetadataPath {
+    param([string]$ArtifactDirectory)
+
+    $targetPath = [IO.Path]::GetFullPath((Join-Path $ArtifactDirectory '.cn-mon-user-release-metadata.json'))
+    if ($null -eq $script:UserReleaseMetadataPath) {
+        if (Test-Path -LiteralPath $targetPath) {
+            throw 'ordinary-user release metadata target already exists'
+        }
+        $script:CreatedUserReleaseMetadataPath = $targetPath
+        try {
+            Copy-Item -LiteralPath $script:ReleaseMetadataPath -Destination $targetPath -ErrorAction Stop
+            $script:UserReleaseMetadataPath = $targetPath
+        }
+        catch {
+            Remove-Item -LiteralPath $targetPath -Force -ErrorAction SilentlyContinue
+            $script:CreatedUserReleaseMetadataPath = $null
+            throw 'ordinary-user release metadata could not be staged'
+        }
+    }
+    elseif ($script:UserReleaseMetadataPath -cne $targetPath -or
+        -not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+        throw 'ordinary-user release metadata staging state is invalid'
+    }
+    try {
+        $sourceHash = (Get-FileHash -LiteralPath $script:ReleaseMetadataPath -Algorithm SHA256 -ErrorAction Stop).Hash
+        $stagedHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256 -ErrorAction Stop).Hash
+        if ($sourceHash -cne $stagedHash) {
+            throw 'ordinary-user release metadata copy did not preserve its bytes'
+        }
+        $metadata = Get-Content -LiteralPath $targetPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $null = Assert-CnMonMsixReleaseMetadata -Release $metadata
+    }
+    catch {
+        throw 'ordinary-user release metadata could not be validated'
+    }
+    return $targetPath
+}
+
+function New-CnMonMsixUserRunArguments {
+    param(
+        [string]$Candidate,
+        [string]$SignedReceipt,
+        [string]$SdkBinDirectory,
+        [string]$ArtifactDirectory,
+        [string]$ExpectedSid,
+        [string]$ReleaseMetadataPath,
+        [switch]$InjectFailure
+    )
+
+    $arguments = @(
+        '-NoProfile', '-File', $PSCommandPath, '-Mode', 'User',
+        '-PackagePath', $Candidate, '-ReceiptPath', $SignedReceipt,
+        '-SdkBinDirectory', $SdkBinDirectory, '-ArtifactDirectory', $ArtifactDirectory,
+        '-ExpectedSid', $ExpectedSid, '-ReleaseMetadataPath', $ReleaseMetadataPath
+    )
+    if ($InjectFailure) { $arguments += '-FailAfterInstall' }
+    return $arguments
+}
+
 function Invoke-CnMonMsixUserRun {
     param([pscustomobject]$User, [string]$Candidate, [string]$SignedReceipt, [string]$Fixture, [switch]$InjectFailure)
     $script:CurrentGate = 'account'
@@ -1911,6 +1972,7 @@ function Invoke-CnMonMsixUserRun {
     if ($null -eq $script:OriginalArtifactAcl) { $script:OriginalArtifactAcl = $acl.GetSecurityDescriptorBinaryForm() }
     $acl.AddAccessRule($sidRule)
     Set-Acl -LiteralPath $ArtifactDirectory -AclObject $acl
+    $childReleaseMetadataPath = Get-CnMonMsixUserReleaseMetadataPath -ArtifactDirectory $ArtifactDirectory
 
     $envOverrides = @{
         USERPROFILE = $profile
@@ -1943,8 +2005,7 @@ function Invoke-CnMonMsixUserRun {
     foreach ($key in @('CNMON_MSIX_IDENTITY_NAME', 'CNMON_MSIX_IDENTITY_PUBLISHER', 'CNMON_MSIX_PUBLISHER_DISPLAY_NAME', 'CNMON_MSIX_EXPECTED_PFN')) {
         $envOverrides[$key] = [Environment]::GetEnvironmentVariable($key)
     }
-    $args = @('-NoProfile', '-File', $PSCommandPath, '-Mode', 'User', '-PackagePath', $Candidate, '-ReceiptPath', $SignedReceipt, '-SdkBinDirectory', $SdkBinDirectory, '-ArtifactDirectory', $ArtifactDirectory, '-ExpectedSid', $User.SID)
-    if ($InjectFailure) { $args += '-FailAfterInstall' }
+    $args = New-CnMonMsixUserRunArguments -Candidate $Candidate -SignedReceipt $SignedReceipt -SdkBinDirectory $SdkBinDirectory -ArtifactDirectory $ArtifactDirectory -ExpectedSid $User.SID -ReleaseMetadataPath $childReleaseMetadataPath -InjectFailure:$InjectFailure
     $argLine = ($args | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' '
     $stdout = Join-Path $script:PrivateRoot $(if ($InjectFailure) { 'injected-user.stdout.log' } else { 'ordinary-user.stdout.log' })
     $stderr = Join-Path $script:PrivateRoot $(if ($InjectFailure) { 'injected-user.stderr.log' } else { 'ordinary-user.stderr.log' })
@@ -2836,6 +2897,14 @@ finally {
             foreach ($path in $script:CreatedFixtureFiles) {
                 if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
             }
+        }
+        if ($script:CreatedUserReleaseMetadataPath -and (Test-Path -LiteralPath $script:CreatedUserReleaseMetadataPath -PathType Leaf)) {
+            try {
+                Remove-Item -LiteralPath $script:CreatedUserReleaseMetadataPath -Force -ErrorAction Stop
+                $script:CreatedUserReleaseMetadataPath = $null
+                $script:UserReleaseMetadataPath = $null
+            }
+            catch { $script:Failure = $true; Set-CnMonMsixGate 'cleanup' 'fail' }
         }
         if ($script:CreatedCandidate -and -not $script:SignedOutputsReady -and $script:CandidateOutputPath -and (Test-Path -LiteralPath $script:CandidateOutputPath)) {
             Remove-Item -LiteralPath $script:CandidateOutputPath -Force -ErrorAction SilentlyContinue

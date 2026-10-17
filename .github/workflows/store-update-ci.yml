@@ -103,10 +103,30 @@ jobs:
             }
           }
           $jobDirectory = Join-Path $env:RUNNER_TEMP 'cn-mon-msix-job'
-          foreach ($name in @('package-tests.log', 'package-build.log')) {
+          foreach ($name in @('package-tests.log', 'package-build.log', 'hosted-qualification.log', 'wack-certification.log')) {
             $path = Join-Path $jobDirectory $name
             if (Test-Path -LiteralPath $path -PathType Leaf) {
               Write-Output "--- synthetic $name ---"
               Get-Content -LiteralPath $path | ForEach-Object { Write-Output ("LOG " + [string]$_) }
             }
+          }
+          $resultPath = Join-Path $jobDirectory 'evidence/msix-native-results.json'
+          if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+            try {
+              $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
+              $gateNames = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair', 'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack')
+              $actualGateNames = @($result.gates.PSObject.Properties.Name | Sort-Object)
+              $expectedGateNames = @($gateNames | Sort-Object)
+              $gateValuesValid = @($result.gates.PSObject.Properties | Where-Object { $_.Value -notin @('pass', 'fail', 'incomplete') }).Count -eq 0
+              if ($result.schema_version -ne 2 -or $result.mode -notin @('Hosted', 'Certify') -or
+                  $result.overall -notin @('pass', 'fail', 'incomplete') -or
+                  ($actualGateNames -join "`n") -cne ($expectedGateNames -join "`n") -or -not $gateValuesValid) {
+                Write-Output 'qualification-summary invalid'
+              } else {
+                Write-Output "qualification-summary mode=$($result.mode) overall=$($result.overall) evidence=$($null -ne $result.evidence)"
+                foreach ($name in $gateNames) { Write-Output "gate $name=$($result.gates.$name)" }
+              }
+            } catch { Write-Output 'qualification-summary unavailable' }
+          } else {
+            Write-Output 'qualification-summary missing'
           }

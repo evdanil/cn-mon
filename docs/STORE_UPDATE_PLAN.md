@@ -10,7 +10,7 @@
 
 **Spec:** [STORE_UPDATE_SPEC.md](STORE_UPDATE_SPEC.md)
 
-Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (37 tests), workflow guards (7 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. PR checks, including the actual Windows SDK package/qualification job, and external review remain pending. No live Store API request was made because credentials are not configured.
+Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (37 tests), workflow guards (7 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. Native Windows SDK/install/WACK qualification runs in PR CI. Pull request checks and reviews are required before merge. Authenticated Store API validation requires owner credentials and remains unverified; no live Store API request was made.
 
 ## Global constraints
 
