@@ -2335,7 +2335,7 @@ panic: test timed out after 10m0s
                 $script:Result.gates.account = 'incomplete'
                 $script:GateUpdates = [ordered]@{ account = 'incomplete' }
                 Set-CnMonMsixCaughtGateFailure -Name account
-                Assert-Equal $script:Result.gates.account 'incomplete' 'caught failure overwrote an explicitly recorded prerequisite-incomplete gate'
+                Assert-Equal $script:Result.gates.account 'fail' 'caught execution failure left a prerequisite-incomplete gate eligible for StoreUpdate acceptance'
             }
             finally {
                 $script:Result = $previousResult

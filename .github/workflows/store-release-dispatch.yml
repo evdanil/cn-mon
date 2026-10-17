@@ -1,0 +1,34 @@
+name: Dispatch Microsoft Store update
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-store-update:
+    if: github.repository == 'evdanil/cn-mon' && github.event_name == 'release' && github.event.action == 'published'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Validate the release event and dispatch trusted main workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_DRAFT: ${{ github.event.release.draft }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, subprocess
+          tag = os.environ['RELEASE_TAG']
+          if os.environ['GH_REPO'] != 'evdanil/cn-mon' or os.environ['RELEASE_DRAFT'] != 'false' or os.environ['RELEASE_PRERELEASE'] != 'false' or not re.fullmatch(r'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+              raise SystemExit('release event is not an eligible stable release')
+          subprocess.run(['gh', 'workflow', 'run', 'store-update.yml', '--repo', 'evdanil/cn-mon', '--ref', 'main', '-f', f'release_tag={tag}'], check=True, env=os.environ)
+          PY

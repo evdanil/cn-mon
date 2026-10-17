@@ -5,7 +5,9 @@ param(
     [ValidateSet('Initialize', 'DownloadRelease', 'Build', 'Hosted', 'Certify', 'Summary')]
     [string]$Mode,
 
-    [string]$PackageDirectory = 'package'
+    [string]$PackageDirectory = 'package',
+
+    [string]$ReleaseMetadataPath = $env:CNMON_RELEASE_METADATA_PATH
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +17,8 @@ $jobDirectory = Join-Path $env:RUNNER_TEMP 'cn-mon-msix-job'
 $sdkBinDirectory = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
 $allowedStepStatuses = @('success', 'failure', 'skipped', 'cancelled', 'incomplete', 'not_applicable')
 $allowedGateStatuses = @('pass', 'fail', 'incomplete')
+$modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
+Import-Module $modulePath -Force -ErrorAction Stop
 $gateNames = @(
     'identity', 'package_hash', 'signature', 'account', 'package_registration',
     'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli',
@@ -23,8 +27,17 @@ $gateNames = @(
 )
 
 function Get-ReleaseMetadata {
-    $releasePath = Join-Path $repositoryRoot 'packaging/windows/release.json'
-    return Get-Content -LiteralPath $releasePath -Raw | ConvertFrom-Json
+    $releasePath = if ([string]::IsNullOrWhiteSpace($ReleaseMetadataPath)) {
+        Join-Path $repositoryRoot 'packaging/windows/release.json'
+    } else { [IO.Path]::GetFullPath($ReleaseMetadataPath) }
+    try {
+        $release = Get-Content -LiteralPath $releasePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $null = Assert-CnMonMsixReleaseMetadata -Release $release
+        if ($release.packaging_revision -and [string]$release.packaging_revision -cne (Get-SourceRevision)) {
+            throw 'source revision mismatch'
+        }
+        return $release
+    } catch { throw 'release metadata could not be read or validated' }
 }
 
 function Get-MsixPackageFileName([string]$PackageVersion, [switch]$Signed) {
@@ -221,14 +234,38 @@ function Read-NativeResults(
 
 function Assert-NativeResults(
     [string]$ResultsPath,
-    [ValidateSet('Hosted', 'Certify')][string]$ExpectedMode
+    [ValidateSet('Hosted', 'Certify')][string]$ExpectedMode,
+    [ValidateSet('Full', 'StoreUpdate')][string]$AggregationProfile = 'Full'
 ) {
     $results = Read-NativeResults -ResultsPath $ResultsPath -ExpectedMode $ExpectedMode
     if ($results.overall -ceq 'pass' -and $null -eq $results.evidence) {
         throw 'passing native qualification results require signed evidence'
     }
-    if ($results.overall -cne 'pass') {
+    if ($AggregationProfile -eq 'Full' -and $results.overall -cne 'pass') {
         throw 'native qualification results did not pass'
+    }
+    if ($AggregationProfile -eq 'StoreUpdate') {
+        if ($null -eq $results.evidence -or $results.overall -notin @('pass', 'incomplete') -or
+            @($gateNames | Where-Object { $results.gates.$_ -eq 'fail' }).Count -ne 0) {
+            throw 'StoreUpdate qualification results have a failure or missing evidence'
+        }
+        $required = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'uninstall_reinstall', 'fail_injection', 'cleanup')
+        if ($ExpectedMode -eq 'Certify') { $required += 'wack' }
+        $manualGates = @('conflicts', 'repair')
+        if (@($required | Where-Object { $results.gates.$_ -cne 'pass' }).Count -ne 0 -or
+            @($manualGates | Where-Object { $results.gates.$_ -notin @('pass', 'incomplete') }).Count -ne 0 -or
+            ($ExpectedMode -eq 'Hosted' -and $results.gates.wack -cne 'incomplete')) {
+            throw 'StoreUpdate qualification requirements were not met'
+        }
+        $incompleteGates = @($gateNames | Where-Object { $results.gates.$_ -ceq 'incomplete' })
+        $manualIncomplete = @($manualGates | Where-Object { $results.gates.$_ -ceq 'incomplete' })
+        $expectedIncompleteGates = if ($ExpectedMode -eq 'Hosted') { @('wack') + $manualIncomplete } else { $manualIncomplete }
+        $expectedOverall = if ($manualIncomplete.Count -gt 0) { 'incomplete' } else { 'pass' }
+        if (@($incompleteGates | Where-Object { $_ -notin $expectedIncompleteGates }).Count -ne 0 -or
+            $results.overall -cne $expectedOverall) {
+            throw 'native overall status contradicts the gate map'
+        }
+        return $results
     }
     if ($ExpectedMode -eq 'Hosted') {
         $failedCoreGates = @($gateNames | Where-Object {
@@ -288,6 +325,7 @@ function Write-GateOutput([string]$Status) {
 
 switch ($Mode) {
     'Initialize' {
+        $null = Assert-CnMonMsixDesktopBehaviorBaseline -ManifestPath (Join-Path $repositoryRoot 'packaging/windows/AppxManifest.xml') -SidecarPath (Join-Path $repositoryRoot 'packaging/windows/cn-mon.exe.manifest')
         $directory = Get-JobDirectory
         $requiredTools = @('makeappx.exe', 'signtool.exe')
         $toolRecords = foreach ($toolName in $requiredTools) {
@@ -329,6 +367,7 @@ switch ($Mode) {
     'Build' {
         $directory = Get-JobDirectory
         $release = Get-ReleaseMetadata
+        $metadataPath = if ([string]::IsNullOrWhiteSpace($ReleaseMetadataPath)) { Join-Path $repositoryRoot 'packaging/windows/release.json' } else { [IO.Path]::GetFullPath($ReleaseMetadataPath) }
         $archivePath = Join-Path $directory $release.archive_name
         $packageDirectoryPath = Join-Path $directory $PackageDirectory
         if (Test-Path -LiteralPath $packageDirectoryPath) {
@@ -345,14 +384,14 @@ switch ($Mode) {
 
         $packageTests = Join-Path $repositoryRoot 'scripts/test-msix-package.ps1'
         $packageTestLog = Join-Path $directory 'package-tests.log'
-        & pwsh -NoProfile -File $packageTests -ReleaseArchive $archivePath -SdkBinDirectory $sdkBinDirectory *> $packageTestLog
+        & pwsh -NoProfile -File $packageTests -ReleaseArchive $archivePath -ReleaseMetadataPath $metadataPath -SdkBinDirectory $sdkBinDirectory *> $packageTestLog
         if ($LASTEXITCODE -ne 0) {
             throw 'MSIX package behavior tests failed; details remain job-local'
         }
 
         $packager = Join-Path $repositoryRoot 'scripts/package-msix.ps1'
         $packageLog = Join-Path $directory 'package-build.log'
-        & pwsh -NoProfile -File $packager -ReleaseArchive $archivePath -OutputDirectory $packageDirectoryPath -SdkBinDirectory $sdkBinDirectory -PackageVersion $release.package_version -MaxVersionTested $maxVersionTested *> $packageLog
+        & pwsh -NoProfile -File $packager -ReleaseArchive $archivePath -OutputDirectory $packageDirectoryPath -SdkBinDirectory $sdkBinDirectory -PackageVersion $release.package_version -ReleaseMetadataPath $metadataPath -MaxVersionTested $maxVersionTested *> $packageLog
         if ($LASTEXITCODE -ne 0) {
             throw 'MSIX package build failed; details remain job-local'
         }
@@ -381,15 +420,16 @@ switch ($Mode) {
 
         $tester = Join-Path $repositoryRoot 'scripts/test-msix-windows.ps1'
         $log = Join-Path $directory 'hosted-qualification.log'
-        & pwsh -NoProfile -File $tester -Mode Hosted -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory *> $log
-        if ($LASTEXITCODE -ne 0) {
-            Write-CnMonMsixSignatureDiagnosticStatus -Path (Join-Path $evidenceDirectory 'msix-signature-diagnostic-status.json')
-            throw 'hosted installed-package qualification did not pass; details remain job-local'
-        }
-
         $signedPackage = Join-Path $evidenceDirectory (Get-MsixPackageFileName -PackageVersion $release.package_version -Signed)
         $signedReceipt = Join-Path $evidenceDirectory 'msix-signed-receipt.json'
         $resultsPath = Join-Path $evidenceDirectory 'msix-native-results.json'
+        foreach ($path in @($signedPackage, $signedReceipt, $resultsPath)) {
+            if (Test-Path -LiteralPath $path) { throw 'hosted qualification evidence already exists' }
+        }
+        $metadataPath = if ([string]::IsNullOrWhiteSpace($ReleaseMetadataPath)) { Join-Path $repositoryRoot 'packaging/windows/release.json' } else { [IO.Path]::GetFullPath($ReleaseMetadataPath) }
+        & pwsh -NoProfile -File $tester -Mode Hosted -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory -ReleaseMetadataPath $metadataPath *> $log
+        $testerExitCode = $LASTEXITCODE
+
         foreach ($path in @($signedPackage, $signedReceipt, $resultsPath)) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
                 throw 'hosted qualification outputs are incomplete'
@@ -421,7 +461,13 @@ switch ($Mode) {
         $expectedEvidence = Get-SignedEvidenceBinding -PackagePath $signedPackage -ReceiptPath $signedReceipt
         $nativeResults = Read-NativeResults -ResultsPath $resultsPath -ExpectedMode Hosted
         Assert-NativeResultEvidence -Actual $nativeResults.evidence -Expected $expectedEvidence
-        $null = Assert-NativeResults -ResultsPath $resultsPath -ExpectedMode Hosted
+        $null = Assert-NativeResults -ResultsPath $resultsPath -ExpectedMode Hosted -AggregationProfile StoreUpdate
+        if (($testerExitCode -eq 0 -and $nativeResults.overall -cne 'pass') -or
+            ($testerExitCode -eq 1 -and $nativeResults.overall -cne 'incomplete') -or
+            $testerExitCode -notin @(0, 1)) {
+            Write-CnMonMsixSignatureDiagnosticStatus -Path (Join-Path $evidenceDirectory 'msix-signature-diagnostic-status.json')
+            throw 'hosted installed-package qualification did not pass: native report contradicts process status'
+        }
     }
     'Certify' {
         $directory = Get-JobDirectory
@@ -444,7 +490,8 @@ switch ($Mode) {
         [IO.File]::WriteAllBytes($snapshotPath, $hostedBytes)
         $tester = Join-Path $repositoryRoot 'scripts/test-msix-windows.ps1'
         $log = Join-Path $directory 'wack-certification.log'
-        & pwsh -NoProfile -File $tester -Mode Certify -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory -HostedResultsPath $snapshotPath *> $log
+        $metadataPath = if ([string]::IsNullOrWhiteSpace($ReleaseMetadataPath)) { Join-Path $repositoryRoot 'packaging/windows/release.json' } else { [IO.Path]::GetFullPath($ReleaseMetadataPath) }
+        & pwsh -NoProfile -File $tester -Mode Certify -PackagePath $packagePath -ReceiptPath $receiptPath -SdkBinDirectory $sdkBinDirectory -ArtifactDirectory $evidenceDirectory -HostedResultsPath $snapshotPath -ReleaseMetadataPath $metadataPath *> $log
         $exitCode = $LASTEXITCODE
         if (Test-Path -LiteralPath $resultsPath -PathType Leaf) {
             $results = Read-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify
@@ -456,10 +503,12 @@ switch ($Mode) {
             $gateStatus = 'incomplete'
         }
         Write-GateOutput $gateStatus
-        if ($exitCode -ne 0 -or $gateStatus -ne 'pass') {
-            throw 'WACK certification gate did not pass; report remains job-local'
+        $certifyResults = Assert-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify -AggregationProfile StoreUpdate
+        if (($exitCode -eq 0 -and $certifyResults.overall -cne 'pass') -or
+            ($exitCode -eq 1 -and $certifyResults.overall -cne 'incomplete') -or
+            $exitCode -notin @(0, 1) -or $gateStatus -cne 'pass') {
+            throw 'WACK or native certification qualification failed; report remains job-local'
         }
-        $null = Assert-NativeResults -ResultsPath $resultsPath -ExpectedMode Certify
     }
     'Summary' {
         $event = $env:EVENT_NAME

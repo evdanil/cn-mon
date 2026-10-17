@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseArchive,
 
+    [string]$ReleaseMetadataPath,
+
     [string]$SdkBinDirectory,
 
     [string]$TestDirectory,
@@ -27,15 +29,17 @@ foreach ($variableName in $identityEnvironmentNames) {
 }
 $identityModule = Get-Module -Name 'msix-package'
 
-$releasePath = Join-Path $repositoryRoot 'packaging/windows/release.json'
+$legacyMetadata = [string]::IsNullOrWhiteSpace($ReleaseMetadataPath)
+$releasePath = if ($legacyMetadata) { Join-Path $repositoryRoot 'packaging/windows/release.json' } else { [IO.Path]::GetFullPath($ReleaseMetadataPath) }
 $release = Get-Content -LiteralPath $releasePath -Raw | ConvertFrom-Json
     $releaseText = Get-Content -LiteralPath $releasePath -Raw
+$null = Assert-CnMonMsixReleaseMetadata -Release $release
 $expectedArchiveHash = '3e5ef313b4034202430256f14ac31bfdfc9ae4e7d2d23a9f4c74602cd6c74388'
 $expectedBinaryHash = '8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d'
-if ($release.archive_sha256 -cne $expectedArchiveHash) {
+if ($legacyMetadata -and $release.archive_sha256 -cne $expectedArchiveHash) {
     throw 'release.json archive hash differs from the approved public artifact'
 }
-if ($release.binary_sha256 -cne $expectedBinaryHash) {
+if ($legacyMetadata -and $release.binary_sha256 -cne $expectedBinaryHash) {
     throw 'release.json executable hash differs from the approved public artifact'
 }
     if ($releaseText -match '(?i)identity|publisher|pfn|Example\.CnMon|CN=Example') {
@@ -85,6 +89,26 @@ function Assert-Rejected {
         return
     }
     throw "$Name was accepted"
+}
+
+$futureRelease = [ordered]@{}
+foreach ($property in $release.PSObject.Properties) { $futureRelease[$property.Name] = $property.Value }
+$futureRelease.cli_version = '0.4.0'
+$futureRelease.cli_revision = '0123456789abcdef0123456789abcdef01234567'
+$futureRelease.archive_root = 'cn-mon_0.4.0_windows_amd64'
+$futureRelease.archive_name = 'cn-mon_0.4.0_windows_amd64.zip'
+$futureRelease.archive_url = 'https://github.com/evdanil/cn-mon/releases/download/v0.4.0/cn-mon_0.4.0_windows_amd64.zip'
+$futureRelease.package_version = '1.3.3.0'
+Assert-CnMonMsixReleaseMetadata -Release ([pscustomobject]$futureRelease) | Out-Null
+$testCount++
+Write-Host 'PASS future CLI release metadata contract'
+foreach ($field in @('cli_revision', 'archive_root', 'archive_name', 'archive_sha256', 'binary_sha256', 'package_version')) {
+    $badRelease = [ordered]@{}
+    foreach ($property in $futureRelease.GetEnumerator()) { $badRelease[$property.Key] = $property.Value }
+    $badRelease[$field] = if ($field -eq 'package_version') { '1.3.3.1' } else { 'invalid' }
+    Assert-Rejected -Name "inconsistent future metadata $field is rejected" -MessagePattern 'release metadata' -Action {
+        Assert-CnMonMsixReleaseMetadata -Release ([pscustomobject]$badRelease)
+    }
 }
 
 $testParent = if ([string]::IsNullOrWhiteSpace($TestDirectory)) { [IO.Path]::GetTempPath() } else { [IO.Path]::GetFullPath($TestDirectory) }
@@ -208,21 +232,21 @@ try {
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     function New-ArchiveFixture {
-        param([string]$Path, [string]$ExtraEntry, [switch]$Duplicate, [switch]$OmitNotices)
+        param([string]$Path, [string]$ExtraEntry, [string]$ArchiveRoot, [switch]$Duplicate, [switch]$OmitNotices)
         $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $zip = $null
         try {
             $zip = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create, $false)
             foreach ($name in @('cn-mon.exe', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
                 if ($OmitNotices -and $name -eq 'THIRD_PARTY_NOTICES.md') { continue }
-                $entry = $zip.CreateEntry([string]$release.archive_root + '/' + $name)
+                $entry = $zip.CreateEntry($ArchiveRoot + '/' + $name)
                 $entryStream = $entry.Open()
                 $sourceStream = [IO.File]::OpenRead((Join-Path $literalDestination $name))
                 try { $sourceStream.CopyTo($entryStream) }
                 finally { $sourceStream.Dispose(); $entryStream.Dispose() }
             }
             if ($Duplicate) {
-                $duplicateEntry = $zip.CreateEntry([string]$release.archive_root + '/cn-mon.exe')
+                $duplicateEntry = $zip.CreateEntry($ArchiveRoot + '/cn-mon.exe')
                 $duplicateStream = $duplicateEntry.Open()
                 try { $duplicateStream.WriteByte(0) }
                 finally { $duplicateStream.Dispose() }
@@ -238,9 +262,27 @@ try {
             if ($null -ne $zip) { $zip.Dispose() } else { $stream.Dispose() }
         }
         $fixtureRelease = $release | ConvertTo-Json -Depth 4 | ConvertFrom-Json
+        $fixtureRelease.archive_root = $ArchiveRoot
         $fixtureRelease.archive_sha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
         return $fixtureRelease
     }
+    $futureArchivePath = Join-Path $testRoot 'future-0.4.0-release.zip'
+    $futureMetadata = New-ArchiveFixture -Path $futureArchivePath -ExtraEntry '' -ArchiveRoot 'cn-mon_0.4.0_windows_amd64'
+    $futureMetadata.cli_version = '0.4.0'
+    $futureMetadata.cli_revision = '0123456789abcdef0123456789abcdef01234567'
+    $futureMetadata.archive_root = 'cn-mon_0.4.0_windows_amd64'
+    $futureMetadata.archive_name = 'cn-mon_0.4.0_windows_amd64.zip'
+    $futureMetadata.archive_url = 'https://github.com/evdanil/cn-mon/releases/download/v0.4.0/cn-mon_0.4.0_windows_amd64.zip'
+    $futureMetadata.package_version = '1.3.3.0'
+    $futureDestination = Join-Path $testRoot 'future-release-payload'
+    $futureFiles = Expand-CnMonMsixRelease -ArchivePath $futureArchivePath -Destination $futureDestination -Release $futureMetadata
+    if ($futureFiles['cn-mon.exe'] -cne $futureMetadata.binary_sha256 -or
+        (Get-FileHash -LiteralPath $futureArchivePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $futureMetadata.archive_sha256) {
+        throw 'future CLI metadata did not bind the extracted binary and source archive bytes'
+    }
+    $testCount++
+    Write-Host 'PASS future 0.4.0 archive contract verifies archive and binary hashes'
+
     foreach ($archiveCase in @(
         @{ Name = 'rooted archive entry is rejected'; Entry = '/escape.txt'; Pattern = 'unsafe path'; Duplicate = $false; Omit = $false },
         @{ Name = 'traversal archive entry is rejected'; Entry = [string]$release.archive_root + '/../escape.txt'; Pattern = 'unexpected path'; Duplicate = $false; Omit = $false },
@@ -249,7 +291,7 @@ try {
         @{ Name = 'missing archive entry is rejected'; Entry = ''; Pattern = 'missing'; Duplicate = $false; Omit = $true }
     )) {
         $fixtureArchivePath = Join-Path $testRoot ([guid]::NewGuid().ToString('N') + '.zip')
-        $fixtureRelease = New-ArchiveFixture -Path $fixtureArchivePath -ExtraEntry $archiveCase.Entry -Duplicate:$archiveCase.Duplicate -OmitNotices:$archiveCase.Omit
+        $fixtureRelease = New-ArchiveFixture -Path $fixtureArchivePath -ExtraEntry $archiveCase.Entry -ArchiveRoot ([string]$release.archive_root) -Duplicate:$archiveCase.Duplicate -OmitNotices:$archiveCase.Omit
         Assert-Rejected -Name $archiveCase.Name -MessagePattern $archiveCase.Pattern -Action {
             Expand-CnMonMsixRelease -ArchivePath $fixtureArchivePath -Destination (Join-Path $testRoot ([guid]::NewGuid().ToString('N'))) -Release $fixtureRelease
         }

@@ -167,6 +167,79 @@ function Test-CnMonMsixHash {
     return $Hash -match '^[0-9a-fA-F]{64}$'
 }
 
+function Assert-CnMonMsixDesktopBehaviorBaseline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$SidecarPath
+    )
+
+    $getCanonicalTextHash = {
+        param([string]$Path)
+        $text = [IO.File]::ReadAllText($Path)
+        $canonical = $text.Replace("`r`n", "`n").Replace("`r", "`n")
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($canonical)
+        return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    }
+
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $SidecarPath -PathType Leaf) -or
+        (& $getCanonicalTextHash $ManifestPath) -cne 'e61dd4d9f36b820b932176aedf23e750b650d2185b197d4e81e50e36289b96d8' -or
+        (& $getCanonicalTextHash $SidecarPath) -cne '6fdef004ee36cb9e1fe84fe8d97809c0b36ae75c00d9086b558513d94bc3ceb6') {
+        throw 'desktop package behavior contract changed; fresh visible launch, alias, and Repair review is required'
+    }
+}
+
+function Assert-CnMonMsixReleaseMetadata {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][object]$Release)
+
+    $version = [string]$Release.cli_version
+    $root = "cn-mon_${version}_windows_amd64"
+    $name = "$root.zip"
+    $packageVersion = [string]$Release.package_version
+    $packageParts = @()
+    $validPackageVersion = $packageVersion -match '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+    if ($validPackageVersion) {
+        $packageParts = @($Matches[1], $Matches[2], $Matches[3], $Matches[4])
+        foreach ($part in $packageParts) {
+            $number = 0
+            if (-not [int]::TryParse($part, [ref]$number) -or $number -gt 65535) { $validPackageVersion = $false }
+        }
+        if ([int]$packageParts[0] -eq 0 -or [int]$packageParts[3] -ne 0) { $validPackageVersion = $false }
+    }
+    if ([int]$Release.schema_version -ne 1 -or
+        $version -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' -or
+        [string]$Release.cli_revision -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$Release.archive_root -cne $root -or
+        [string]$Release.archive_name -cne $name -or
+        [string]$Release.archive_url -cne "https://github.com/evdanil/cn-mon/releases/download/v$version/$name" -or
+        -not (Test-CnMonMsixHash ([string]$Release.archive_sha256)) -or
+        -not (Test-CnMonMsixHash ([string]$Release.binary_sha256)) -or
+        -not $validPackageVersion) {
+        throw 'release metadata does not match the Windows package contract'
+    }
+    foreach ($field in @('release_tag', 'release_commit', 'packaging_revision')) {
+        $value = [string]$Release.$field
+        if (-not [string]::IsNullOrEmpty($value) -and $value -cnotmatch '^[0-9a-f]{40}$' -and $field -ne 'release_tag') {
+            throw 'release metadata provenance is invalid'
+        }
+    }
+    if (-not [string]::IsNullOrEmpty([string]$Release.release_tag) -and
+        [string]$Release.release_tag -cne "v$version") {
+        throw 'release metadata provenance is invalid'
+    }
+    if (-not [string]::IsNullOrEmpty([string]$Release.release_commit) -and
+        [string]$Release.release_commit -cne [string]$Release.cli_revision) {
+        throw 'release metadata provenance is invalid'
+    }
+    if (-not [string]::IsNullOrEmpty([string]$Release.source_repository) -and
+        [string]$Release.source_repository -cne 'evdanil/cn-mon') {
+        throw 'release metadata provenance is invalid'
+    }
+    return $Release
+}
+
 function Expand-CnMonMsixRelease {
     [CmdletBinding()]
     param(
@@ -181,13 +254,7 @@ function Expand-CnMonMsixRelease {
     if (-not $Release.archive_sha256 -or -not (Test-CnMonMsixHash ([string]$Release.archive_sha256))) {
         throw 'release archive SHA-256 is invalid'
     }
-    if ([string]$Release.cli_version -cne '0.3.0' -or
-        [string]$Release.cli_revision -cne 'bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed' -or
-        [string]$Release.archive_root -cne 'cn-mon_0.3.0_windows_amd64' -or
-        [string]$Release.archive_name -cne 'cn-mon_0.3.0_windows_amd64.zip' -or
-        [string]$Release.binary_sha256 -cne '8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d') {
-        throw 'release metadata does not identify the approved public Windows release'
-    }
+    $null = Assert-CnMonMsixReleaseMetadata -Release $Release
 
     $archiveHash = Get-CnMonMsixSha256 -Path $ArchivePath
     if ($archiveHash -cne ([string]$Release.archive_sha256).ToLowerInvariant()) {
@@ -499,4 +566,4 @@ function Read-CnMonMsixManifest {
     }
 }
 
-Export-ModuleMember -Function Read-CnMonMsixIdentity, Expand-CnMonMsixRelease, Read-CnMonMsixManifest, Assert-CnMonMsixPayload
+Export-ModuleMember -Function Read-CnMonMsixIdentity, Assert-CnMonMsixReleaseMetadata, Assert-CnMonMsixDesktopBehaviorBaseline, Expand-CnMonMsixRelease, Read-CnMonMsixManifest, Assert-CnMonMsixPayload

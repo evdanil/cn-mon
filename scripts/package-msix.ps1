@@ -11,6 +11,8 @@ param(
 
     [string]$PackageVersion,
 
+    [string]$ReleaseMetadataPath,
+
     [Parameter(Mandatory = $true)]
     [string]$MaxVersionTested,
 
@@ -90,12 +92,20 @@ if (@(Get-ChildItem -LiteralPath $outputPath -Force).Count -ne 0) {
     throw 'output directory must already be empty'
 }
 
-$releasePath = Join-Path $repositoryRoot 'packaging/windows/release.json'
+$releasePath = if ([string]::IsNullOrWhiteSpace($ReleaseMetadataPath)) {
+    Join-Path $repositoryRoot 'packaging/windows/release.json'
+} else {
+    [IO.Path]::GetFullPath($ReleaseMetadataPath)
+}
 try {
-    $release = Get-Content -LiteralPath $releasePath -Raw | ConvertFrom-Json
+    $release = Get-Content -LiteralPath $releasePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    $null = Assert-CnMonMsixReleaseMetadata -Release $release
 }
 catch {
-    throw 'release metadata could not be read as JSON'
+    throw 'release metadata could not be read or validated'
+}
+if ($release.packaging_revision -and [string]$release.packaging_revision -cne $sourceRevision) {
+    throw 'release metadata belongs to a different packaging source revision'
 }
 if ([string]::IsNullOrWhiteSpace($PackageVersion)) {
     $PackageVersion = [string]$release.package_version

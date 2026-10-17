@@ -6,6 +6,7 @@ param(
     [Parameter(Mandatory = $true)][string]$SdkBinDirectory,
     [Parameter(Mandatory = $true)][string]$ArtifactDirectory,
     [string]$HostedResultsPath,
+    [string]$ReleaseMetadataPath,
     [string]$ExpectedSid,
     [switch]$FailAfterInstall
 )
@@ -29,7 +30,9 @@ $script:GateUpdates = [ordered]@{}
 $script:OwnedPackageSpecs = [Collections.Generic.List[object]]::new()
 $script:CreatedCandidate = $false
 $script:CandidateOutputPath = $null
-$script:ReleaseMetadataPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'packaging/windows/release.json'
+$script:ReleaseMetadataPath = if ([string]::IsNullOrWhiteSpace($ReleaseMetadataPath)) {
+    Join-Path (Split-Path -Parent $PSScriptRoot) 'packaging/windows/release.json'
+} else { [IO.Path]::GetFullPath($ReleaseMetadataPath) }
 $script:CreatedReceipt = $false
 $script:SignedOutputsReady = $false
 $script:CreatedFixture = $false
@@ -64,6 +67,8 @@ $script:NativeTestFailure = $null
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $PSScriptRoot 'msix-package.psm1'
 Import-Module $modulePath -Force -ErrorAction Stop
+$script:ReleaseMetadata = Get-Content -LiteralPath $script:ReleaseMetadataPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+$null = Assert-CnMonMsixReleaseMetadata -Release $script:ReleaseMetadata
 
 function Set-CnMonMsixGate {
     param([string]$Name, [ValidateSet('pass', 'fail', 'incomplete')][string]$Status)
@@ -73,9 +78,7 @@ function Set-CnMonMsixGate {
 
 function Set-CnMonMsixCaughtGateFailure {
     param([string]$Name)
-    if (-not $script:GateUpdates.Contains($Name) -or $script:Result.gates[$Name] -eq 'pass') {
-        Set-CnMonMsixGate $Name 'fail'
-    }
+    Set-CnMonMsixGate $Name 'fail'
 }
 
 function Get-CnMonMsixFailureDiagnostic {
@@ -285,9 +288,10 @@ function Assert-CnMonMsixReceipt {
         [string]$Receipt.expected_pfn -cne $identity.ExpectedPFN -or
         [string]$Receipt.architecture -cne 'x64' -or
         [string]$Receipt.package_version -cne $expectedPackageVersion -or
-        [string]$Receipt.cli_version -cne '0.3.0' -or
-        [string]$Receipt.cli_revision -cne 'bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed' -or
-        [string]$Receipt.binary_sha256 -cne '8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d' -or
+        [string]$Receipt.cli_version -cne [string]$script:ReleaseMetadata.cli_version -or
+        [string]$Receipt.cli_revision -cne [string]$script:ReleaseMetadata.cli_revision -or
+        [string]$Receipt.archive_sha256 -cne [string]$script:ReleaseMetadata.archive_sha256 -or
+        [string]$Receipt.binary_sha256 -cne [string]$script:ReleaseMetadata.binary_sha256 -or
         [string]$Receipt.purpose -cne 'candidate' -or
         [string]$Receipt.packaging_revision -notmatch '^[0-9a-f]{40}$' -or
         $null -eq $Receipt.files -or
