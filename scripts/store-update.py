@@ -39,7 +39,7 @@ SHA = re.compile(r"[0-9a-f]{64}\Z")
 FULL_SHA = re.compile(r"[0-9a-f]{40}\Z")
 MARKER_PREFIX = "CNMON_STORE_UPDATE:"
 PENDING_STATUSES = {"PendingCommit", "CommitStarted", "PendingPublication", "PreProcessing", "Certification", "Release", "Publishing"}
-ACCEPTED_STATUSES = {"PreProcessing", "Certification", "Release", "Publishing", "Published"}
+ACCEPTED_STATUSES = {"PreProcessing", "Certification", "Release", "Publishing", "PendingPublication", "Published"}
 FAILED_STATUSES = {"CommitFailed", "PreProcessingFailed", "CertificationFailed", "ReleaseFailed", "PublishFailed", "Canceled"}
 
 
@@ -357,7 +357,7 @@ def _marker_from_notes(notes):
 
 def prepare_submission(published, release):
     """Clone published metadata, changing only package states, notes, publish mode."""
-    if not isinstance(published, dict) or published.get("status") not in ("Published", "PendingCommit", "CommitStarted") or not published.get("id"):
+    if not isinstance(published, dict) or published.get("status") not in ("Published", "PendingCommit") or not published.get("id"):
         fail()
     packages = published.get("applicationPackages")
     if not isinstance(packages, list) or not packages:
@@ -706,6 +706,8 @@ def submit(release, state, package_path, receipt_path, source_sha, *, transport=
     # POST has ambiguous outcome on timeout; this is executed once and errors
     # are never retried. All subsequent operations require a valid response.
     created = client.write("POST", "/submissions")
+    if not isinstance(created, dict) or created.get("status") != "PendingCommit":
+        fail()
     submission_id = created.get("id")
     upload_url = _safe_upload_url(created.get("fileUploadUrl"))
     if not isinstance(submission_id, (str, int)) or not str(submission_id):

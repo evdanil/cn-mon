@@ -148,10 +148,11 @@ STORE_ENV = {
     "CNMON_MSIX_PUBLISHER_DISPLAY_NAME": "Example Publisher",
     "CNMON_MSIX_EXPECTED_PFN": "Example.CnMon_123456789abcd",
 }
+MISSING = object()
 
 
 def store_fixture(pending=False, statuses=None, fail_at=None, change_published_after_first=False,
-                  pricing=None, clone_pricing=None):
+                  pricing=None, clone_pricing=None, created_status="PendingCommit"):
     published = {
         "id": "published-id", "status": "Published", "targetPublishMode": "Manual",
         "applicationPackages": [{"fileName": "cn-mon_1.3.2.0_x64.msix", "fileStatus": "Uploaded", "version": "1.3.2.0", "architecture": "X64"}],
@@ -195,7 +196,10 @@ def store_fixture(pending=False, statuses=None, fail_at=None, change_published_a
                         clone["applicationPackages"][0]["version"] = "1.3.4.0"
                     if clone_pricing is not None:
                         clone["pricing"] = copy.deepcopy(clone_pricing)
-                    clone.update({"id": "new-id", "status": "PendingCommit", "fileUploadUrl": "https://upload.blob.core.windows.net/container?sig=private"})
+                    clone.update({"id": "new-id", "fileUploadUrl": "https://upload.blob.core.windows.net/container?sig=private"})
+                    clone.pop("status", None)
+                    if created_status is not MISSING:
+                        clone["status"] = created_status
                     return 201, json.dumps(clone).encode(), {}
                 if method == "PUT" and path.endswith("/submissions/new-id"):
                     if fail_at == "update":
@@ -419,6 +423,10 @@ class StoreTransactionTests(unittest.TestCase):
         result, _ = self.invoke(statuses=["Certification"])
         self.assertEqual(result, "submitted")
 
+    def test_pending_publication_at_deadline_reports_submitted(self):
+        result, _ = self.invoke(statuses=["PendingPublication"])
+        self.assertEqual(result, "submitted")
+
     def test_unknown_status_fails_without_claiming_success(self):
         with self.assertRaises(store_update.ControllerError):
             self.invoke(statuses=["UnexpectedStatus"])
@@ -490,6 +498,23 @@ class StoreTransactionTests(unittest.TestCase):
                   (".blob.core.windows.net" in url and method == "PUT")]
         self.assertEqual(len(writes), 1)
         self.assertTrue(writes[0][0] == "POST" and writes[0][1].endswith("/submissions"))
+
+    def test_create_response_must_be_pending_commit_before_any_followup_mutation(self):
+        for status in ("Published", "CommitStarted", "UnexpectedStatus", None, MISSING):
+            with self.subTest(status=status):
+                github, _, _ = github_fixture()
+                release = self.runtime_release(github)
+                transport, published = store_fixture(created_status=status)
+                with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", STORE_ENV):
+                    package, receipt = make_candidate(tmpdir, release)
+                    with self.assertRaises(store_update.ControllerError):
+                        store_update.submit(release, self.state(release, published), package, receipt, "d" * 40,
+                                            transport=transport, github_client=github, poll_seconds=0)
+                store_writes = [(method, url) for method, url, _, _ in transport.calls
+                                if (url.startswith(store_update.STORE) and method in ("POST", "PUT", "DELETE")) or
+                                (".blob.core.windows.net" in url and method == "PUT")]
+                self.assertEqual(len(store_writes), 1)
+                self.assertEqual(store_writes[0][0], "POST")
 
     def test_unsupported_published_pricing_stops_before_store_writes(self):
         invalid = ({"priceId": "Base"}, {"priceId": " Base "}, {}, {"priceId": None}, {"priceId": ""})
