@@ -447,6 +447,10 @@ function Read-CnMonMsixManifest {
     if ($null -eq $publisherNode -or $publisherNode.InnerText -cne '__CNMON_MSIX_PUBLISHER_DISPLAY_NAME__') {
         throw 'manifest PublisherDisplayName placeholder is invalid'
     }
+    $packageTitleNode = $document.SelectSingleNode('/*[local-name()="Package"]/*[local-name()="Properties"]/*[local-name()="DisplayName"]')
+    if ($null -eq $packageTitleNode -or $packageTitleNode.InnerText -cne 'cn-mon — Network Monitor') {
+        throw 'manifest package display title is invalid'
+    }
 
     $applications = $document.SelectNodes('/*[local-name()="Package"]/*[local-name()="Applications"]/*[local-name()="Application"]')
     if ($applications.Count -ne 1 -or $applications[0].GetAttribute('Id') -cne 'CnMon' -or
@@ -455,8 +459,14 @@ function Read-CnMonMsixManifest {
         throw 'manifest application contract is invalid'
     }
     $visuals = $applications[0].SelectSingleNode('*[local-name()="VisualElements"]')
-    if ($null -eq $visuals -or $visuals.GetAttribute('AppListEntry') -cne 'none') {
-        throw 'manifest must hide the graphical Start entry'
+    if ($null -eq $visuals) {
+        throw 'manifest application visuals are invalid'
+    }
+    if ($visuals.GetAttribute('DisplayName') -cne 'cn-mon — Network Monitor') {
+        throw 'manifest application display title is invalid'
+    }
+    if ($visuals.GetAttribute('AppListEntry') -cne 'default') {
+        throw 'manifest must declare the default AppListEntry'
     }
     $aliasNodes = $applications[0].SelectNodes('.//*[local-name()="Extension"][@Category="windows.appExecutionAlias"]/*[local-name()="AppExecutionAlias"]/*[local-name()="ExecutionAlias"]')
     if ($aliasNodes.Count -ne 1 -or $aliasNodes[0].GetAttribute('Alias') -cne 'cn-mon.exe') {

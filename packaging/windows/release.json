@@ -7,5 +7,5 @@
   "cli_revision": "bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed",
   "archive_sha256": "3e5ef313b4034202430256f14ac31bfdfc9ae4e7d2d23a9f4c74602cd6c74388",
   "binary_sha256": "8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d",
-  "package_version": "1.3.0.0"
+  "package_version": "1.3.2.0"
 }

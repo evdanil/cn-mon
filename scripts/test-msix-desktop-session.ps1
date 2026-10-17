@@ -102,7 +102,7 @@ function Test-CnMonMsixSessionRepairTarget {
     $specification = @($content.specifications)[0]
     $repair = @($content.repair_buttons)[0]
     return [string]$breadcrumb.automation_id -ceq 'PermanentNavigationViewBreadcrumbBar' -and
-        [bool]$breadcrumb.visible -and [string]$breadcrumb.name -ceq 'cn-mon Network Monitor' -and [int]$breadcrumb.match_count -gt 0 -and
+        [bool]$breadcrumb.visible -and [string]$breadcrumb.name -ceq 'cn-mon — Network Monitor' -and [int]$breadcrumb.match_count -gt 0 -and
         [string]$specification.name -ceq 'Specifications' -and
         @($specification.names | Where-Object { [string]$_ -ceq 'Publisher' }).Count -eq 1 -and
         @($specification.names | Where-Object { [string]$_ -ceq $ExpectedPublisher }).Count -eq 1 -and
@@ -114,8 +114,8 @@ function Test-CnMonMsixSessionRepairTarget {
 
 function New-CnMonMsixSessionRepairBreadcrumbMetadata {
     param([string]$AutomationId, [string[]]$VisibleNames)
-    $matches = @($VisibleNames | Where-Object { [string]$_ -ceq 'cn-mon Network Monitor' })
-    return [pscustomobject]@{ automation_id = $AutomationId; name = if ($matches.Count -gt 0) { 'cn-mon Network Monitor' } else { '' }; visible = ($matches.Count -gt 0); match_count = $matches.Count }
+    $matches = @($VisibleNames | Where-Object { [string]$_ -ceq 'cn-mon — Network Monitor' })
+    return [pscustomobject]@{ automation_id = $AutomationId; name = if ($matches.Count -gt 0) { 'cn-mon — Network Monitor' } else { '' }; visible = ($matches.Count -gt 0); match_count = $matches.Count }
 }
 
 function Test-CnMonMsixSessionRepairActionAllowed {
@@ -999,7 +999,7 @@ function Invoke-CnMonMsixSessionRepair {
     $settings = Open-CnMonMsixSessionSettings -Page Package
     try {
         Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle -Maximize
-        Wait-CnMonMsixSessionUserConfirmation -Instruction "In Settings, open Installed apps, select cn-mon Network Monitor (version $($script:Receipt.package_version), $($script:Receipt.publisher_display_name)), choose the three-dot menu and Advanced options. Leave the page visible. Locate Repair, but do not click Repair or Reset." -RequiredText 'READY'
+        Wait-CnMonMsixSessionUserConfirmation -Instruction "In Settings, open Installed apps, select cn-mon — Network Monitor (version $($script:Receipt.package_version), $($script:Receipt.publisher_display_name)), choose the three-dot menu and Advanced options. Leave the page visible. Locate Repair, but do not click Repair or Reset." -RequiredText 'READY'
         Set-CnMonMsixSessionWindowForeground -Process $settings.Process -WindowHandle $settings.WindowHandle
         $script:State.screenshots.Add((Save-CnMonMsixSessionScreenshot -Name 'repair-start.png' -WindowHandle $settings.WindowHandle))
         Save-CnMonMsixSessionRepairUiTrace -Process $settings.Process -SettingsProcess $settings.SettingsProcess -WindowHandle $settings.WindowHandle
@@ -1012,7 +1012,7 @@ function Invoke-CnMonMsixSessionRepair {
             Start-Sleep -Milliseconds 300
         }
         if (-not (Test-CnMonMsixSessionRepairObservationAllowsInvoke -Observation $before)) {
-            throw 'the exact cn-mon Network Monitor page and its enabled English Repair control were not observed; no repair action was invoked'
+            throw 'the exact cn-mon — Network Monitor page and its enabled English Repair control were not observed; no repair action was invoked'
         }
         $script:State.completed.repair_before = $true
         Save-CnMonMsixSessionState
