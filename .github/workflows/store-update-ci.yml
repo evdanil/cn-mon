@@ -1,0 +1,132 @@
+name: Store update automation checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  offline-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Test controller, workflow guards, and existing workflow contracts
+        run: |
+          python3 scripts/test-store-update.py
+          python3 scripts/test-store-update-workflow.py
+          python3 scripts/test-release-workflow.py
+          python3 scripts/test-msix-workflow.py
+      - name: Test StoreUpdate native aggregation profile
+        run: |
+          pwsh -NoProfile -File scripts/test-store-update-qualification.ps1
+          pwsh -NoProfile -File scripts/test-msix-desktop-behavior-baseline.ps1
+
+  windows-package:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - name: Create temporary 1.3.3.0 package metadata
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          $release = Get-Content -Raw packaging/windows/release.json | ConvertFrom-Json -AsHashtable
+          $release.package_version = '1.3.3.0'
+          $release.packaging_revision = $env:SOURCE_SHA
+          $metadataPath = Join-Path $env:RUNNER_TEMP 'cn-mon-store-test-release.json'
+          $release | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $metadataPath -Encoding utf8
+          "CNMON_RELEASE_METADATA_PATH=$metadataPath" | Add-Content -Path $env:GITHUB_ENV
+          @(
+            'CNMON_MSIX_IDENTITY_NAME=Example.CnMon',
+            'CNMON_MSIX_IDENTITY_PUBLISHER=CN=Example, O=Example',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME=Example Publisher',
+            'CNMON_MSIX_EXPECTED_PFN=Example.CnMon_518g7wxbxvqf6'
+          ) | Add-Content -Path $env:GITHUB_ENV
+      - name: Test qualification profile and PowerShell harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          python scripts/test-store-update.py
+          python scripts/test-store-update-workflow.py
+          pwsh -NoProfile -File scripts/test-msix-desktop-behavior-baseline.ps1
+          pwsh -NoProfile -File scripts/test-store-update-qualification.ps1
+          pwsh -NoProfile -File scripts/test-msix-windows-harness.ps1
+      - name: Build and qualify synthetic package with real Windows SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode Initialize -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
+          pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode DownloadRelease -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
+          pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode Build -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
+          pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode Hosted -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
+          pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode Certify -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
+      - name: Print allowlisted synthetic package diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = @{
+            CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+            CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+            CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+          }
+          foreach ($name in $expected.Keys) {
+            if ([Environment]::GetEnvironmentVariable($name) -cne $expected[$name]) {
+              throw 'synthetic package diagnostic identity guard failed'
+            }
+          }
+          $jobDirectory = Join-Path $env:RUNNER_TEMP 'cn-mon-msix-job'
+          foreach ($name in @('package-tests.log', 'package-build.log', 'hosted-qualification.log', 'wack-certification.log')) {
+            $path = Join-Path $jobDirectory $name
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+              Write-Output "--- synthetic $name ---"
+              Get-Content -LiteralPath $path | ForEach-Object { Write-Output ("LOG " + [string]$_) }
+            }
+          }
+          $resultPath = Join-Path $jobDirectory 'evidence/msix-native-results.json'
+          if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+            try {
+              $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -ErrorAction Stop
+              $gateNames = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair', 'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack')
+              $actualGateNames = @($result.gates.PSObject.Properties.Name | Sort-Object)
+              $expectedGateNames = @($gateNames | Sort-Object)
+              $gateValuesValid = @($result.gates.PSObject.Properties | Where-Object { $_.Value -notin @('pass', 'fail', 'incomplete') }).Count -eq 0
+              if ($result.schema_version -ne 2 -or $result.mode -notin @('Hosted', 'Certify') -or
+                  $result.overall -notin @('pass', 'fail', 'incomplete') -or
+                  ($actualGateNames -join "`n") -cne ($expectedGateNames -join "`n") -or -not $gateValuesValid) {
+                Write-Output 'qualification-summary invalid'
+              } else {
+                Write-Output "qualification-summary mode=$($result.mode) overall=$($result.overall) evidence=$($null -ne $result.evidence)"
+                foreach ($name in $gateNames) { Write-Output "gate $name=$($result.gates.$name)" }
+              }
+            } catch { Write-Output 'qualification-summary unavailable' }
+          } else {
+            Write-Output 'qualification-summary missing'
+          }

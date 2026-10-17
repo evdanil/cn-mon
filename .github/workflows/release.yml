@@ -231,6 +231,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      actions: write
       contents: write
       pull-requests: read
     steps:
@@ -371,3 +372,12 @@ jobs:
                   raise SystemExit(f'published asset differs from qualified bytes: {name}')
           PY
           gh release view "$tag" --json url --jq .url
+      - name: Dispatch Store update after verified publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: v${{ needs.select-source.outputs.version }}
+        run: |
+          set -euo pipefail
+          state=$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '[.isDraft, .isPrerelease] | @tsv')
+          [[ "$state" == $'false\tfalse' ]] || { echo 'published release failed the final dispatch check' >&2; exit 1; }
+          gh workflow run store-update.yml --repo "$GITHUB_REPOSITORY" --ref main -f "release_tag=$RELEASE_TAG"

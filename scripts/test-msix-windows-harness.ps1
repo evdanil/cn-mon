@@ -440,6 +440,8 @@ $requiredFunctions = @(
     'Remove-CnMonMsixTemporaryUser',
     'Get-CnMonMsixSignedCandidatePath',
     'Get-CnMonMsixReleasePackageVersion',
+    'Get-CnMonMsixUserReleaseMetadataPath',
+    'New-CnMonMsixUserRunArguments',
     'Assert-CnMonMsixPackagePayload',
     'Assert-CnMonMsixSignature',
     'Get-CnMonMsixSyntheticPrDiagnosticGuard',
@@ -512,6 +514,37 @@ $helperText = (@($functionAsts) + @($fixtureFilesFunctionAsts) + @($moduleFuncti
 Import-Module $modulePath -Force -ErrorAction Stop
 $qualificationGates = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair', 'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack')
 . $helperPath
+$script:UserReleaseMetadataPath = $null
+$script:CreatedUserReleaseMetadataPath = $null
+$script:ReleaseMetadataPath = Join-Path $tempRoot 'runtime-release.json'
+$runtimeReleaseFixture = Get-Content -LiteralPath (Join-Path $repoRoot 'packaging/windows/release.json') -Raw | ConvertFrom-Json
+$runtimeReleaseFixture.package_version = '1.3.3.0'
+$runtimeReleaseFixture | Add-Member -MemberType NoteProperty -Name release_tag -Value 'v0.3.0' -Force
+$runtimeReleaseFixture | Add-Member -MemberType NoteProperty -Name release_commit -Value $runtimeReleaseFixture.cli_revision -Force
+$runtimeReleaseFixture | Add-Member -MemberType NoteProperty -Name source_repository -Value 'evdanil/cn-mon' -Force
+$runtimeReleaseFixture | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:ReleaseMetadataPath -Encoding utf8
+$artifactDirectoryFixture = Join-Path $tempRoot 'ordinary-user-artifacts'
+$null = New-Item -ItemType Directory -Path $artifactDirectoryFixture
+$stagedReleaseMetadata = Get-CnMonMsixUserReleaseMetadataPath -ArtifactDirectory $artifactDirectoryFixture
+Assert-Equal ([IO.Path]::GetDirectoryName($stagedReleaseMetadata)) ([IO.Path]::GetFullPath($artifactDirectoryFixture)) 'ordinary-user metadata was not staged inside the SID-ACL artifact directory'
+Assert-Equal (Get-FileHash -LiteralPath $stagedReleaseMetadata -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $script:ReleaseMetadataPath -Algorithm SHA256).Hash 'ordinary-user metadata bytes differ from validated runtime metadata'
+$reusedStagedMetadata = Get-CnMonMsixUserReleaseMetadataPath -ArtifactDirectory $artifactDirectoryFixture
+Assert-Equal $reusedStagedMetadata $stagedReleaseMetadata 'ordinary-user metadata staging did not reuse the verified path'
+$originalStagedMetadata = [IO.File]::ReadAllBytes($stagedReleaseMetadata)
+[IO.File]::AppendAllText($stagedReleaseMetadata, 'changed')
+Assert-ThrowsMatching { Get-CnMonMsixUserReleaseMetadataPath -ArtifactDirectory $artifactDirectoryFixture } 'could not be validated' 'modified staged ordinary-user metadata was accepted'
+[IO.File]::WriteAllBytes($stagedReleaseMetadata, $originalStagedMetadata)
+$userArguments = New-CnMonMsixUserRunArguments -Candidate 'candidate.msix' -SignedReceipt 'receipt.json' -SdkBinDirectory 'sdk' -ArtifactDirectory $artifactDirectoryFixture -ExpectedSid 'S-1-5-21-1' -ReleaseMetadataPath $stagedReleaseMetadata
+$metadataArgumentIndex = [Array]::IndexOf($userArguments, '-ReleaseMetadataPath')
+Assert-True ($metadataArgumentIndex -ge 0 -and $userArguments[$metadataArgumentIndex + 1] -ceq $stagedReleaseMetadata) 'ordinary-user subprocess arguments omitted the staged runtime metadata path'
+$injectedArguments = New-CnMonMsixUserRunArguments -Candidate 'candidate.msix' -SignedReceipt 'receipt.json' -SdkBinDirectory 'sdk' -ArtifactDirectory $artifactDirectoryFixture -ExpectedSid 'S-1-5-21-1' -ReleaseMetadataPath $stagedReleaseMetadata -InjectFailure
+Assert-True ($injectedArguments -contains '-FailAfterInstall') 'failure-injection subprocess arguments lost the existing injection switch'
+$userRunFunction = @($sourceAst.FindAll({ param($candidate) $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq 'Invoke-CnMonMsixUserRun' }, $true))[0]
+Assert-Equal (Get-CommandNodes $userRunFunction 'Get-CnMonMsixUserReleaseMetadataPath').Count 1 'ordinary-user runner does not stage validated metadata through the tested helper'
+Assert-Equal (Get-CommandNodes $userRunFunction 'New-CnMonMsixUserRunArguments').Count 1 'ordinary-user runner does not use the tested metadata-aware argument builder'
+Remove-Item -LiteralPath $stagedReleaseMetadata -Force
+$script:UserReleaseMetadataPath = $null
+$script:CreatedUserReleaseMetadataPath = $null
 $signedCandidatePath = Get-CnMonMsixSignedCandidatePath -Directory $tempRoot -PackageVersion '1.3.1.0'
 Assert-Equal ([IO.Path]::GetFileName($signedCandidatePath)) 'cn-mon_1.3.1.0_x64-signed.msix' 'ordinary-user signed output filename did not follow the receipt package version'
 try { $null = Get-CnMonMsixSignedCandidatePath -Directory $tempRoot -PackageVersion 'bad-version'; throw 'invalid signed candidate package version was accepted' } catch { if ($_.Exception.Message -ceq 'invalid signed candidate package version was accepted') { throw } }
@@ -2335,7 +2368,7 @@ panic: test timed out after 10m0s
                 $script:Result.gates.account = 'incomplete'
                 $script:GateUpdates = [ordered]@{ account = 'incomplete' }
                 Set-CnMonMsixCaughtGateFailure -Name account
-                Assert-Equal $script:Result.gates.account 'incomplete' 'caught failure overwrote an explicitly recorded prerequisite-incomplete gate'
+                Assert-Equal $script:Result.gates.account 'fail' 'caught execution failure left a prerequisite-incomplete gate eligible for StoreUpdate acceptance'
             }
             finally {
                 $script:Result = $previousResult

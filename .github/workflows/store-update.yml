@@ -1,0 +1,177 @@
+name: Microsoft Store package update
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published stable release tag to submit
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cn-mon-store-update
+  cancel-in-progress: false
+
+jobs:
+  resolve-release:
+    if: github.repository == 'evdanil/cn-mon' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      release_commit: ${{ steps.resolve.outputs.release_commit }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: resolve
+        name: Resolve published release and pin its source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/main
+          metadata="$RUNNER_TEMP/cn-mon-store-public.json"
+          python3 scripts/store-update.py resolve --tag "$RELEASE_TAG" --output "$metadata"
+          python3 - "$metadata" "$GITHUB_OUTPUT" <<'PY'
+          import json, pathlib, sys
+          data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+          if data.get('source_repository') != 'evdanil/cn-mon':
+              raise SystemExit('release repository did not validate')
+          with pathlib.Path(sys.argv[2]).open('a', encoding='utf-8') as output:
+              output.write(f"release_commit={data['release_commit']}\n")
+              output.write(f"release_tag={data['release_tag']}\n")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: store-release-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cn-mon-store-public.json
+          if-no-files-found: error
+          retention-days: 1
+
+  native-release:
+    needs: resolve-release
+    uses: ./.github/workflows/native.yml
+    with:
+      source_ref: ${{ needs.resolve-release.outputs.release_commit }}
+      source_repository: evdanil/cn-mon
+    permissions:
+      contents: read
+
+  submit-store-update:
+    needs: [resolve-release, native-release]
+    if: github.repository == 'evdanil/cn-mon' && github.ref == 'refs/heads/main' && needs.resolve-release.result == 'success' && needs.native-release.result == 'success'
+    runs-on: windows-2025
+    timeout-minutes: 120
+    environment: msix-packaging
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.2'
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: store-release-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cn-mon-store
+      - name: Validate reviewed launch, alias, and Repair behavior baseline
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/test-msix-desktop-behavior-baseline.ps1
+      - name: Prepare read-only Store state and runtime metadata
+        id: prepare
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          CNMON_STORE_APP_ID: ${{ secrets.CNMON_STORE_APP_ID }}
+          CNMON_STORE_TENANT_ID: ${{ secrets.CNMON_STORE_TENANT_ID }}
+          CNMON_STORE_CLIENT_ID: ${{ secrets.CNMON_STORE_CLIENT_ID }}
+          CNMON_STORE_CLIENT_SECRET: ${{ secrets.CNMON_STORE_CLIENT_SECRET }}
+          CNMON_MSIX_IDENTITY_NAME: ${{ secrets.CNMON_MSIX_IDENTITY_NAME }}
+          CNMON_MSIX_IDENTITY_PUBLISHER: ${{ secrets.CNMON_MSIX_IDENTITY_PUBLISHER }}
+          CNMON_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.CNMON_MSIX_PUBLISHER_DISPLAY_NAME }}
+          CNMON_MSIX_EXPECTED_PFN: ${{ secrets.CNMON_MSIX_EXPECTED_PFN }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          python scripts/store-update.py prepare --release-metadata "$env:RUNNER_TEMP/cn-mon-store/cn-mon-store-public.json" --state "$env:RUNNER_TEMP/cn-mon-store/private-state.json" --output "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json" --source-sha "$env:SOURCE_SHA"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $state = Get-Content -Raw "$env:RUNNER_TEMP/cn-mon-store/private-state.json" | ConvertFrom-Json
+          if ($state.status -notin @('ready', 'already_published')) { throw 'preflight returned an invalid status' }
+          "status=$($state.status)" | Add-Content -Path $env:GITHUB_OUTPUT
+      - name: Initialize native packaging tools
+        if: steps.prepare.outputs.status != 'already_published'
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Initialize -ReleaseMetadataPath "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json"
+      - name: Download and verify the exact published Windows archive
+        if: steps.prepare.outputs.status != 'already_published'
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode DownloadRelease -ReleaseMetadataPath "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json"
+      - name: Build the unsigned Store package
+        if: steps.prepare.outputs.status != 'already_published'
+        shell: pwsh
+        env:
+          CNMON_MSIX_IDENTITY_NAME: ${{ secrets.CNMON_MSIX_IDENTITY_NAME }}
+          CNMON_MSIX_IDENTITY_PUBLISHER: ${{ secrets.CNMON_MSIX_IDENTITY_PUBLISHER }}
+          CNMON_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.CNMON_MSIX_PUBLISHER_DISPLAY_NAME }}
+          CNMON_MSIX_EXPECTED_PFN: ${{ secrets.CNMON_MSIX_EXPECTED_PFN }}
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Build -ReleaseMetadataPath "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json"
+      - name: Run hosted package qualification
+        if: steps.prepare.outputs.status != 'already_published'
+        shell: pwsh
+        env:
+          CNMON_MSIX_IDENTITY_NAME: ${{ secrets.CNMON_MSIX_IDENTITY_NAME }}
+          CNMON_MSIX_IDENTITY_PUBLISHER: ${{ secrets.CNMON_MSIX_IDENTITY_PUBLISHER }}
+          CNMON_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.CNMON_MSIX_PUBLISHER_DISPLAY_NAME }}
+          CNMON_MSIX_EXPECTED_PFN: ${{ secrets.CNMON_MSIX_EXPECTED_PFN }}
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Hosted -ReleaseMetadataPath "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json"
+      - name: Run strict WACK certification qualification
+        if: steps.prepare.outputs.status != 'already_published'
+        id: certify
+        shell: pwsh
+        env:
+          CNMON_MSIX_IDENTITY_NAME: ${{ secrets.CNMON_MSIX_IDENTITY_NAME }}
+          CNMON_MSIX_IDENTITY_PUBLISHER: ${{ secrets.CNMON_MSIX_IDENTITY_PUBLISHER }}
+          CNMON_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.CNMON_MSIX_PUBLISHER_DISPLAY_NAME }}
+          CNMON_MSIX_EXPECTED_PFN: ${{ secrets.CNMON_MSIX_EXPECTED_PFN }}
+        run: pwsh -NoProfile -File ./scripts/msix-ci.ps1 -Mode Certify -ReleaseMetadataPath "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json"
+      - name: Submit qualified unsigned package
+        if: success() && steps.prepare.outputs.status != 'already_published'
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          CNMON_STORE_APP_ID: ${{ secrets.CNMON_STORE_APP_ID }}
+          CNMON_STORE_TENANT_ID: ${{ secrets.CNMON_STORE_TENANT_ID }}
+          CNMON_STORE_CLIENT_ID: ${{ secrets.CNMON_STORE_CLIENT_ID }}
+          CNMON_STORE_CLIENT_SECRET: ${{ secrets.CNMON_STORE_CLIENT_SECRET }}
+          CNMON_MSIX_IDENTITY_NAME: ${{ secrets.CNMON_MSIX_IDENTITY_NAME }}
+          CNMON_MSIX_IDENTITY_PUBLISHER: ${{ secrets.CNMON_MSIX_IDENTITY_PUBLISHER }}
+          CNMON_MSIX_PUBLISHER_DISPLAY_NAME: ${{ secrets.CNMON_MSIX_PUBLISHER_DISPLAY_NAME }}
+          CNMON_MSIX_EXPECTED_PFN: ${{ secrets.CNMON_MSIX_EXPECTED_PFN }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = (Get-Content -Raw "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json" | ConvertFrom-Json).package_version
+          python scripts/store-update.py submit `
+            --release-metadata "$env:RUNNER_TEMP/cn-mon-store/runtime-release.json" `
+            --state "$env:RUNNER_TEMP/cn-mon-store/private-state.json" `
+            --package "$env:RUNNER_TEMP/cn-mon-msix-job/package/cn-mon_${version}_x64.msix" `
+            --receipt "$env:RUNNER_TEMP/cn-mon-msix-job/package/msix-receipt.json" `
+            --source-sha "$env:SOURCE_SHA"
+      - name: Remove private Store and package state
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -LiteralPath "$env:RUNNER_TEMP/cn-mon-store" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath "$env:RUNNER_TEMP/cn-mon-msix-job" -Recurse -Force -ErrorAction SilentlyContinue

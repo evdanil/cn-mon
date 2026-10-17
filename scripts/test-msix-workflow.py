@@ -499,7 +499,10 @@ class MsixWorkflowTests(unittest.TestCase):
         archive_hash = '3e5ef313b4034202430256f14ac31bfdfc9ae4e7d2d23a9f4c74602cd6c74388'
         binary_hash = '8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d'
         release = {
-            'archive_name': 'approved-release.zip',
+            'schema_version': 1,
+            'archive_url': 'https://github.com/evdanil/cn-mon/releases/download/v0.3.0/cn-mon_0.3.0_windows_amd64.zip',
+            'archive_name': 'cn-mon_0.3.0_windows_amd64.zip',
+            'archive_root': 'cn-mon_0.3.0_windows_amd64',
             'package_version': '1.3.0.0',
             'cli_version': '0.3.0',
             'cli_revision': 'bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed',
@@ -513,6 +516,7 @@ class MsixWorkflowTests(unittest.TestCase):
             scripts.mkdir(parents=True)
             release_dir.mkdir(parents=True)
             (scripts / 'msix-ci.ps1').write_text(CI_HELPER_PATH.read_text(encoding='utf-8'), encoding='utf-8')
+            (scripts / 'msix-package.psm1').write_text((ROOT / 'scripts/msix-package.psm1').read_text(encoding='utf-8'), encoding='utf-8')
             (release_dir / 'release.json').write_text(json.dumps(release), encoding='utf-8')
             wrapper = Path(temporary) / 'build-test.ps1'
             wrapper.write_text(r'''$ErrorActionPreference = 'Stop'
@@ -639,7 +643,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'packager-saw-empty
             ('Certify', 'valid-full-map', valid_certification, True),
         )
         release = {
-            'archive_name': 'approved-release.zip',
+            'schema_version': 1,
+            'archive_url': 'https://github.com/evdanil/cn-mon/releases/download/v0.3.0/cn-mon_0.3.0_windows_amd64.zip',
+            'archive_name': 'cn-mon_0.3.0_windows_amd64.zip',
+            'archive_root': 'cn-mon_0.3.0_windows_amd64',
             'package_version': '1.3.0.0',
             'cli_version': '0.3.0',
             'cli_revision': 'bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed',
@@ -657,6 +664,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'packager-saw-empty
             scripts.mkdir(parents=True)
             release_dir.mkdir(parents=True)
             (scripts / 'msix-ci.ps1').write_text(CI_HELPER_PATH.read_text(encoding='utf-8'), encoding='utf-8')
+            (scripts / 'msix-package.psm1').write_text((ROOT / 'scripts/msix-package.psm1').read_text(encoding='utf-8'), encoding='utf-8')
             (release_dir / 'release.json').write_text(json.dumps(release), encoding='utf-8')
             wrapper = base / 'hosted-test.ps1'
             wrapper.write_text(r'''$ErrorActionPreference = 'Stop'
