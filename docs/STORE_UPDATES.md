@@ -32,6 +32,8 @@ Publish a stable `vMAJOR.MINOR.PATCH` GitHub release after its tag is on `main`.
 
 Store package versions advance independently of the CLI version. The existing Store package version floor is `1.3.2.0`; the first ordinary automated update is `1.3.3.0`. The controller allocates the next available package version from the published Store package versions and records release provenance in the private certification notes. It does not rewrite committed release metadata.
 
+The automation preserves the published submission's pricing unchanged. It accepts a nonblank `pricing.priceId` such as `Free` or `Tier96`, but stops before creating a draft if pricing is missing, malformed, or `Base` (case-insensitive). Resolve pricing in Partner Center; the workflow never changes it automatically.
+
 ## Pending submissions and recovery
 
 The workflow stops before creating anything if Partner Center has any pending submission. It also never deletes, cancels, overwrites, or resumes a draft, including a draft left by an interrupted prior run. Inspect and resolve the pending submission manually in Partner Center, then retry the release workflow. If a Store write fails or returns an unknown status, inspect Partner Center before taking action; do not assume the operation rolled back or retry blindly. The workflow reports an accepted submission separately from confirmed publication.

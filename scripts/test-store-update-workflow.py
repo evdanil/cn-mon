@@ -73,6 +73,26 @@ class StoreUpdateWorkflowTests(unittest.TestCase):
         self.assertIn("$PSNativeCommandUseErrorActionPreference = $true", workflow)
         self.assertNotIn('secrets.', workflow)
 
+    def test_windows_package_failure_diagnostics_are_synthetic_and_allowlisted(self):
+        workflow = (ROOT / '.github/workflows/store-update-ci.yml').read_text(encoding='utf-8')
+        self.assertIn('Print allowlisted synthetic package diagnostics', workflow)
+        diagnostics = workflow.split('Print allowlisted synthetic package diagnostics', 1)[1]
+        for setting in (
+            'CNMON_MSIX_IDENTITY_NAME',
+            'CNMON_MSIX_IDENTITY_PUBLISHER',
+            'CNMON_MSIX_PUBLISHER_DISPLAY_NAME',
+            'CNMON_MSIX_EXPECTED_PFN',
+            'Example.CnMon',
+            'CN=Example, O=Example',
+            'Example Publisher',
+            'Example.CnMon_518g7wxbxvqf6',
+            'package-tests.log',
+            'package-build.log',
+        ):
+            self.assertIn(setting, diagnostics)
+        self.assertNotIn('Get-ChildItem', diagnostics)
+        self.assertNotIn('Get-Content -Path', diagnostics)
+
 
 if __name__ == '__main__':
     unittest.main()

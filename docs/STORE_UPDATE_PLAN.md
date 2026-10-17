@@ -10,7 +10,7 @@
 
 **Spec:** [STORE_UPDATE_SPEC.md](STORE_UPDATE_SPEC.md)
 
-Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller, workflow-guard, existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 50 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. PR checks, including the actual Windows SDK package/qualification job, and external review remain pending. No live Store API request was made because credentials are not configured.
+Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (37 tests), workflow guards (7 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. PR checks, including the actual Windows SDK package/qualification job, and external review remain pending. No live Store API request was made because credentials are not configured.
 
 ## Global constraints
 
@@ -66,7 +66,7 @@ def test_store_metadata_survives_package_replacement(self):
 - [x] Extend package/module fixtures with CLI `0.4.0`, a different full revision/hash and package `1.3.3.0`; validate real archive/binary hashes, reject inconsistent fields, and retain the default pinned release path.
 - [x] Introduce common metadata validation and thread the optional metadata path through packager and qualifier subprocesses. Replace fixed CLI literals with validated metadata comparisons while preserving payload, identity, receipt and clean-source checks.
 - [x] Pin the StoreUpdate policy with actual gate maps, including required/manual gate failures, missing/extra gates, contradictory overall status, evidence absence and preservation of raw report bytes.
-- [x] Run package/module/native PowerShell harnesses locally: package module 50 assertions; native harness 32 checks; StoreUpdate profile and desktop behavior baseline tests pass.
+- [x] Run package/module/native PowerShell harnesses locally: package module 52 assertions; native harness 32 checks; StoreUpdate profile and desktop behavior baseline tests pass.
 - [ ] Run the synthetic package through actual Windows MakeAppx, signing, installation and WACK in PR CI. Local runtime is Linux-only; preserved historical evidence still reads `17 passed, 0 failed, 2 incomplete`.
 
 ## Task 3: Trusted dispatch and integrated workflow
@@ -79,7 +79,7 @@ def test_store_metadata_survives_package_replacement(self):
 - [x] Implement the no-secret release bridge and main-only workflow, ordered resolve/native/preflight/package/Hosted/Certify/submit, and qualification success conditions.
 - [x] Keep private package, receipt, Store JSON, upload ZIP and raw logs out of artifact uploads; clean temporary runner data and scope API credentials to preflight/submission only.
 - [x] Scope `actions: write` to dispatch/publication jobs, `contents: read` elsewhere, and API credentials to prepare/submit; do not pass secrets in command arguments.
-- [x] Run controller (33), workflow guards (6), release workflow, MSIX workflow (23) and PowerShell package/native/profile/baseline harnesses locally.
+- [x] Run controller (37), workflow guards (7), release workflow, MSIX workflow (23) and PowerShell package/native/profile/baseline harnesses locally.
 
 ## Task 4: Documentation, independent review and milestone PR
 

@@ -35,13 +35,14 @@ $release = Get-Content -LiteralPath $releasePath -Raw | ConvertFrom-Json
     $releaseText = Get-Content -LiteralPath $releasePath -Raw
 $null = Assert-CnMonMsixReleaseMetadata -Release $release
 $expectedArchiveHash = '3e5ef313b4034202430256f14ac31bfdfc9ae4e7d2d23a9f4c74602cd6c74388'
-$expectedBinaryHash = '8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d'
+$approvedBinaryHash = '8312916ae18998c6cddecbe31d2a1dd9833f047a5e51da3feccc5ca45b6b234d'
 if ($legacyMetadata -and $release.archive_sha256 -cne $expectedArchiveHash) {
     throw 'release.json archive hash differs from the approved public artifact'
 }
-if ($legacyMetadata -and $release.binary_sha256 -cne $expectedBinaryHash) {
+if ($legacyMetadata -and $release.binary_sha256 -cne $approvedBinaryHash) {
     throw 'release.json executable hash differs from the approved public artifact'
 }
+$expectedBinaryHash = [string]$release.binary_sha256
     if ($releaseText -match '(?i)identity|publisher|pfn|Example\.CnMon|CN=Example') {
         throw 'public release metadata contains package identity data'
     }
@@ -95,6 +96,9 @@ $futureRelease = [ordered]@{}
 foreach ($property in $release.PSObject.Properties) { $futureRelease[$property.Name] = $property.Value }
 $futureRelease.cli_version = '0.4.0'
 $futureRelease.cli_revision = '0123456789abcdef0123456789abcdef01234567'
+$futureRelease.release_tag = 'v0.4.0'
+$futureRelease.release_commit = $futureRelease.cli_revision
+$futureRelease.source_repository = 'evdanil/cn-mon'
 $futureRelease.archive_root = 'cn-mon_0.4.0_windows_amd64'
 $futureRelease.archive_name = 'cn-mon_0.4.0_windows_amd64.zip'
 $futureRelease.archive_url = 'https://github.com/evdanil/cn-mon/releases/download/v0.4.0/cn-mon_0.4.0_windows_amd64.zip'
@@ -102,7 +106,7 @@ $futureRelease.package_version = '1.3.3.0'
 Assert-CnMonMsixReleaseMetadata -Release ([pscustomobject]$futureRelease) | Out-Null
 $testCount++
 Write-Host 'PASS future CLI release metadata contract'
-foreach ($field in @('cli_revision', 'archive_root', 'archive_name', 'archive_sha256', 'binary_sha256', 'package_version')) {
+foreach ($field in @('cli_revision', 'release_tag', 'release_commit', 'archive_root', 'archive_name', 'archive_sha256', 'binary_sha256', 'package_version')) {
     $badRelease = [ordered]@{}
     foreach ($property in $futureRelease.GetEnumerator()) { $badRelease[$property.Key] = $property.Value }
     $badRelease[$field] = if ($field -eq 'package_version') { '1.3.3.1' } else { 'invalid' }
@@ -274,6 +278,10 @@ try {
     $futureMetadata.archive_name = 'cn-mon_0.4.0_windows_amd64.zip'
     $futureMetadata.archive_url = 'https://github.com/evdanil/cn-mon/releases/download/v0.4.0/cn-mon_0.4.0_windows_amd64.zip'
     $futureMetadata.package_version = '1.3.3.0'
+    $futureMetadata | Add-Member -MemberType NoteProperty -Name release_tag -Value 'v0.4.0' -Force
+    $futureMetadata | Add-Member -MemberType NoteProperty -Name release_commit -Value $futureMetadata.cli_revision -Force
+    $futureMetadata | Add-Member -MemberType NoteProperty -Name source_repository -Value 'evdanil/cn-mon' -Force
+    $null = Assert-CnMonMsixReleaseMetadata -Release $futureMetadata
     $futureDestination = Join-Path $testRoot 'future-release-payload'
     $futureFiles = Expand-CnMonMsixRelease -ArchivePath $futureArchivePath -Destination $futureDestination -Release $futureMetadata
     if ($futureFiles['cn-mon.exe'] -cne $futureMetadata.binary_sha256 -or
@@ -412,11 +420,15 @@ try {
         }
 
         function Copy-FixtureSource {
-            param([string]$Destination)
+            param([string]$Destination, [object]$ReleaseMetadata)
             New-Item -ItemType Directory -Path $Destination | Out-Null
             $fixturePackaging = Join-Path $Destination 'packaging'
             New-Item -ItemType Directory -Path $fixturePackaging | Out-Null
             Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/windows') -Destination $fixturePackaging -Recurse
+            if ($null -ne $ReleaseMetadata) {
+                $fixtureReleasePath = Join-Path $Destination 'packaging/windows/release.json'
+                $ReleaseMetadata | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $fixtureReleasePath -Encoding utf8
+            }
             $fixtureScripts = Join-Path $Destination 'scripts'
             New-Item -ItemType Directory -Path $fixtureScripts | Out-Null
             foreach ($scriptName in @('msix-package.psm1', 'package-msix.ps1', 'test-msix-package.ps1')) {
@@ -447,7 +459,9 @@ try {
                 [string]$RequestedPackageVersion
             )
             if ([string]::IsNullOrWhiteSpace($RequestedPackageVersion)) {
-                $RequestedPackageVersion = [string]$release.package_version
+                $fixtureReleasePath = Join-Path $FixtureRoot 'packaging/windows/release.json'
+                $fixtureRelease = Get-Content -LiteralPath $fixtureReleasePath -Raw | ConvertFrom-Json
+                $RequestedPackageVersion = [string]$fixtureRelease.package_version
             }
             $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
             $arguments = @(
@@ -479,7 +493,10 @@ try {
         $osVersion = [Environment]::OSVersion.Version
         $maxVersionTested = '{0}.{1}.{2}.0' -f $osVersion.Major, $osVersion.Minor, $osVersion.Build
         $goodFixture = Join-Path $testRoot "committed fixture 'source"
-        Copy-FixtureSource -Destination $goodFixture
+        $runtimeFixtureRelease = $release | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $runtimeFixtureRelease.package_version = '1.3.3.0'
+        $runtimeFixtureRelease | Add-Member -MemberType NoteProperty -Name packaging_revision -Value $null -Force
+        Copy-FixtureSource -Destination $goodFixture -ReleaseMetadata $runtimeFixtureRelease
         Initialize-FixtureGit -Root $goodFixture
 
         $dirtyOutput = Join-Path $testRoot 'dirty source output'
@@ -532,7 +549,7 @@ try {
         Assert-EmptyDirectory -Path $identityFailureOutput -CaseName 'invalid identity fails atomically without echo'
 
         $wrongManifestFixture = Join-Path $testRoot "invalid manifest fixture 'source"
-        Copy-FixtureSource -Destination $wrongManifestFixture
+        Copy-FixtureSource -Destination $wrongManifestFixture -ReleaseMetadata $runtimeFixtureRelease
         $wrongManifestPath = Join-Path $wrongManifestFixture 'packaging/windows/AppxManifest.xml'
         $wrongManifestText = (Get-Content -LiteralPath $wrongManifestPath -Raw).Replace('__CNMON_MSIX_IDENTITY_NAME__', '__WRONG_NAME__')
         [IO.File]::WriteAllText($wrongManifestPath, $wrongManifestText, [Text.UTF8Encoding]::new($false))
@@ -565,7 +582,8 @@ try {
         if ($packageResult.ExitCode -ne 0) {
             throw "clean fixture packaging failed: $($packageResult.Output)"
         }
-        $packagePath = Join-Path $packageOutput "cn-mon_$($release.package_version)_x64.msix"
+        $fixtureRelease = Get-Content -LiteralPath (Join-Path $goodFixture 'packaging/windows/release.json') -Raw | ConvertFrom-Json
+        $packagePath = Join-Path $packageOutput "cn-mon_$($fixtureRelease.package_version)_x64.msix"
         $receiptPath = Join-Path $packageOutput 'msix-receipt.json'
         if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf) -or -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
             throw 'successful packaging did not create both package and receipt'
@@ -574,7 +592,7 @@ try {
         $actualPackageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
         $expectedSidecarHash = (Get-FileHash -LiteralPath (Join-Path $goodFixture 'packaging/windows/cn-mon.exe.manifest') -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($receipt.purpose -cne 'test-fixture' -or $receipt.package_sha256 -cne $actualPackageHash -or
-            $receipt.binary_sha256 -cne $expectedBinaryHash -or @($receipt.files.PSObject.Properties).Count -ne 10 -or
+            $receipt.binary_sha256 -cne $expectedBinaryHash -or $receipt.package_version -cne $fixtureRelease.package_version -or @($receipt.files.PSObject.Properties).Count -ne 10 -or
             $receipt.files.'cn-mon.exe.manifest' -cne $expectedSidecarHash) {
             throw 'package receipt does not match the verified test fixture artifact'
         }

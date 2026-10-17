@@ -150,11 +150,12 @@ STORE_ENV = {
 }
 
 
-def store_fixture(pending=False, statuses=None, fail_at=None, change_published_after_first=False):
+def store_fixture(pending=False, statuses=None, fail_at=None, change_published_after_first=False,
+                  pricing=None, clone_pricing=None):
     published = {
         "id": "published-id", "status": "Published", "targetPublishMode": "Manual",
         "applicationPackages": [{"fileName": "cn-mon_1.3.2.0_x64.msix", "fileStatus": "Uploaded", "version": "1.3.2.0", "architecture": "X64"}],
-        "notesForCertification": "owner notes", "pricing": {"base": "Free"}, "listings": {"en-us": {"title": "kept"}},
+        "notesForCertification": "owner notes", "pricing": copy.deepcopy(pricing if pricing is not None else {"priceId": "Free", "futurePricingField": {"keep": True}}), "listings": {"en-us": {"title": "kept"}},
         "packageDeliveryOptions": {"unknown": True}, "unknownFutureField": {"nested": [1, 2]},
     }
     app = {"packageIdentityName": STORE_ENV["CNMON_MSIX_IDENTITY_NAME"],
@@ -192,6 +193,8 @@ def store_fixture(pending=False, statuses=None, fail_at=None, change_published_a
                     clone = copy.deepcopy(published)
                     if fail_at == "newer_clone":
                         clone["applicationPackages"][0]["version"] = "1.3.4.0"
+                    if clone_pricing is not None:
+                        clone["pricing"] = copy.deepcopy(clone_pricing)
                     clone.update({"id": "new-id", "status": "PendingCommit", "fileUploadUrl": "https://upload.blob.core.windows.net/container?sig=private"})
                     return 201, json.dumps(clone).encode(), {}
                 if method == "PUT" and path.endswith("/submissions/new-id"):
@@ -487,6 +490,70 @@ class StoreTransactionTests(unittest.TestCase):
                   (".blob.core.windows.net" in url and method == "PUT")]
         self.assertEqual(len(writes), 1)
         self.assertTrue(writes[0][0] == "POST" and writes[0][1].endswith("/submissions"))
+
+    def test_unsupported_published_pricing_stops_before_store_writes(self):
+        invalid = ({"priceId": "Base"}, {"priceId": " Base "}, {}, {"priceId": None}, {"priceId": ""})
+        for pricing in invalid:
+            with self.subTest(pricing=pricing):
+                github, _, _ = github_fixture()
+                release = self.runtime_release(github)
+                transport, published = store_fixture(pricing=pricing)
+                state = self.state(release, published)
+                with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", STORE_ENV):
+                    package, receipt = make_candidate(tmpdir, release)
+                    with self.assertRaises(store_update.ControllerError) as raised:
+                        store_update.submit(release, state, package, receipt, "d" * 40,
+                                            transport=transport, github_client=github, poll_seconds=0)
+                self.assertEqual(raised.exception.code, "unsupported_pricing")
+                self.assertFalse(any(url.startswith(store_update.STORE) and method in ("POST", "PUT", "DELETE")
+                                     for method, url, _, _ in transport.calls))
+
+    def test_supported_pricing_is_preserved_without_changes(self):
+        for price_id in ("Free", "Tier", "CustomTier"):
+            with self.subTest(price_id=price_id):
+                pricing = {"priceId": price_id, "futurePricingField": {"keep": [1, "value"]}}
+                github, _, _ = github_fixture()
+                release = self.runtime_release(github)
+                transport, published = store_fixture(pricing=pricing)
+                state = self.state(release, published)
+                with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", STORE_ENV):
+                    package, receipt = make_candidate(tmpdir, release)
+                    store_update.submit(release, state, package, receipt, "d" * 40,
+                                        transport=transport, github_client=github, poll_seconds=0)
+                self.assertEqual(transport.updated["pricing"], pricing)
+
+    def test_prepare_rejects_invalid_pricing_before_package_allocation(self):
+        for pricing in ("missing", None, {}, {"priceId": "  "}, {"priceId": "bAsE"}):
+            with self.subTest(pricing=pricing):
+                github, _, _ = github_fixture()
+                release = store_update.resolve_release("v0.4.0", github)
+                transport, published = store_fixture()
+                if pricing == "missing":
+                    published.pop("pricing")
+                else:
+                    published["pricing"] = pricing
+                with patch.dict("os.environ", STORE_ENV):
+                    with self.assertRaises(store_update.ControllerError) as raised:
+                        store_update._preflight(release, "d" * 40, transport=transport)
+                self.assertEqual(raised.exception.code, "unsupported_pricing")
+                self.assertFalse(any(url.startswith(store_update.STORE) and method in ("POST", "PUT", "DELETE")
+                                     for method, url, _, _ in transport.calls))
+
+    def test_unsupported_pricing_on_created_clone_stops_before_replacement(self):
+        github, _, _ = github_fixture()
+        release = self.runtime_release(github)
+        transport, published = store_fixture(clone_pricing={"priceId": " Base "})
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", STORE_ENV):
+            package, receipt = make_candidate(tmpdir, release)
+            with self.assertRaises(store_update.ControllerError) as raised:
+                store_update.submit(release, self.state(release, published), package, receipt, "d" * 40,
+                                    transport=transport, github_client=github, poll_seconds=0)
+        self.assertEqual(raised.exception.code, "unsupported_pricing")
+        writes = [(method, url) for method, url, _, _ in transport.calls
+                  if (url.startswith(store_update.STORE) and method in ("POST", "PUT", "DELETE")) or
+                  (".blob.core.windows.net" in url and method == "PUT")]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][0], "POST")
 
     def test_already_published_submit_is_idempotent_and_has_zero_writes(self):
         github, _, _ = github_fixture()

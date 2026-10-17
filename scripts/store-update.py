@@ -47,7 +47,7 @@ class ControllerError(Exception):
     """Safe fixed-message controller failure."""
 
     def __init__(self, code="failed"):
-        self.code = code if code in {"failed", "missing_credentials", "pending_submission", "no_published_baseline", "published_state_changed"} else "failed"
+        self.code = code if code in {"failed", "missing_credentials", "pending_submission", "no_published_baseline", "published_state_changed", "unsupported_pricing"} else "failed"
         super().__init__(self.code)
 
 
@@ -456,6 +456,14 @@ def _validate_published_packages(published):
     return packages
 
 
+def _validate_pricing(submission):
+    pricing = submission.get("pricing") if isinstance(submission, dict) else None
+    price_id = pricing.get("priceId") if isinstance(pricing, dict) else None
+    if not isinstance(price_id, str) or not price_id.strip() or price_id.strip().casefold() == "base":
+        fail("unsupported_pricing")
+    return pricing
+
+
 def _read_preflight(client, release):
     app = client.app()
     _check_app_identity(app, client.c)
@@ -465,6 +473,7 @@ def _read_preflight(client, release):
     published = client.get("/submissions/" + urllib.parse.quote(published_id, safe=""))
     if published.get("status") != "Published":
         fail("no_published_baseline")
+    _validate_pricing(published)
     _validate_published_packages(published)
     notes = published.get("notesForCertification", "")
     if not isinstance(notes, str):
@@ -527,6 +536,7 @@ def _preflight(release, source_sha, *, transport=request):
     published = client.get("/submissions/" + urllib.parse.quote(published_id, safe=""))
     if published.get("status") != "Published":
         fail("no_published_baseline")
+    _validate_pricing(published)
     packages = _validate_published_packages(published)
     latest = [package["version"] for package in packages]
     notes = published.get("notesForCertification", "")
@@ -704,6 +714,7 @@ def submit(release, state, package_path, receipt_path, source_sha, *, transport=
     clone_packages = _validate_published_packages(cloned)
     if next_package_version([p["version"] for p in clone_packages]) != release["package_version"]:
         fail("published_state_changed")
+    _validate_pricing(cloned)
     updated = prepare_submission(cloned, release)
     client.write("PUT", "/submissions/" + urllib.parse.quote(str(submission_id), safe=""), updated)
     # SAS URLs are used only for this request; never attach the Store bearer.

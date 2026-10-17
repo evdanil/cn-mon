@@ -86,3 +86,27 @@ jobs:
           pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode Build -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
           pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode Hosted -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
           pwsh -NoProfile -File scripts/msix-ci.ps1 -Mode Certify -ReleaseMetadataPath $env:CNMON_RELEASE_METADATA_PATH
+      - name: Print allowlisted synthetic package diagnostics
+        if: failure()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = @{
+            CNMON_MSIX_IDENTITY_NAME = 'Example.CnMon'
+            CNMON_MSIX_IDENTITY_PUBLISHER = 'CN=Example, O=Example'
+            CNMON_MSIX_PUBLISHER_DISPLAY_NAME = 'Example Publisher'
+            CNMON_MSIX_EXPECTED_PFN = 'Example.CnMon_518g7wxbxvqf6'
+          }
+          foreach ($name in $expected.Keys) {
+            if ([Environment]::GetEnvironmentVariable($name) -cne $expected[$name]) {
+              throw 'synthetic package diagnostic identity guard failed'
+            }
+          }
+          $jobDirectory = Join-Path $env:RUNNER_TEMP 'cn-mon-msix-job'
+          foreach ($name in @('package-tests.log', 'package-build.log')) {
+            $path = Join-Path $jobDirectory $name
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+              Write-Output "--- synthetic $name ---"
+              Get-Content -LiteralPath $path | ForEach-Object { Write-Output ("LOG " + [string]$_) }
+            }
+          }
