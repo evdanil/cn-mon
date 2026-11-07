@@ -37,6 +37,12 @@ selector = extract_run('      - id: select\n')
 assembler = extract_run('      - name: Verify both native receipts and assemble the exact three assets\n')
 publish_check = extract_run('      - name: Revalidate receipts and asset bytes\n')
 
+# The tag, release-create and remote-asset steps run only during publication, so
+# no offline fixture executes them: guard their literals as text instead.
+assert '0.3.0' not in WORKFLOW, 'release.yml still names the obsolete 0.3.0 release'
+assert set(re.findall(r'cn-mon_(\d+\.\d+\.\d+)_', WORKFLOW)) == {'0.4.0'}, 'release.yml names archives of another version'
+print('release workflow names no obsolete version or archive: pass')
+
 with tempfile.TemporaryDirectory(prefix='cnmon-workflow-') as temp:
     base = Path(temp)
     bare, seed, clone = base / 'origin.git', base / 'seed', base / 'clone'

@@ -54,7 +54,25 @@ class StoreUpdateWorkflowTests(unittest.TestCase):
         self.assertIn('actions: write', publish)
         self.assertIn('Dispatch Store update after verified publication', publish)
         self.assertIn('gh workflow run store-update.yml', publish)
+        self.assertIn('--repo "$GITHUB_REPOSITORY"', publish)
         self.assertIn('--ref main', publish)
+
+    def test_gh_steps_without_a_checkout_name_their_repository(self):
+        # A job with no checkout has no git remote for gh to infer the
+        # repository from, so a step that runs gh must set GH_REPO.
+        workflow = (ROOT / '.github/workflows/release.yml').read_text(encoding='utf-8')
+        jobs = re.split(r'(?m)^  ([A-Za-z0-9_-]+):\n', workflow.split('\njobs:\n', 1)[1])
+        checked = 0
+        for name, body in zip(jobs[1::2], jobs[2::2]):
+            if 'actions/checkout' in body:
+                continue
+            for step in re.split(r'(?m)^      - ', body)[1:]:
+                if not re.search(r'(?m)^\s*(?:\w+=\$\()?gh (?:api|release|workflow|run)\b|\$\(gh ', step):
+                    continue
+                checked += 1
+                self.assertIn('GH_REPO: ${{ github.repository }}', step,
+                              f'{name}: gh step has no GH_REPO: {step.splitlines()[0]}')
+        self.assertGreaterEqual(checked, 2)
 
     def test_only_reviewed_action_sha_pins_are_used(self):
         for name in ('store-update.yml', 'store-release-dispatch.yml'):

@@ -375,6 +375,7 @@ jobs:
       - name: Dispatch Store update after verified publication
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: v${{ needs.select-source.outputs.version }}
         run: |
           set -euo pipefail

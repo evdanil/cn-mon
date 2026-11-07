@@ -64,13 +64,13 @@ The Windows package payload includes both `LICENSE` and `THIRD_PARTY_NOTICES.md`
 
 **Proposed privacy policy URL:** https://github.com/evdanil/cn-mon/blob/main/docs/PRIVACY.md
 
-The privacy URL is pending merge and publication of this file at that repository path. Do not enter it as a live link until it resolves to the reviewed policy. No separate product website or support email has been provided.
+The policy is already on `main` at that repository path, so the URL points at the merged policy; the 0.4.0 revision on the release branch becomes the text at that URL when it merges. No separate product website or support email has been provided.
 
 **What's new in this version (copy-ready for the 0.4.0 package):**
 
 cn-mon 0.4.0 adds --available, which lists the addresses of a saved target group that never replied, and keeps 180 days of history by default (30 days before).
 
-Enter this text in Partner Center when the submission for the 0.4.0 package is edited; the automation never edits listing content. Microsoft says to leave “What's new in this version” blank for a first Store submission, so leave it blank if Partner Center treats the submission as a first one.
+The automated submission for the 0.4.0 package clones the listing of the last published submission unchanged and publishes immediately, with no pause for editing; the automation never edits listing content. This text, and the “Never-seen address list for a saved target group” feature line above, therefore reach the Store only through a separate listing update that the owner makes in Partner Center after that submission finishes. Microsoft says to leave “What's new in this version” blank for a first Store submission, so leave it blank if Partner Center treats the submission as a first one.
 
 ## Reviewer notes and launch instructions
 

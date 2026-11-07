@@ -51,6 +51,14 @@ func TestReleaseVersionIsStrictly040(t *testing.T) {
 	}
 }
 
+func TestArchiveNamesCarryTheReleaseVersion(t *testing.T) {
+	for name, spec := range targets {
+		if !strings.Contains(spec.archive, "_"+releaseVersion+"_") {
+			t.Errorf("%s archive %q does not carry release version %s", name, spec.archive, releaseVersion)
+		}
+	}
+}
+
 func TestReleaseArchiveRoundTripIsDeterministic(t *testing.T) {
 	root := t.TempDir()
 	writeFixture(t, filepath.Join(root, "README.md"), []byte("See [spec](docs/APPLICATION_SPEC.md#runtime) and [plan](docs/DEVELOPMENT_PLAN.md#release).\nRead [license](LICENSE).\n"))
