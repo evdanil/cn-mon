@@ -564,3 +564,85 @@ func TestAttachedShortOptionValuesMayContainEquals(t *testing.T) {
 		t.Fatalf("short option followed by '=' = %#v, %v; want config value", got, err)
 	}
 }
+
+// The --available parser rules follow usage_problem in cn_tool/modules/ping_monitor.py
+// of cn-tool merge a739948c69ada9bab27d25058c1d695ca06d5aba (PR #178), with
+// cn-mon's option spellings: test_available_refused_with_other_modes,
+// test_available_needs_all_history and
+// test_available_with_a_mode_is_refused_before_since_is_looked_at.
+func TestParseCLIAvailableIsAcceptedWithTargetsAndShow(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		args []string
+		mode commandMode
+	}{
+		{[]string{"--available", "10.0.0.1"}, modeRun},
+		{[]string{"10.0.0.1", "--format", "json", "--available"}, modeRun},
+		{[]string{"--tcp", "443", "--every", "30s", "--for", "5m", "-f", "targets.txt", "--available"}, modeRun},
+		{[]string{"--show", "a1b2", "--available"}, modeShow},
+		{[]string{"--available", "--show", "A1B2", "--format", "csv"}, modeShow},
+	} {
+		got, err := parseCLI(tc.args, start)
+		if err != nil || got.Mode != tc.mode || !got.Available {
+			t.Errorf("parseCLI(%q) = mode %v available %t, %v; want mode %v and --available", tc.args, got.Mode, got.Available, err, tc.mode)
+		}
+	}
+	got, err := parseCLI([]string{"--show", "a1b2"}, start)
+	if err != nil || got.Available {
+		t.Errorf("--available defaulted on: %+v, %v", got, err)
+	}
+}
+
+func TestParseCLIAvailableIsRefusedWithEveryOtherModeAndWithSince(t *testing.T) {
+	start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+	const since = "--available does not go with --since: never seen means the whole history"
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--list", "--available"}, "--available goes with targets or --show, not with --list"},
+		{[]string{"--list-runs", "a1b2", "--available"}, "--available goes with targets or --show, not with --list-runs"},
+		{[]string{"--follow", "a1b2", "--available"}, "--available goes with targets or --show, not with --follow"},
+		{[]string{"--rerun", "a1b2", "--available"}, "--available goes with targets or --show, not with --rerun"},
+		{[]string{"--delete-run", "run-1", "--available"}, "--available goes with targets or --show, not with --delete-run"},
+		{[]string{"--delete-request", "a1b2", "--available"}, "--available goes with targets or --show, not with --delete-request"},
+		{[]string{"--clear-history", "--available"}, "--available goes with targets or --show, not with --clear-history"},
+		// The mode refusal comes before --since is looked at, and before the per-mode checks.
+		{[]string{"--list", "--available", "--since", "24h"}, "--available goes with targets or --show, not with --list"},
+		{[]string{"--rerun", "a1b2", "--available", "--since", "0m"}, "--available goes with targets or --show, not with --rerun"},
+		{[]string{"--available", "--follow", "a1b2", "10.0.0.1"}, "--available goes with targets or --show, not with --follow"},
+		// Never seen means the whole history: any --since, including 0m and an ISO value.
+		{[]string{"10.0.0.1", "--available", "--since", "24h"}, since},
+		{[]string{"10.0.0.1", "--available", "--since", "0m"}, since},
+		{[]string{"10.0.0.1", "--available", "--since", "2026-10-01"}, since},
+		{[]string{"--show", "a1b2", "--available", "--since", "24h"}, since},
+		{[]string{"--show", "a1b2", "--since", "0m", "--available"}, since},
+		{[]string{"--show", "a1b2", "--available", "--since", "2026-10-01T00:00:00Z"}, since},
+		// Existing early checks keep their order: unknown options and mode conflicts come first.
+		{[]string{"--unknown", "--available", "10.0.0.1"}, `unknown option "--unknown"`},
+		{[]string{"--list", "--show", "a1b2", "--available"}, "history modes are mutually exclusive"},
+		{[]string{"--available=true", "10.0.0.1"}, "--available does not take a value"},
+	} {
+		_, err := parseCLI(tc.args, start)
+		if err == nil || err.Error() != tc.want {
+			t.Errorf("parseCLI(%q) error = %v, want %q", tc.args, err, tc.want)
+		}
+	}
+}
+
+func TestParseCLIAvailableDoesNotStopHelpOrVersion(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		mode commandMode
+	}{
+		{[]string{"--available", "--help"}, modeHelp},
+		{[]string{"--help", "--available"}, modeHelp},
+		{[]string{"--list", "--available", "--since", "24h", "--help"}, modeHelp},
+		{[]string{"--available", "--version"}, modeVersion},
+	} {
+		got, err := parseCLI(tc.args, time.Now().UTC())
+		if err != nil || got.Mode != tc.mode {
+			t.Errorf("parseCLI(%q) = mode %v, %v; want mode %v", tc.args, got.Mode, err, tc.mode)
+		}
+	}
+}

@@ -156,7 +156,7 @@ For a closer look at a saved group:
 | `cn-mon --show REQUEST_ID --format md > history.md` | Exports its saved results as Markdown. |
 | `cn-mon --follow REQUEST_ID` | Watches a running request from another terminal on the same computer. Press `q` to stop following. |
 
-By default, history is kept in `.cn-ping-history.db` in your home folder, with 30-day retention. Old history is pruned when a new monitoring run starts. Use `--history-file` to keep a separate history for a project and `--history-days` to change retention:
+By default, history is kept in `.cn-ping-history.db` in your home folder. Retention is 30 days in cn-mon 0.3.0 and 180 days from the upcoming release; a `history_days` value you have configured keeps working, and the longer default keeps more history on disk. Old history is pruned when a new monitoring run starts. Use `--history-file` to keep a separate history for a project and `--history-days` to change retention:
 
 ```sh
 cn-mon --file targets.txt --history-file office-history.db --history-days 90
@@ -164,6 +164,19 @@ cn-mon --list --history-file office-history.db
 ```
 
 Keep history databases on a local disk. `--delete-run RUN_ID` removes one run, `--delete-request REQUEST_ID` removes a target group's history, and `--clear-history` removes all saved results in the selected database. Deletion is immediate, without a confirmation prompt; active runs are protected.
+
+### Find never-seen IPs
+
+To see which addresses of a saved group never answered, add `--available`. Read it from a saved group, or ask for it at the end of a run:
+
+```sh
+cn-mon --show REQUEST_ID --available
+cn-mon 192.168.1.0/24 --every 1h --for 1d --available
+```
+
+The report gains an `unseen` section (a key in JSON, a section in the table, Markdown and CSV) listing every host that never replied in any round the history holds. An `Unseen` host was tested and never answered; a `Not tested` host had no round that could test it, because its probes failed, its name did not resolve, or the group has no rounds yet. A run counts its own rounds, so the list is read after it ends. When a whole subnet never replied, cn-mon says so on stderr: your computer may simply not be able to reach it.
+
+The list is a lead, not proof: a firewalled or sleeping host looks the same as an unused address. Because it covers the whole history, `--available` does not combine with `--since`, and it works with targets or `--show` only. It does not probe or change anything it reads. `--available` arrives in the upcoming release and is not in the 0.3.0 downloads.
 
 ## Settings and help
 

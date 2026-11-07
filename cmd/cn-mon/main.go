@@ -175,6 +175,9 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 			Latest:     []monitor.LatestRow{},
 			Unresolved: []string{},
 		}
+		if opts.Available {
+			outcome.Coverage = &monitor.Coverage{}
+		}
 		closeCommandScreen(runtime.screenState)
 		reportOptions := commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme)
 		err = writeCommandReport(control, stdout, reportOptions, func() error {
@@ -264,6 +267,26 @@ func runCLIWithRuntime(args []string, stdin io.Reader, stdout, stderr io.Writer,
 		logFailure(logger.Log("ERROR", "target probe failed"))
 	}
 	closeCommandScreen(runtime.screenState)
+	if opts.Available {
+		// Read after the run, so its own rounds count. A history failure the
+		// run already reported (or a stop that cancelled the command) is not
+		// read past.
+		if runErr == nil && outcome.HistoryError == nil && hardCtx.Err() == nil {
+			coverage, readErr := monitor.ReadCoverage(hardCtx, cfg.HistoryFile, request.Key, runtime.readDeps)
+			if readErr != nil {
+				outcome.HistoryError = readErr
+				commandNote(runtime.screenState, stderr, "history operation failed: "+readErr.Error())
+				logFailure(logger.Log("ERROR", "history operation failed"))
+				code = monitor.RunExitCode(outcome, invalid)
+			} else if coverage != nil {
+				outcome.Coverage = coverage
+				sayCoverage(deps.Note, coverage)
+			}
+		}
+		if outcome.Coverage == nil {
+			outcome.Coverage = &monitor.Coverage{}
+		}
+	}
 	reportOptions := commandReportOptionsFor(runtime, stdout, opts.Format, cfg.Theme)
 	if err := writeCommandReport(control, stdout, reportOptions, func() error {
 		return output.WriteRun(stdout, request, outcome, rejected, reportOptions)
@@ -322,10 +345,10 @@ func writeCommandDiagnostic(stderr io.Writer, format string, args ...any) {
 
 const usageText = `Usage:
   cn-mon [TARGET ...|-] [-f|--file PATH|-] [--tcp PORTS] [--every INTERVAL] [--for DURATION]
-         [--since WHEN] [--history-file PATH] [--history-days DAYS] [--format table|json|md|csv] [COMMON]
+         [--since WHEN|--available] [--history-file PATH] [--history-days DAYS] [--format table|json|md|csv] [COMMON]
   cn-mon --list [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --list-runs REQUEST_ID [--history-file PATH] [--format FORMAT] [COMMON]
-  cn-mon --show ID [--since WHEN] [--history-file PATH] [--format FORMAT] [COMMON]
+  cn-mon --show ID [--since WHEN|--available] [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --follow ID [--since WHEN] [--history-file PATH] [--format FORMAT] [COMMON]
   cn-mon --rerun REQUEST_ID [--every INTERVAL] [--for DURATION] [--since WHEN]
          [--history-file PATH] [--history-days DAYS] [--format FORMAT] [COMMON]
@@ -349,6 +372,8 @@ Run options:
       --every INTERVAL    Repeat at intervals of at least 10 seconds
       --for DURATION      Stop after a duration of at least 10 seconds
       --since WHEN        Include history since an age or ISO date/time
+      --available         Add an unseen section listing the IPs that never replied in any stored
+                          round; with targets or --show, never with --since
       --history-file PATH Override the history database path
       --history-days DAYS Override history retention for a target run
       --format FORMAT     table, json, csv, or md (default: table)
@@ -357,7 +382,8 @@ Run options:
 History options:
       --list              List stored requests
       --list-runs ID      List runs for a request ID or unique prefix
-      --show ID           Show one request by ID or unique prefix
+      --show ID           Show one request by ID or unique prefix; --available also lists
+                          the IPs that never replied (never with --since)
       --follow ID         Follow a running request in the terminal; q stops following
       --delete-run ID     Delete a run by its exact, case-sensitive run ID
       --delete-request ID Delete one request and all its runs by unique ID prefix

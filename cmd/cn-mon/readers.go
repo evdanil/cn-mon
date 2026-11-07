@@ -192,7 +192,7 @@ func runReaderCLI(
 		logFailure(logger.Log("INFO", "list operation finished"))
 		return finish(ordinary)
 	case modeShow, modeFollow:
-		plan := monitor.ReadPlan{HistoryFile: cfg.HistoryFile, Prefix: opts.ID, Since: opts.Since, Follow: opts.Mode == modeFollow}
+		plan := monitor.ReadPlan{HistoryFile: cfg.HistoryFile, Prefix: opts.ID, Since: opts.Since, Follow: opts.Mode == modeFollow, Available: opts.Available}
 		out, err := monitor.Read(hardCtx, plan, deps)
 		if err != nil {
 			closeCommandScreen(runtime.screenState)
@@ -200,12 +200,21 @@ func runReaderCLI(
 			logFailure(logger.Log("ERROR", "history operation failed"))
 			var empty monitor.ReadOutcome
 			empty.Run = monitor.RunOutcome{Seen: []monitor.HostSummary{}, Latest: []monitor.LatestRow{}, Unresolved: []string{}}
+			if opts.Available {
+				empty.Run.Coverage = &monitor.Coverage{}
+			}
 			code := write(3, writeCommandReport(control, stdout, formatOptions, func() error {
 				return output.WriteHistory(stdout, empty, formatOptions)
 			}))
 			return finish(code)
 		}
 		closeCommandScreen(runtime.screenState)
+		if opts.Available {
+			finishShowCoverage(&out, deps.Note, func(err error) {
+				commandNote(runtime.screenState, stderr, "history operation failed: "+err.Error())
+				logFailure(logger.Log("ERROR", "history operation failed"))
+			})
+		}
 		code := monitor.ReadExitCode(out)
 		if out.Problem != "" {
 			deps.Note(out.Problem)
@@ -220,6 +229,36 @@ func runReaderCLI(
 	default:
 		writeCommandDiagnostic(stderr, "cn-mon: invalid reader mode %d\n", opts.Mode)
 		return finish(3)
+	}
+}
+
+// finishShowCoverage completes the --available part of a show before its
+// report is written. Every report carries the section, so an outcome the read
+// gave none (a Problem) gets the empty one. A failed fold keeps the summary and
+// is said once through failed; the exit status 3 comes from ReadExitCode. A
+// successful fold says its notes.
+func finishShowCoverage(out *monitor.ReadOutcome, note func(string), failed func(error)) {
+	switch {
+	case out.Run.Coverage == nil:
+		out.Run.Coverage = &monitor.Coverage{}
+	case out.Run.HistoryError != nil:
+		failed(out.Run.HistoryError)
+	default:
+		sayCoverage(note, out.Run.Coverage)
+	}
+}
+
+// sayCoverage says what a successful never-seen read found, on stderr through
+// the command's note: each silent subnet in token order, then, when no host is
+// listed, that nothing is never seen. An empty section vanishes in table,
+// Markdown and CSV and must not look like an ignored option. The wording
+// follows _unseen in cn-tool PR #178 (a739948c69ada9bab27d25058c1d695ca06d5aba).
+func sayCoverage(note func(string), coverage *monitor.Coverage) {
+	for _, token := range coverage.SilentSubnets {
+		note("no IP in " + token + " ever replied; this machine may not be able to reach it")
+	}
+	if len(coverage.Unseen()) == 0 {
+		note("no never-seen IPs: every host of this target line replied at least once")
 	}
 }
 

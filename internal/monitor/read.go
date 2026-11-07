@@ -160,7 +160,15 @@ func Read(ctx context.Context, plan ReadPlan, deps ReadDeps) (ReadOutcome, error
 			return nil
 		}
 		result, err = readRequestSnapshot(snapshot, info, history.WindowFilter{Since: plan.Since}, now, deps)
-		return err
+		if err != nil || !plan.Available {
+			return err
+		}
+		// A fold failure keeps the summary; the command reports it and exits 3.
+		if result.outcome.Run.Coverage, err = foldCoverage(snapshot, info); err != nil {
+			result.outcome.Run.Coverage = &Coverage{}
+			result.outcome.Run.HistoryError = err
+		}
+		return nil
 	})
 	closeErr := reader.Close()
 	deferClose = false
@@ -170,8 +178,54 @@ func Read(ctx context.Context, plan ReadPlan, deps ReadDeps) (ReadOutcome, error
 	return result.outcome, nil
 }
 
-// ReadExitCode applies the historical show/follow reachability rules.
+// ReadCoverage folds the whole history of the request key at path in one
+// read-only snapshot. It returns (nil, nil) when the history file or the
+// request is absent.
+func ReadCoverage(ctx context.Context, path, key string, deps ReadDeps) (*Coverage, error) {
+	reader, err := openReader(ctx, path, deps)
+	if err != nil || reader == nil {
+		return nil, err
+	}
+	deferClose := true
+	defer func() {
+		if deferClose {
+			_ = reader.Close()
+		}
+	}()
+	var coverage *Coverage
+	err = reader.View(ctx, func(snapshot *history.Snapshot) error {
+		info, err := snapshot.Request(key)
+		if err != nil || info == nil {
+			return err
+		}
+		coverage, err = foldCoverage(snapshot, info)
+		return err
+	})
+	closeErr := reader.Close()
+	deferClose = false
+	if err != nil || closeErr != nil {
+		return nil, errors.Join(err, closeErr)
+	}
+	return coverage, nil
+}
+
+// foldCoverage streams every round of the request, whatever its run or age,
+// through the whole-history fold. Both the show and the post-run paths use it.
+func foldCoverage(snapshot *history.Snapshot, info *history.RequestInfo) (*Coverage, error) {
+	fold := NewCoverageFold(info.Hosts, SubnetsOf(info.Targets, info.Hosts))
+	if err := snapshot.Observations(info.ID, fold.Add); err != nil {
+		return nil, err
+	}
+	coverage := fold.Coverage()
+	return &coverage, nil
+}
+
+// ReadExitCode applies the historical show/follow reachability rules. A
+// history error, which only the --available fold sets in readers, is 3.
 func ReadExitCode(out ReadOutcome) int {
+	if out.Run.HistoryError != nil {
+		return 3
+	}
 	if !out.Found {
 		return 2
 	}

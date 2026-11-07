@@ -202,7 +202,7 @@ try {
 
     $adminArgs = @(
         '-test.v',
-        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandRerunSavedBatch|NativeCommandHistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ|NoColorQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun|NativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization|NativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|EndedFollowAllFormats))$',
+        '-test.run=^Test(NativeCommandINIHistoryRetention|NativeCommandRerunSavedBatch|NativeCommandAvailable|NativeCommandHistoryManagement(|ReportsCommittedOutputFailure|SelectionSemantics|LockedCancellation|LiveWriterProtection)|NativeCommandWindows(FirstCtrlCStopsAndReports|SecondCtrlCInterruptsFinalization|PreInputCtrlCDoesNoStartupIO|ClosedStdoutPipeIsQuiet|ProbePermissionRole)|NativeCommandWindowsPrivateConsole(Q|UppercaseQ|NoColorQ)RestoresConsole|NativeCommandWindowsPrivateConsoleQLeavesWriterActive|NativeCommandWindowsPrivateConsoleHistoryErrorRestoresConsole|NativeCommandWindowsPrivateConsoleFirstCtrlCRestoresConsole|NativeCommandWindowsPrivateConsoleOutputHandleLossPreservesRun|NativeCommandWindowsPrivateConsoleSecondCtrlCWhileDisplayBlocked|NativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization|NativeRelease(BinaryQualification|ExtractedReportsAllFormats|ProbeWithoutPingPath|InputFileAndStdin|UnreadableInputHasNoStartupEffects|EndedFollowAllFormats))$',
         '-test.count=1',
         '-test.timeout=8m'
     )
@@ -211,6 +211,7 @@ try {
     $elevated = Require-CommandTests 'elevated' $adminArgs 'elevated' $runnerSid @(
         '--- PASS: TestNativeCommandINIHistoryRetention',
         '--- PASS: TestNativeCommandRerunSavedBatch',
+        '--- PASS: TestNativeCommandAvailable',
         '--- PASS: TestNativeCommandHistoryManagement',
         '--- PASS: TestNativeCommandHistoryManagementReportsCommittedOutputFailure',
         '--- PASS: TestNativeCommandHistoryManagementSelectionSemantics',
@@ -232,6 +233,7 @@ try {
         '--- PASS: TestNativeCommandWindowsPrivateConsoleSecondCtrlCRestoresDuringBlockedFinalization',
         'CNMON_NATIVE_COMMAND_CONFIG ini90=retained cli30=pruned-old-seed recent-round-retained history-path=ini log-path=ini',
         'CNMON_NATIVE_COMMAND_RERUN actual-command-seed=list-discovery=pass removed-input=replayed tcp=open overrides=10s,10s json-history=agree source-results=preserved invalid-selection=exit2-no-write',
+        'CNMON_NATIVE_COMMAND_AVAILABLE run=unseen-empty show=rows silent=noted refusal=exit2-no-io',
         'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT formats=json,table,csv,md exact-utf8-id=pass request-prefix=pass delete-cascade=pass clear=pass live-owner=protected dead-local-owner=deletable',
         'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT postcommit-report-error=committed-diagnostic=pass exit=3 closed-pipe=quiet missing-clear=no-create',
         'CNMON_NATIVE_COMMAND_HISTORY_MANAGEMENT selection=zero-run-success ambiguous-prefix=exit2-no-mutation',

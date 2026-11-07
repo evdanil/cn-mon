@@ -37,6 +37,7 @@ type cliOptions struct {
 	For        *time.Duration
 	Since      *time.Time
 	OwnRunOnly bool
+	Available  bool
 	Format     string
 	ID         string
 	Overrides  configOverrides
@@ -205,6 +206,11 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 				return opts, err
 			}
 			opts.Since, opts.OwnRunOnly = &cutoff, ownRunOnly
+		case "--available":
+			if hasInline {
+				return opts, fmt.Errorf("--available does not take a value")
+			}
+			opts.Available = true
 		case "--list":
 			if hasInline {
 				return opts, fmt.Errorf("--list does not take a value")
@@ -269,6 +275,16 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 	if modeConflict {
 		return opts, fmt.Errorf("history modes are mutually exclusive")
 	}
+	// The --available refusals follow usage_problem in cn-tool PR #178 and come
+	// before the per-mode checks, so a mode is named before --since is.
+	if opts.Available {
+		if opts.Mode != modeRun && opts.Mode != modeShow {
+			return opts, fmt.Errorf("--available goes with targets or --show, not with %s", modeOption(opts.Mode))
+		}
+		if opts.Since != nil {
+			return opts, fmt.Errorf("--available does not go with --since: never seen means the whole history")
+		}
+	}
 	if opts.Mode != modeRun {
 		if opts.Mode == modeRerun {
 			if len(opts.Objects) != 0 || opts.File != nil || len(opts.Ports) != 0 {
@@ -315,6 +331,15 @@ func parseCLI(args []string, startUTC time.Time) (cliOptions, error) {
 		return opts, fmt.Errorf("--for must be at least --every")
 	}
 	return opts, nil
+}
+
+// modeOption is the option that selects a non-run mode.
+func modeOption(mode commandMode) string {
+	return map[commandMode]string{
+		modeList: "--list", modeShow: "--show", modeFollow: "--follow", modeRerun: "--rerun",
+		modeListRuns: "--list-runs", modeDeleteRun: "--delete-run", modeDeleteRequest: "--delete-request",
+		modeClearHistory: "--clear-history",
+	}[mode]
 }
 
 func isHistoryManagementMode(mode commandMode) bool {

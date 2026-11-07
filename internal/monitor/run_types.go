@@ -76,6 +76,9 @@ type RunOutcome struct {
 	Unresolved                                 []string
 	ProbeFailed, TCPOpen, TCPRequired, Stopped bool
 	HistoryError                               error
+	// Coverage is the never-seen section of --available: nil means no section.
+	// Run never sets it; the show reader and ReadCoverage supply it.
+	Coverage *Coverage
 }
 
 type runReading struct {

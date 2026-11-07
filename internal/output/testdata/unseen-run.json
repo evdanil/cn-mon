@@ -1,0 +1,44 @@
+{
+  "seen": [],
+  "latest": [],
+  "summary": [],
+  "not_found": [],
+  "unseen": [
+    {
+      "host": "10.0.0.2",
+      "status": "Unseen",
+      "seen_rounds": 0,
+      "rounds": 2880,
+      "failed_rounds": 0,
+      "since": "2026-10-08T22:53:20+00:00",
+      "note": ""
+    },
+    {
+      "host": "10.0.0.3",
+      "status": "Unseen",
+      "seen_rounds": 0,
+      "rounds": 1440,
+      "failed_rounds": 1440,
+      "since": "2026-10-08T22:53:20+00:00",
+      "note": ""
+    },
+    {
+      "host": "10.1.0.1",
+      "status": "Unseen",
+      "seen_rounds": 0,
+      "rounds": 2880,
+      "failed_rounds": 0,
+      "since": "2026-10-08T22:53:20+00:00",
+      "note": "no IP in this subnet ever replied"
+    },
+    {
+      "host": "10.2.0.1",
+      "status": "Not tested",
+      "seen_rounds": 0,
+      "rounds": 0,
+      "failed_rounds": 2880,
+      "since": "2026-10-08T22:53:20+00:00",
+      "note": ""
+    }
+  ]
+}
