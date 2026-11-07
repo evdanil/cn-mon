@@ -592,7 +592,9 @@ function Get-CnMonMsixKnownWackEvaluation {
     $partialRun = $report.GetAttribute('PARTIAL_RUN').Trim().ToUpperInvariant()
     if ($partialRun -notin @('TRUE', 'FALSE')) { $shapeKnown = $false }
     $partial = $partialRun -ceq 'TRUE'
-    if ($report.GetAttribute('VERSION') -cne '10.0.26100.8249') { $shapeKnown = $false }
+    # Explicit, case-sensitive list of AppCert versions whose reports were measured; an unlisted version stays an unknown schema.
+    $measuredWackVersions = @('10.0.26100.8249', '10.0.26100.9457')
+    if ($report.GetAttribute('VERSION') -cnotin $measuredWackVersions) { $shapeKnown = $false }
 
     $expectedTupleRows = @(
         '3:2:TRUE',
