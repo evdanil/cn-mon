@@ -227,12 +227,28 @@ func decodeTCP(text sql.NullString) (map[int]string, error) {
 	return decoded, nil
 }
 
+// validateObservations requires exactly one byte of the observation alphabet
+// `!RTU.E?` per host.
+func validateObservations(observations string, hostCount int) error {
+	if len(observations) != hostCount {
+		return fmt.Errorf("observation length %d does not match host count %d", len(observations), hostCount)
+	}
+	for i := 0; i < len(observations); i++ {
+		switch observations[i] {
+		case '!', 'R', 'T', 'U', '.', 'E', '?':
+		default:
+			return fmt.Errorf("invalid observation byte %q at position %d", observations[i], i)
+		}
+	}
+	return nil
+}
+
 func validateRound(hosts []string, round RoundInput) error {
 	if _, err := epochSeconds(round.Started); err != nil {
 		return fmt.Errorf("invalid round start: %w", err)
 	}
-	if len(round.Observations) != len(hosts) {
-		return fmt.Errorf("observation length %d does not match host count %d", len(round.Observations), len(hosts))
+	if err := validateObservations(round.Observations, len(hosts)); err != nil {
+		return err
 	}
 	positions := make(map[string]int, len(hosts))
 	for i, host := range hosts {
@@ -245,12 +261,6 @@ func validateRound(hosts []string, round RoundInput) error {
 		positions[host] = i
 	}
 	seen := make(map[string]bool, len(round.Rows))
-	for i := 0; i < len(round.Observations); i++ {
-		observation := round.Observations[i]
-		if !strings.ContainsRune("!RTU.E?", rune(observation)) {
-			return fmt.Errorf("invalid observation byte %q at position %d", observation, i)
-		}
-	}
 	for _, row := range round.Rows {
 		position, ok := positions[row.Host]
 		if !ok {

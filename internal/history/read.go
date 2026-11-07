@@ -609,17 +609,12 @@ func (s *Snapshot) Rounds(requestID int64, filter RoundFilter) (RoundPage, error
 	if err != nil {
 		return RoundPage{}, err
 	}
-	var key, targetsJSON, portsJSON, hostsJSON string
-	err = s.conn.QueryRowContext(s.ctx, `SELECT key, targets, tcp_ports, hosts FROM request WHERE id=?`, requestID).Scan(&key, &targetsJSON, &portsJSON, &hostsJSON)
-	if errors.Is(err, sql.ErrNoRows) {
+	request, found, err := s.storedRequest(requestID)
+	if err != nil {
+		return RoundPage{}, err
+	}
+	if !found {
 		return RoundPage{Items: []StoredRound{}}, nil
-	}
-	if err != nil {
-		return RoundPage{}, s.normalize(err)
-	}
-	request, err := decodeRequest(requestID, key, targetsJSON, portsJSON, hostsJSON)
-	if err != nil {
-		return RoundPage{}, fmt.Errorf("stored request is invalid: %w", err)
 	}
 	hosts := request.Hosts
 	effective := roundPageLimit(limit, len(hosts))
@@ -679,6 +674,24 @@ WHERE r.request_id=? AND rd.id<=? AND rd.id>? AND (? IS NULL OR rd.started>=?) A
 		page.Next = &RoundCursor{started: last.started, id: last.id}
 	}
 	return page, nil
+}
+
+// storedRequest reads and validates one request row; found is false for an
+// unknown ID.
+func (s *Snapshot) storedRequest(requestID int64) (request Request, found bool, err error) {
+	var key, targetsJSON, portsJSON, hostsJSON string
+	err = s.conn.QueryRowContext(s.ctx, `SELECT key, targets, tcp_ports, hosts FROM request WHERE id=?`, requestID).Scan(&key, &targetsJSON, &portsJSON, &hostsJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Request{}, false, nil
+	}
+	if err != nil {
+		return Request{}, false, s.normalize(err)
+	}
+	request, err = decodeRequest(requestID, key, targetsJSON, portsJSON, hostsJSON)
+	if err != nil {
+		return Request{}, false, fmt.Errorf("stored request is invalid: %w", err)
+	}
+	return request, true, nil
 }
 
 func roundPageLimit(limit, hostCount int) int {
@@ -757,6 +770,54 @@ func (s *Snapshot) readRoundDetails(item roundHeader, hosts []string) (StoredRou
 		return StoredRound{}, fmt.Errorf("invalid stored round: %w", err)
 	}
 	return StoredRound{RoundInput: input, ID: item.id, RunID: item.runID, Interval: interval, Answered: item.answered, Cursor: RoundCursor{started: item.started, id: item.id}}, nil
+}
+
+// Observations streams the start and observation string of every round of
+// requestID at or below the snapshot's round high-water mark, across all of
+// its runs, in no particular order and without a page. It adapts
+// PingStore.round_observations from cn-tool merge
+// a739948c69ada9bab27d25058c1d695ca06d5aba (PR #178, Apache-2.0); the context
+// replaces that method's stop callback. Only the current row is in memory, so
+// a long history of a large request streams instead of loading. It ends with
+// fn's error, the snapshot context's error, or a history error for a
+// malformed row; an unknown request calls nothing.
+func (s *Snapshot) Observations(requestID int64, fn func(started time.Time, observations string) error) error {
+	if err := s.checkActive(); err != nil {
+		return err
+	}
+	request, found, err := s.storedRequest(requestID)
+	if err != nil || !found {
+		return err
+	}
+	rows, err := s.queryRows(`SELECT rd.started, rd.observations FROM round rd JOIN run r ON r.id=rd.run_id
+WHERE r.request_id=? AND rd.id<=?`, requestID, s.through)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var seconds float64
+		var observations string
+		if err := rows.Scan(&seconds, &observations); err != nil {
+			return s.failRows(rows, s.normalize(err))
+		}
+		started, err := timeFromEpoch(seconds)
+		if err != nil {
+			return s.failRows(rows, fmt.Errorf("invalid stored round time: %w", err))
+		}
+		if err := validateObservations(observations, len(request.Hosts)); err != nil {
+			return s.failRows(rows, fmt.Errorf("invalid stored round: %w", err))
+		}
+		if err := s.ctx.Err(); err != nil {
+			return s.failRows(rows, err)
+		}
+		if err := fn(started, observations); err != nil {
+			return s.failRows(rows, err)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return s.failRows(rows, s.normalize(err))
+	}
+	return s.closeRows(rows)
 }
 
 func roundSeenHosts(observations string, hosts []string) (map[string]struct{}, error) {
