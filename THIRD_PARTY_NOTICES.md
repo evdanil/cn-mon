@@ -55,6 +55,13 @@ That source is licensed under Apache-2.0. cn-mon is a native Go
 reimplementation; no Python implementation code or Python runtime is included.
 The root [LICENSE](LICENSE) contains the Apache-2.0 text.
 
+The never-seen IP list (`--available`) and the 180-day retention default adapt
+the fold, report section and note wording of
+[`cn-tool` merge `a739948c69ada9bab27d25058c1d695ca06d5aba`](https://github.com/evdanil/cn-tool/commit/a739948c69ada9bab27d25058c1d695ca06d5aba)
+(PR #178; `cn_tool/utils/ping_coverage.py`, the `--available` paths of
+`ping_monitor.py` and `DEFAULT_PING_HISTORY_DAYS`). That source is also
+Apache-2.0; the Go code is a reimplementation and no Python code is included.
+
 ## Go module dependency inventory
 
 The root `go.mod` selects the application dependencies and Go resolves the
