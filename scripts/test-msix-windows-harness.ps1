@@ -1593,6 +1593,40 @@ exit 0
         Assert-Equal (Get-CnMonMsixWackStatus $report 0 'Example.CnMon' '1.3.0.0') 'incomplete' 'oversized WACK report was accepted for qualification'
     }
 
+    Invoke-Check 'measured WACK evaluator accepts only the exact listed hosted-image versions' {
+        $report = Join-Path $tempRoot 'wack-measured-version-constructed.xml'
+        function Get-WackVersionEvaluation {
+            param([string]$ReportVersion, [string]$ResultKey, [string]$ResultValue = 'PASS')
+            [IO.File]::WriteAllText($report, (New-KnownWackFixtureXml -ReportVersion $ReportVersion -ResultKey $ResultKey -ResultValue $ResultValue), [Text.UTF8Encoding]::new($false))
+            return Get-CnMonMsixKnownWackEvaluation $report 0 'Example.CnMon' '1.3.0.0'
+        }
+
+        foreach ($listedVersion in @('10.0.26100.8249', '10.0.26100.9457')) {
+            $listed = Get-WackVersionEvaluation $listedVersion
+            Assert-True $listed.schema_known "listed WACK version $listedVersion was treated as an unknown schema"
+            Assert-Equal $listed.status 'pass' "complete all-pass report at listed WACK version $listedVersion was not accepted"
+        }
+
+        $failing = Get-WackVersionEvaluation '10.0.26100.9457' '12:31' 'FAIL'
+        Assert-True $failing.schema_known 'failing report at a listed WACK version was treated as an unknown schema'
+        Assert-Equal $failing.status 'fail' 'explicit test failure at a listed WACK version was not preserved'
+
+        # Between the listed versions, above them, shorter and longer neighbours of a listed version, leading and trailing padding and an empty value must all stay unknown.
+        foreach ($unlistedVersion in @('10.0.26100.9000', '10.0.26100.9999', '10.0.26100.94570', '10.0.26100.945', ' 10.0.26100.9457', '10.0.26100.9457 ', '')) {
+            $unlisted = Get-WackVersionEvaluation $unlistedVersion
+            Assert-True (-not $unlisted.schema_known) "unlisted WACK version '$unlistedVersion' was treated as a known schema"
+            Assert-Equal $unlisted.status 'incomplete' "complete all-pass report at unlisted WACK version '$unlistedVersion' was not left incomplete"
+        }
+
+        # An absent VERSION attribute is different from an empty one and must also stay unknown.
+        $absentXml = (New-KnownWackFixtureXml) -creplace ' VERSION="[^"]*"', ''
+        Assert-True (-not $absentXml.Contains(' VERSION="')) 'fixture still carries a root VERSION attribute'
+        [IO.File]::WriteAllText($report, $absentXml, [Text.UTF8Encoding]::new($false))
+        $absent = Get-CnMonMsixKnownWackEvaluation $report 0 'Example.CnMon' '1.3.0.0'
+        Assert-True (-not $absent.schema_known) 'report without a VERSION attribute was treated as a known schema'
+        Assert-Equal $absent.status 'incomplete' 'complete all-pass report without a VERSION attribute was not left incomplete'
+    }
+
     Invoke-Check 'Certify reads a valid WACK gate before applying pass-only acceptance' {
         $gateNames = @('identity', 'package_hash', 'signature', 'account', 'package_registration', 'exact_identity', 'installed_binary_hash', 'alias_identity', 'native_cli', 'icmp', 'history_config', 'shell_aliases', 'upgrade', 'repair', 'uninstall_reinstall', 'conflicts', 'fail_injection', 'cleanup', 'wack')
         $allowedGateStatuses = @('pass', 'fail', 'incomplete')
