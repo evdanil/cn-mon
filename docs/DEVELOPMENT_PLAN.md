@@ -4,7 +4,7 @@ M0–M11 are complete through [PR #20](https://github.com/evdanil/gotest/pull/20
 
 Version 0.3.0 delivers M10 saved-batch rerun alongside the existing monitor, history management and display refinements, retaining all 31 acceptance mappings. No stripping or production behavior change was part of M11. Published 0.1.0 and 0.2.0 source, tags and assets remain unchanged; this later documentation update also leaves the exact 0.3.0 source snapshot and assets unchanged.
 
-M13 (below) is implemented in source, with its native command jobs, independent review and merge pending: `--available` lists the never-seen IPs of a request from its whole history, and the `[ping] history_days` fallback becomes 180 days. It publishes no release; a release would trigger the live Store submission, so its documentation describes both as arriving in the upcoming release.
+M13 (below) is merged in [PR #26](https://github.com/evdanil/cn-mon/pull/26): `--available` lists the never-seen IPs of a request from its whole history, and the `[ping] history_days` fallback becomes 180 days. It publishes no release; a release would trigger the live Store submission, so its documentation describes both as arriving in the upcoming release.
 
 ## Working rules for every milestone
 
@@ -35,7 +35,7 @@ M0 specification/license boundary
                                      └─ M10 saved-batch rerun implementation
                                          └─ M11 strict 0.3.0 qualification and delivery
                                              └─ M12 Windows MSIX package correction (fresh qualification pending)
-                                                 └─ M13 never-seen IPs (--available) and 180-day retention (implemented; native CI pending)
+                                                 └─ M13 never-seen IPs (--available) and 180-day retention (merged; unreleased)
 ```
 
 M0–M11 are merged; versions 0.1.0, 0.2.0 and 0.3.0 passed exact merged-source qualification and publication at M6, M9 and M11 respectively. An acceptance ID referenced before its full integration milestone covers only the named component portion, not the entire scenario. Explicit-JSON target commands passed the M4 gate; reader commands, human formats and terminal integration passed M5, and the original release-binary matrix belongs to M6. M7 adds reviewed history management and M8 adds validated display refinements; M9 delivers both in qualified version 0.2.0. M10 implements rerun; M11 separately qualifies and delivers it in 0.3.0. Keep these component/integration boundaries when preparing dependent milestone PRs.
@@ -389,7 +389,7 @@ The Partner Center identity inputs are protected GitHub environment secrets defi
 
 The [implementation plan](MSIX_PACKAGING_PLAN.md) incorporates the current privacy design: template-only public manifest, synthetic PR identities, trusted manual real-identity builds, sanitized logs and no upload of identity-bearing artifacts. Windows 10 1809 is the declared manifest floor, with SDK 10.0.26100.0 on a disposable hosted Windows runner. Frozen synthetic run `38866515555` and protected real-identity run `38866546789` each report 17 passed, 0 failed and 2 incomplete gates; the strict WACK parser accepts all 24 tests, including DPI awareness. The actual visible-desktop run completed standard-user alias OFF/ON checks, Repair with data preserved, all five screenshots and cleanup before signer expiry. LocalAudit and the hosted MSIX workflow report 19/19 PASS. Runtime PerMonitorV2 behavior is unmeasured; test-signer trust cleanup is complete. Store certification has not been submitted; the earlier upload attempt was rejected during package validation. See the plan for centralized historical run evidence.
 
-### M13 — never-seen IPs (`--available`) and 180-day retention (implemented; native CI pending)
+### M13 — never-seen IPs (`--available`) and 180-day retention (merged; unreleased)
 
 The base is current `main` after M12's documentation head. Application sections 2, 7–9, 10.10 and 11 define the contract: the owner-approved cn-tool design ([`docs/plans/2026-11-06-show-available-design.md`](https://github.com/evdanil/cn-tool/blob/a739948c69ada9bab27d25058c1d695ca06d5aba/docs/plans/2026-11-06-show-available-design.md), its "Monitor" and "Retention" sections) merged as cn-tool `a739948c69ada9bab27d25058c1d695ca06d5aba` (PR #178). In scope: `--available` on target runs and `--show`, the `unseen` section in all four formats, the whole-history fold, silent-subnet notes, the stderr notes, the refusals, and the 180-day fallback that the owner confirmed. Out of scope: cn-tool's Subnet/Infoblox side, the web UI with its paging and download, the interactive menu, XLSX, a release or version bump, any dependency or schema change. The five acceptance rows **CFG-03, DB-05, HIS-04, OUT-03, CLI-04** join the existing 31; their cn-tool test mapping in application section 11 is the acceptance checklist. This milestone runs in Claude Code under the owner's role mapping: Fable at xhigh (the Astra role) owns the specification/plan, Sonnet at xhigh (the Luna role) implements, Opus at medium (the Sol role) reviews independently, and root owns Git/PR/external review/merge. The packages below are exclusive by file and run in dependency order; one agent may take consecutive packages, but no two agents edit the same file.
 
@@ -428,6 +428,10 @@ No other document, script or workflow asserts the 30-day text: `scripts/test-msi
 
 What M13 leaves unverified: the 406 MB /16 fold is measured only as a synthetic bounded-memory observation and on hosted runners, not on an operator's 180-day database; Windows runtime behavior rests on the hosted `native-command-windows` job alone; the Python/Go interoperability jobs prove schema compatibility but not that cn-tool and cn-mon agree on a never-seen list for the same file, which is a reviewable follow-up if the owner wants it; the feature and the default are in no published archive until a later release milestone qualifies one.
 
+M13 merged in [PR #26](https://github.com/evdanil/cn-mon/pull/26) as `6c2d1f8da3e2a4c30972454b0bc3d1df328ead4a` at `2026-11-07T07:30:57Z`. All 24 applicable checks passed at reviewed head `c1c9bb03de382f2f2bf05ed531e6a1b862ef0f3a`, with three intentional skips (`native-source`, `publish` and `trusted-manual`): [PR source run 42350992256](https://github.com/evdanil/cn-mon/actions/runs/42350992256), [candidate archive run 42350992227](https://github.com/evdanil/cn-mon/actions/runs/42350992227), [MSIX run 42350992184](https://github.com/evdanil/cn-mon/actions/runs/42350992184) and [Store update checks run 42350992417](https://github.com/evdanil/cn-mon/actions/runs/42350992417). `TestNativeCommandAvailable` passed with its marker in [native Linux command job 128338883618](https://github.com/evdanil/cn-mon/actions/runs/42350992256/job/128338883618) and [native Windows command job 128338883635](https://github.com/evdanil/cn-mon/actions/runs/42350992256/job/128338883635). Independent Opus review approved after its findings were fixed, and external Codex review completed without findings on that head.
+
+The first CI run showed the MSIX `wack` gate failing on every new run, independently of M13, because the hosted image moved to AppCert `10.0.26100.9457` while the evaluator pinned `10.0.26100.8249`. [PR #27](https://github.com/evdanil/cn-mon/pull/27) (`eebbea1`) added the measured version before M13 merged; the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md) describes the list.
+
 ## Native validation responsibilities
 
 | Layer / first integrated milestone | Routine CI | Explicit native/controlled evidence |
@@ -440,7 +444,7 @@ What M13 leaves unverified: the 406 MB /16 fold is measured only as a synthetic 
 | History management (M7) | CLI-03/HIS-03/DB-04 parser/report and real-SQLite transaction/guard/failure coverage | Actual management commands and alive/dead process protection on Linux and Windows; existing native suites remain required |
 | Display refinements (M8) | TTY-02 exact row-emission/layout/state tests with unchanged structured reports | Linux PTY bytes and Windows actual screen readback, controls/resize and restoration; no cross-compilation substitute |
 | Saved-batch rerun (M10) | RUN-04 parser/restore/schedule/startup and real-SQLite concurrency tests through the shared runner | Actual saved-batch command on Linux and Windows, with bounded overrides, pre-start failure and retained permission/control evidence; M11 passed extracted proof for the published 0.3.0 bytes |
-| Never-seen IPs and retention (M13; native jobs pending) | CFG-03/DB-05/HIS-04/OUT-03/CLI-04 settings, streaming, fold, report and command fixtures on both OSes | `TestNativeCommandAvailable` in both native command jobs; existing retention, permission and control gates unchanged |
+| Never-seen IPs and retention (M13) | CFG-03/DB-05/HIS-04/OUT-03/CLI-04 settings, streaming, fold, report and command fixtures on both OSes | `TestNativeCommandAvailable` in both native command jobs; existing retention, permission and control gates unchanged |
 
 Deterministic suites need no external service or ICMP privilege. Native jobs explicitly declare the privileges and network topology they require and are isolated from the user's network. Network/privilege restrictions in the current cloud environment may prevent some native checks; those restrictions are evidence limits, not permission to infer a pass.
 
@@ -537,4 +541,4 @@ Progress checklist:
 - [x] Exact M11 merged-source qualification and authorized [0.3.0 publication](https://github.com/evdanil/gotest/releases/tag/v0.3.0)
 - [x] M12 MSIX package construction and native payload verification (`2d64c4c`; private unsigned candidate generated)
 - [ ] M12 merge the reviewed milestone PR after checks pass on the updated documentation head; qualification, LocalAudit/replayed ReviewedRecord and hosted MSIX workflow pass 19/19, actual visible-desktop checks/five screenshots are complete, and test-signer trust cleanup is verified complete
-- [ ] M13 never-seen IPs (`--available`) and 180-day retention: packages 1–5 implemented red/green; pending: both native command jobs with the new marker, Sol review, `@codex review`, merge; no release
+- [x] M13 never-seen IPs (`--available`) and 180-day retention merged ([PR #26](https://github.com/evdanil/cn-mon/pull/26), `6c2d1f8da3e2a4c30972454b0bc3d1df328ead4a`); both native command jobs passed with the new marker; not released
