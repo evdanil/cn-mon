@@ -13,33 +13,35 @@ Runs on **Windows and Linux, x86-64**. The downloads are ready to run: no Go, Py
 
 ## Download and install
 
-Get [cn-mon 0.3.0](https://github.com/evdanil/cn-mon/releases/tag/v0.3.0):
+The currently published release is [cn-mon 0.3.0](https://github.com/evdanil/cn-mon/releases/tag/v0.3.0); cn-mon 0.4.0 is being prepared from this source and is not yet published, so the 0.4.0 downloads and commands below work once it is.
+
+Get [cn-mon 0.4.0](https://github.com/evdanil/cn-mon/releases/tag/v0.4.0):
 
 | Platform | Download |
 | --- | --- |
-| Windows x86-64 | [Windows ZIP](https://github.com/evdanil/cn-mon/releases/download/v0.3.0/cn-mon_0.3.0_windows_amd64.zip) |
-| Linux x86-64 | [Linux archive](https://github.com/evdanil/cn-mon/releases/download/v0.3.0/cn-mon_0.3.0_linux_amd64.tar.gz) |
+| Windows x86-64 | [Windows ZIP](https://github.com/evdanil/cn-mon/releases/download/v0.4.0/cn-mon_0.4.0_windows_amd64.zip) |
+| Linux x86-64 | [Linux archive](https://github.com/evdanil/cn-mon/releases/download/v0.4.0/cn-mon_0.4.0_linux_amd64.tar.gz) |
 
-Download [SHA256SUMS](https://github.com/evdanil/cn-mon/releases/download/v0.3.0/SHA256SUMS) into the same folder as your archive. The commands below check that the download is intact before extracting it.
+Download [SHA256SUMS](https://github.com/evdanil/cn-mon/releases/download/v0.4.0/SHA256SUMS) into the same folder as your archive. The commands below check that the download is intact before extracting it.
 
 ### Windows
 
 Open PowerShell in the folder containing the downloaded files:
 
 ```powershell
-$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.3.0_windows_amd64.zip') })
+$lines = @(Get-Content .\SHA256SUMS | Where-Object { $_.EndsWith('  cn-mon_0.4.0_windows_amd64.zip') })
 if ($lines.Count -ne 1) { throw 'Windows archive checksum is missing or duplicated' }
 $expected = ($lines[0] -split '\s+', 2)[0]
-$actual = (Get-FileHash .\cn-mon_0.3.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$actual = (Get-FileHash .\cn-mon_0.4.0_windows_amd64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actual -cne $expected) { throw 'Windows archive checksum mismatch' }
-Expand-Archive .\cn-mon_0.3.0_windows_amd64.zip .\cn-mon
-.\cn-mon\cn-mon_0.3.0_windows_amd64\cn-mon.exe --version
+Expand-Archive .\cn-mon_0.4.0_windows_amd64.zip .\cn-mon
+.\cn-mon\cn-mon_0.4.0_windows_amd64\cn-mon.exe --version
 ```
 
 Move into the extracted folder and try a first check:
 
 ```powershell
-Set-Location .\cn-mon\cn-mon_0.3.0_windows_amd64
+Set-Location .\cn-mon\cn-mon_0.4.0_windows_amd64
 .\cn-mon.exe example.com
 ```
 
@@ -50,17 +52,17 @@ Start in a normal PowerShell window. If cn-mon reports an ICMP permission error,
 Open a terminal in the folder containing the downloaded files:
 
 ```sh
-line=$(grep -F '  cn-mon_0.3.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
+line=$(grep -F '  cn-mon_0.4.0_linux_amd64.tar.gz' SHA256SUMS) || exit 1
 test "$(printf '%s\n' "$line" | wc -l)" -eq 1 || exit 1
 printf '%s\n' "$line" | sha256sum --check - || exit 1
-tar -xzf cn-mon_0.3.0_linux_amd64.tar.gz
-./cn-mon_0.3.0_linux_amd64/cn-mon --version
+tar -xzf cn-mon_0.4.0_linux_amd64.tar.gz
+./cn-mon_0.4.0_linux_amd64/cn-mon --version
 ```
 
 Linux needs permission to send ICMP probes. Grant it to the extracted executable once, then run cn-mon as your normal user:
 
 ```sh
-cd cn-mon_0.3.0_linux_amd64
+cd cn-mon_0.4.0_linux_amd64
 sudo setcap cap_net_raw+ep ./cn-mon
 ./cn-mon example.com
 ```
@@ -156,7 +158,7 @@ For a closer look at a saved group:
 | `cn-mon --show REQUEST_ID --format md > history.md` | Exports its saved results as Markdown. |
 | `cn-mon --follow REQUEST_ID` | Watches a running request from another terminal on the same computer. Press `q` to stop following. |
 
-By default, history is kept in `.cn-ping-history.db` in your home folder. Retention is 30 days in cn-mon 0.3.0 and 180 days from the upcoming release; a `history_days` value you have configured keeps working, and the longer default keeps more history on disk. Old history is pruned when a new monitoring run starts. Use `--history-file` to keep a separate history for a project and `--history-days` to change retention:
+By default, history is kept in `.cn-ping-history.db` in your home folder. Retention is 180 days from cn-mon 0.4.0 (30 days in 0.3.0 and earlier); a `history_days` value you have configured keeps working, and the longer default keeps more history on disk. Old history is pruned when a new monitoring run starts. Use `--history-file` to keep a separate history for a project and `--history-days` to change retention:
 
 ```sh
 cn-mon --file targets.txt --history-file office-history.db --history-days 90
@@ -176,7 +178,7 @@ cn-mon 192.168.1.0/24 --every 1h --for 1d --available
 
 The report gains an `unseen` section (a key in JSON, a section in the table, Markdown and CSV) listing every host that never replied in any round the history holds. An `Unseen` host was tested and never answered; a `Not tested` host had no round that could test it, because its probes failed, its name did not resolve, or the group has no rounds yet. A run counts its own rounds, so the list is read after it ends. When a whole subnet never replied, cn-mon says so on stderr: your computer may simply not be able to reach it.
 
-The list is a lead, not proof: a firewalled or sleeping host looks the same as an unused address. Because it covers the whole history, `--available` does not combine with `--since`, and it works with targets or `--show` only. It does not probe or change anything it reads. `--available` arrives in the upcoming release and is not in the 0.3.0 downloads.
+The list is a lead, not proof: a firewalled or sleeping host looks the same as an unused address. Because it covers the whole history, `--available` does not combine with `--since`, and it works with targets or `--show` only. It does not probe or change anything it reads. `--available` is new in cn-mon 0.4.0 and is not in the 0.3.0 downloads.
 
 ## Settings and help
 

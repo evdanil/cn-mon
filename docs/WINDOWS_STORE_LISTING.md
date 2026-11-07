@@ -1,6 +1,6 @@
 # Microsoft Store listing draft
 
-Working editorial copy for the current x64 MSIX package, version 1.3.2.0, which contains the unchanged cn-mon CLI 0.3.0. Store upload rejected package 1.3.0.0 because its hidden Start entry required headless-app permission that is not granted to this app. Package 1.3.1.0 was rejected during package validation because its display name did not match the reserved title. The current package is 1.3.2.0 and uses the exact reserved title `cn-mon — Network Monitor`; upload validation and fresh WACK/installed-package qualification are pending. Frozen qualification records remain historical, and certification/publication have not occurred. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for evidence.
+Working editorial copy for the current x64 MSIX package, version 1.3.2.0, which contains the unchanged cn-mon CLI 0.3.0. Store upload rejected package 1.3.0.0 because its hidden Start entry required headless-app permission that is not granted to this app. Package 1.3.1.0 was rejected during package validation because its display name did not match the reserved title. The current package is 1.3.2.0 and uses the exact reserved title `cn-mon — Network Monitor`; the owner reported submitting package 1.3.2.0 on 2026-10-17, and its certification and publication status has not been independently verified. Frozen qualification records remain historical. The automated update of a published stable release builds the next package version (expected `1.3.3.0`) from that release's Windows archive; the automation never edits listing content, so the listing text in this file is edited only in Partner Center. See the [MSIX packaging plan](MSIX_PACKAGING_PLAN.md#hosted-qualification-evidence) for evidence.
 
 ## Copy-ready English listing
 
@@ -30,6 +30,7 @@ cn-mon is a terminal tool with no graphical dashboard or background monitoring s
 - Live terminal display and saved-run follow mode
 - Table, JSON, CSV, and Markdown reports
 - Local history with list, inspect, replay, and delete commands
+- Never-seen address list for a saved target group
 - Targets from command-line arguments, a file, or standard input
 
 **Search terms:**
@@ -63,13 +64,13 @@ The Windows package payload includes both `LICENSE` and `THIRD_PARTY_NOTICES.md`
 
 **Proposed privacy policy URL:** https://github.com/evdanil/cn-mon/blob/main/docs/PRIVACY.md
 
-The privacy URL is pending merge and publication of this file at that repository path. Do not enter it as a live link until it resolves to the reviewed policy. No separate product website or support email has been provided.
+The policy is already on `main` at that repository path, so the URL points at the merged policy, and the text at that URL changes only when a revision of the file merges to `main`. No separate product website or support email has been provided.
 
-**Future-update notes draft:**
+**What's new in this version (copy-ready for the 0.4.0 package):**
 
-Initial Microsoft Store release of cn-mon 0.3.0: native ICMP monitoring, optional TCP checks, live terminal follow, local history, saved-run replay, and table, JSON, CSV, and Markdown reports.
+cn-mon 0.4.0 adds --available, which lists the addresses of a saved target group that never replied, and keeps 180 days of history by default (30 days before).
 
-Microsoft says to leave “What's new in this version” blank for a first Store submission. Keep the text above for a later update or reuse only if Partner Center treats the submission as an update.
+The automated submission for the 0.4.0 package clones the listing of the last published submission unchanged and publishes immediately, with no pause for editing; the automation never edits listing content. This text, and the “Never-seen address list for a saved target group” feature line above, therefore reach the Store only through a separate listing update that the owner makes in Partner Center after that submission finishes. Microsoft says to leave “What's new in this version” blank for a first Store submission, so leave it blank if Partner Center treats the submission as a first one.
 
 ## Reviewer notes and launch instructions
 

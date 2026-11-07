@@ -38,7 +38,7 @@ The automation preserves the published submission's pricing unchanged. It accept
 
 The workflow stops before creating anything if Partner Center has any pending submission. It also never deletes, cancels, overwrites, or resumes a draft, including a draft left by an interrupted prior run. Inspect and resolve the pending submission manually in Partner Center, then retry the release workflow. If a Store write fails or returns an unknown status, inspect Partner Center before taking action; do not assume the operation rolled back or retry blindly. The workflow reports an accepted submission separately from confirmed publication.
 
-For a repeated release, a matching already-published provenance marker is treated as `already_published` without another Store write. Other ambiguous or mismatched state fails closed for owner review.
+For a repeated release, a matching already-published provenance marker is treated as `already_published` without another Store write. The marker records the packaging revision, the `main` commit the run built from, and a match requires it together with the release, tag and archive. A retry is therefore only for a run that stopped before submitting. Once a submission exists for the tag, do not re-dispatch it: a manual dispatch after `main` has moved carries a different packaging revision, so it is not recognised as a repeat and creates a new submission with the next package version of the same CLI. Other ambiguous or mismatched state fails closed for owner review.
 
 ## Validation status
 

@@ -28,7 +28,6 @@ const (
 	nativeMSIXReparsePoint       = 0x00000400
 	nativeMSIXMediumIntegrityRID = 0x00002000
 	nativeMSIXAdministratorsSID  = "S-1-5-32-544"
-	nativeMSIXPublishedVersion   = "cn-mon 0.3.0 (bd1ac548c22c0c49a54e2ce964a2f0a4da48a1ed)\n"
 )
 
 var nativeMSIXGetPackageFamilyName = syscall.NewLazyDLL("kernel32.dll").NewProc("GetPackageFamilyName")
@@ -49,9 +48,13 @@ func TestNativeMSIXInstalledAlias(t *testing.T) {
 	if err := nativeMSIXRequireOrdinaryToken(); err != nil {
 		nativeMSIXReject(t, "ordinary-token")
 	}
+	wantVersion, err := releaseExpectedVersionOutput()
+	if err != nil {
+		t.Fatalf("installed alias version expectation: %v", err)
+	}
 	code, stdout, stderr := nativeMSIXRun(t, alias, "", nil, "--version")
-	if code != 0 || len(stderr) != 0 || string(stdout) != nativeMSIXPublishedVersion {
-		t.Fatalf("installed alias --version exit=%d stdout=%q stderr=%q, want exact published version", code, stdout, stderr)
+	if code != 0 || len(stderr) != 0 || string(stdout) != wantVersion {
+		t.Fatalf("installed alias --version exit=%d stdout=%q stderr=%q, want exact %q", code, stdout, stderr, wantVersion)
 	}
 	t.Log("CNMON_NATIVE_MSIX_ALIAS package-identity=verified ordinary-token=medium expected-sid=verified version=exact")
 	t.Logf("CNMON_NATIVE_MSIX_CHILD pid=%d package-family=verified", childPID)

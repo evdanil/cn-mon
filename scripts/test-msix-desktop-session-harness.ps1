@@ -51,6 +51,40 @@ if ($functionAsts.Count -ne $helperNames.Count) { throw 'desktop session pure he
 $helperSource = @($functionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
 . ([scriptblock]::Create($helperSource))
 
+# The launcher cannot start the real native helper here, so its environment is
+# checked on the parsed function: the installed-alias test derives its expected
+# `--version` line from CNMON_RELEASE_VERSION/REVISION and must fail without them.
+$nativeTestAst = $sourceAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+        $candidate.Name -ceq 'Get-CnMonMsixSessionNativeTest'
+}, $true)
+Assert-True ($null -ne $nativeTestAst) 'desktop native-test launcher is missing'
+$launcherEnvironment = @{}
+foreach ($assignment in @($nativeTestAst.FindAll({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $candidate.Left -is [System.Management.Automation.Language.IndexExpressionAst] -and
+        $candidate.Left.Target.Extent.Text -ceq '$start.Environment' -and
+        $candidate.Left.Index -is [System.Management.Automation.Language.StringConstantExpressionAst]
+}, $true))) {
+    $launcherEnvironment[$assignment.Left.Index.Value] = $assignment
+}
+$overrideLoop = $nativeTestAst.Find({
+    param($candidate)
+    $candidate -is [System.Management.Automation.Language.ForEachStatementAst] -and
+        $candidate.Condition.Extent.Text -ceq '$Environment.Keys'
+}, $true)
+Assert-True ($null -ne $overrideLoop) 'desktop native-test caller override loop is missing'
+foreach ($binding in @(
+    @{ Name = 'CNMON_RELEASE_VERSION'; Source = '[string]$script:Receipt.cli_version' },
+    @{ Name = 'CNMON_RELEASE_REVISION'; Source = '[string]$script:Receipt.cli_revision' })) {
+    Assert-True ($launcherEnvironment.ContainsKey($binding.Name)) "desktop native helper does not receive $($binding.Name)"
+    $assigned = $launcherEnvironment[$binding.Name]
+    Assert-Equal $assigned.Right.Extent.Text $binding.Source "desktop native helper $($binding.Name) is not taken from the receipt"
+    Assert-True ($assigned.Extent.StartOffset -lt $overrideLoop.Extent.StartOffset) "$($binding.Name) is set after the caller overrides"
+}
+
 $signerStart = [DateTimeOffset]::Parse('2026-10-16T13:12:50Z')
 $signerExpiry = [DateTimeOffset]::Parse('2026-10-16T13:22:32Z')
 Assert-True (Test-CnMonMsixSessionSignerWindow -StartedUtc $signerStart -CompletedUtc ([DateTimeOffset]::Parse('2026-10-16T13:20:00Z')) -NotAfterUtc $signerExpiry) 'completion inside the signer window was rejected'
