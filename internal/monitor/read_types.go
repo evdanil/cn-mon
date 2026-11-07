@@ -33,6 +33,9 @@ type ReadPlan struct {
 	Prefix      string
 	Since       *time.Time
 	Follow      bool
+	// Available adds the whole-history never-seen fold (Coverage) to a show
+	// read. The command refuses it with Since and Follow.
+	Available bool
 }
 
 type RequestRow struct {
