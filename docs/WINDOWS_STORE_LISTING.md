@@ -64,7 +64,7 @@ The Windows package payload includes both `LICENSE` and `THIRD_PARTY_NOTICES.md`
 
 **Proposed privacy policy URL:** https://github.com/evdanil/cn-mon/blob/main/docs/PRIVACY.md
 
-The policy is already on `main` at that repository path, so the URL points at the merged policy; the 0.4.0 revision on the release branch becomes the text at that URL when it merges. No separate product website or support email has been provided.
+The policy is already on `main` at that repository path, so the URL points at the merged policy, and the text at that URL changes only when a revision of the file merges to `main`. No separate product website or support email has been provided.
 
 **What's new in this version (copy-ready for the 0.4.0 package):**
 

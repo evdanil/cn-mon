@@ -67,7 +67,10 @@ class StoreUpdateWorkflowTests(unittest.TestCase):
             if 'actions/checkout' in body:
                 continue
             for step in re.split(r'(?m)^      - ', body)[1:]:
-                if not re.search(r'(?m)^\s*(?:\w+=\$\()?gh (?:api|release|workflow|run)\b|\$\(gh ', step):
+                script = re.search(r'(?m)^\s*run:[\s\S]*', step)
+                # `gh` as a standalone command word in any position (after `if`,
+                # `&&`, `$(`, backticks, a variable prefix...), not `ghost` or `gh-pages`.
+                if not script or not re.search(r'(?<![\w.-])gh(?![\w-])', script.group(0)):
                     continue
                 checked += 1
                 self.assertIn('GH_REPO: ${{ github.repository }}', step,
