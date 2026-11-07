@@ -389,6 +389,8 @@ function Get-CnMonMsixSessionNativeTest {
     $start.Environment['CNMON_NATIVE_COMMAND_BINARY'] = $script:AliasPath
     $start.Environment['CNMON_MSIX_EXPECTED_PFN'] = [string]$script:Receipt.expected_pfn
     $start.Environment['CNMON_MSIX_EXPECTED_SID'] = [string]$script:State.user_sid
+    $start.Environment['CNMON_RELEASE_VERSION'] = [string]$script:Receipt.cli_version
+    $start.Environment['CNMON_RELEASE_REVISION'] = [string]$script:Receipt.cli_revision
     foreach ($key in $Environment.Keys) { $start.Environment[[string]$key] = [string]$Environment[$key] }
     $process = [Diagnostics.Process]::Start($start)
     try {
