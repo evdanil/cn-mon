@@ -358,11 +358,10 @@ func TestSubnetsOfTokenIsKeptAsWritten(t *testing.T) {
 // TestSubnetsOfDoesNotScaleWithTokensTimesHosts guards the hosts-sorted-once,
 // bisect-per-token design of cn-tool's subnets_of. 65,536 /30 tokens over
 // 262,144 hosts, in reverse order so the sort has work to do, is about
-// 1.7e10 membership tests for a pass over every host per token, which no
-// machine finishes within the bound, and well under a second for the sorted
-// search. The bound is two orders of magnitude from either side, so the test
-// does not depend on machine speed. There is no size limit: a /14 of /30s is
-// an input a request can hold.
+// 1.7e10 membership tests for a pass over every host per token, and well under
+// a second for the sorted search. The bound leaves about 100x on the fast side
+// and about 10x on the regression side, measured at 18 ns per membership test.
+// There is no size limit: a /14 of /30s is an input a request can hold.
 func TestSubnetsOfDoesNotScaleWithTokensTimesHosts(t *testing.T) {
 	const hostCount, tokenCount = 1 << 18, 1 << 16
 	base := netip.MustParseAddr("10.0.0.0").As4()

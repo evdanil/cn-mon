@@ -10,7 +10,7 @@ When you run a monitoring command, cn-mon processes the target names or addresse
 
 If history is enabled, cn-mon stores local monitoring history in a SQLite database. A history request can contain the original target tokens, resolved host names or addresses, and selected TCP ports. Stored run and result records can include timestamps, probe outcomes, response addresses, TCP states, run status, the local computer name, the process ID, and the basename of a target input file when a file was used. History lets you list, inspect, follow, and replay saved requests.
 
-cn-mon can also write a local log file. It records timestamps, log levels, and operational messages. A probe-failure diagnostic may include the target hostname or address, the probe type, and error text. With `--available`, the note that no address in a target subnet ever replied (printed on stderr) is also logged at the INFO level, so the subnet you typed can appear in the log file. Logging is configured through existing settings or command-line options.
+cn-mon can also write a local log file. It records timestamps, log levels, and operational messages. A probe-failure diagnostic may include the target hostname or address, the probe type, and error text. From the upcoming release, with `--available`, the note that no address in a target subnet ever replied (printed on stderr) is also logged at the INFO level, so a target subnet can appear in the log file. Logging is configured through existing settings or command-line options.
 
 cn-mon reads the existing .cn configuration files as settings. It does not modify those files. Configuration can select the local history and log paths and history retention period.
 
