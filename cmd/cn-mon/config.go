@@ -13,6 +13,11 @@ import (
 	"unicode/utf8"
 )
 
+// defaultHistoryDays is the retention fallback: 180 days from M13, the length
+// cn-tool PR #178 (a739948c69ada9bab27d25058c1d695ca06d5aba) chose because the
+// never-seen list rests on the rounds kept (30 in cn-mon 0.3.0 and before).
+const defaultHistoryDays = 180
+
 type configEnvironment struct{ Executable, HomeDir, WorkingDir string }
 type configOverrides struct {
 	ConfigFile, Theme, LogFile, LogLevel string
@@ -43,7 +48,7 @@ func loadSettings(env configEnvironment, overrides configOverrides) (settings, [
 			return settings{}, nil, fmt.Errorf("resolve working directory")
 		}
 	}
-	result := settings{HistoryFile: filepath.Join(env.HomeDir, ".cn-ping-history.db"), HistoryDays: big.NewInt(30), Theme: "default", LogFile: filepath.Join(env.HomeDir, "cn.log"), LogLevel: "INFO"}
+	result := settings{HistoryFile: filepath.Join(env.HomeDir, ".cn-ping-history.db"), HistoryDays: big.NewInt(defaultHistoryDays), Theme: "default", LogFile: filepath.Join(env.HomeDir, "cn.log"), LogLevel: "INFO"}
 	paths := make([]string, 0, 3)
 	if env.Executable != "" {
 		executable, err := expandHome(env.Executable, env.HomeDir)
@@ -95,7 +100,7 @@ func loadSettings(env configEnvironment, overrides configOverrides) (settings, [
 				}
 				result.HistoryDays = n
 			} else {
-				warnings = append(warnings, "invalid [ping] history_days; using 30")
+				warnings = append(warnings, fmt.Sprintf("invalid [ping] history_days; using %d", defaultHistoryDays))
 			}
 		}
 		if v, ok := values.get("theme", "theme"); ok {

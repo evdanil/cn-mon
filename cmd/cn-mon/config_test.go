@@ -8,6 +8,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -103,7 +104,7 @@ func TestLoadSettingsParseFailureRestoresEveryFallbackThenOverrides(t *testing.T
 	if len(warnings) != 1 || strings.Contains(warnings[0], "history") || strings.Contains(warnings[0], "credential") {
 		t.Fatalf("parse failure should report one sanitized fallback warning: %q", warnings)
 	}
-	if cfg.HistoryFile != filepath.Join(home, ".cn-ping-history.db") || cfg.HistoryDays.Cmp(big.NewInt(30)) != 0 || cfg.Theme != "dark" || cfg.LogFile != filepath.Join(home, "cn.log") || cfg.LogLevel != "INFO" {
+	if cfg.HistoryFile != filepath.Join(home, ".cn-ping-history.db") || cfg.HistoryDays.Cmp(big.NewInt(180)) != 0 || cfg.Theme != "dark" || cfg.LogFile != filepath.Join(home, "cn.log") || cfg.LogLevel != "INFO" {
 		t.Fatalf("parse failure fallback and surviving CLI override: %+v", cfg)
 	}
 }
@@ -165,11 +166,15 @@ func TestLoadSettingsThemeAndHistoryValueFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HistoryFile != filepath.Join(home, ".cn-ping-history.db") || cfg.HistoryDays.Cmp(big.NewInt(30)) != 0 || cfg.Theme != "default" || cfg.LogLevel != "INFO" {
+	if cfg.HistoryFile != filepath.Join(home, ".cn-ping-history.db") || cfg.HistoryDays.Cmp(big.NewInt(180)) != 0 || cfg.Theme != "default" || cfg.LogLevel != "INFO" {
 		t.Fatalf("per-setting fallbacks: %+v", cfg)
 	}
 	if len(warnings) != 2 {
 		t.Fatalf("unknown theme and parseable bad day should be reported as warnings: %q", warnings)
+	}
+	// M13: the fallback and its warning say 180 days, cn-tool PR #178's default.
+	if !slices.Contains(warnings, "invalid [ping] history_days; using 180") {
+		t.Fatalf("history_days warning does not name the 180-day fallback: %q", warnings)
 	}
 }
 
@@ -251,7 +256,7 @@ func TestConfigParserPreambleErrorRestoresAllSettingsBeforeCLIOverrides(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(warnings) != 1 || cfg.HistoryFile != filepath.Join(home, ".cn-ping-history.db") || cfg.HistoryDays.Cmp(big.NewInt(30)) != 0 || cfg.Theme != "monochrome" || cfg.LogFile != filepath.Join(home, "cn.log") || cfg.LogLevel != "INFO" {
+	if len(warnings) != 1 || cfg.HistoryFile != filepath.Join(home, ".cn-ping-history.db") || cfg.HistoryDays.Cmp(big.NewInt(180)) != 0 || cfg.Theme != "monochrome" || cfg.LogFile != filepath.Join(home, "cn.log") || cfg.LogLevel != "INFO" {
 		t.Fatalf("section-header error must discard every INI setting then keep CLI override: settings=%+v warnings=%q", cfg, warnings)
 	}
 }

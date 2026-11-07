@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"math/big"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/evdanil/cn-mon/internal/history"
+	"github.com/evdanil/cn-mon/internal/monitor"
 )
 
 // This composition test proves that the path selected by the existing M1
@@ -83,7 +85,7 @@ func TestConfiguredHistoryPathFallbackExecutableAndHomeConfigLayers(t *testing.T
 		t.Fatalf("load fallback settings: settings=%+v warnings=%q err=%v", defaultSettings, warnings, err)
 	}
 	defaultPath := filepath.Join(home, ".cn-ping-history.db")
-	if defaultSettings.HistoryFile != defaultPath || defaultSettings.HistoryDays.Cmp(big.NewInt(30)) != 0 {
+	if defaultSettings.HistoryFile != defaultPath || defaultSettings.HistoryDays.Cmp(big.NewInt(180)) != 0 {
 		t.Fatalf("built-in history defaults = path %q / %s days", defaultSettings.HistoryFile, defaultSettings.HistoryDays)
 	}
 	reader, err := history.OpenReader(context.Background(), defaultSettings.HistoryFile)
@@ -243,6 +245,47 @@ func TestCLIHistoryOverridesSelectStoreAndRetentionAcrossReopen(t *testing.T) {
 			t.Fatalf("CLI override unexpectedly created unused history path %q", unused)
 		}
 	}
+}
+
+// TestTargetRunPrunesAtTheBuiltInRetentionDefault covers CFG-03 through the
+// run path: with neither [ping] history_days nor --history-days, a target run
+// keeps a 45-day-old round and deletes a 200-day-old one, because the fallback
+// is cn-tool PR #178's 180 days (a739948c69ada9bab27d25058c1d695ca06d5aba).
+func TestTargetRunPrunesAtTheBuiltInRetentionDefault(t *testing.T) {
+	root := t.TempDir()
+	database, logPath := filepath.Join(root, "history.db"), filepath.Join(root, "cn.log")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	now := time.Now().UTC().Truncate(time.Second)
+	keepKey, dropKey := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	seed, err := history.OpenWriter(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyConfigAppendRound(t, ctx, seed, "age-45-days", keepKey, now.Add(-45*24*time.Hour))
+	historyConfigAppendRound(t, ctx, seed, "age-200-days", dropKey, now.Add(-200*24*time.Hour))
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	runtime := commandTestRuntime(root, logPath, monitor.RunDeps{
+		Prober: commandTestProber{},
+		OpenHistory: func(ctx context.Context, path string) (monitor.History, error) {
+			return history.OpenWriter(ctx, path)
+		},
+	})
+	code := runCLIWithRuntime([]string{"--format", "json", "--history-file", database, "--log-file", logPath, "127.0.0.1"}, nil, &stdout, &stderr, runtime)
+	if code != 0 {
+		t.Fatalf("target run exit=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	reader, err := history.OpenReader(ctx, database)
+	if err != nil || reader == nil {
+		t.Fatalf("reopen history: reader=%v err=%v", reader, err)
+	}
+	defer reader.Close()
+	historyConfigAssertRoundCount(t, ctx, reader, keepKey, 1)
+	historyConfigAssertRoundCount(t, ctx, reader, dropKey, 0)
 }
 
 func historyConfigAppendRound(t *testing.T, ctx context.Context, store *history.Store, runID, key string, at time.Time) {
