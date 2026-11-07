@@ -13,8 +13,6 @@ Runs on **Windows and Linux, x86-64**. The downloads are ready to run: no Go, Py
 
 ## Download and install
 
-The currently published release is [cn-mon 0.3.0](https://github.com/evdanil/cn-mon/releases/tag/v0.3.0); cn-mon 0.4.0 is being prepared from this source and is not yet published, so the 0.4.0 downloads and commands below work once it is.
-
 Get [cn-mon 0.4.0](https://github.com/evdanil/cn-mon/releases/tag/v0.4.0):
 
 | Platform | Download |
