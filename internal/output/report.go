@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,7 +117,36 @@ func runSections(request target.Request, out monitor.RunOutcome, rejected []targ
 		}
 		sections = append(sections, notFound)
 	}
+	if out.Coverage != nil {
+		sections = append(sections, unseenSection(out.Coverage))
+	}
 	return sections
+}
+
+// unseenSection is the --available section. Its Seen cell reads like cn-tool's
+// ping_coverage.unseen_rows ("0 of 2,880 rounds"); the seen section keeps its
+// unseparated form.
+func unseenSection(coverage *monitor.Coverage) reportSection {
+	section := reportSection{name: "unseen", headers: []string{"Host", "Status", "Seen", "Failed rounds", "Since", "Note"}}
+	since := formatOptionalTime(coverage.Since)
+	for _, host := range coverage.Unseen() {
+		seen := groupThousands(host.Answered) + " of " + groupThousands(host.Tested) + " rounds"
+		section.rows = append(section.rows, []string{host.Host, host.Status, seen, strconv.Itoa(host.Failed), since, host.Note})
+	}
+	return section
+}
+
+// groupThousands writes a count with ASCII comma separators.
+func groupThousands(n int) string {
+	digits := strconv.Itoa(n)
+	var grouped strings.Builder
+	for i := 0; i < len(digits); i++ {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			grouped.WriteByte(',')
+		}
+		grouped.WriteByte(digits[i])
+	}
+	return grouped.String()
 }
 
 func appendPortHeaders(headers []string, ports []int) []string {
@@ -456,7 +486,7 @@ func writeRunJSON(w io.Writer, request target.Request, outcome monitor.RunOutcom
 
 func writeHistoryJSON(w io.Writer, out monitor.ReadOutcome) error {
 	report := buildRunReport(out.Request, out.Run, nil, true, out.Running)
-	return encodeReport(w, historyReport{Seen: report.Seen, Latest: report.Latest, Summary: report.Summary})
+	return encodeReport(w, historyReport{Seen: report.Seen, Latest: report.Latest, Summary: report.Summary, Unseen: report.Unseen})
 }
 
 func buildRunReport(request target.Request, outcome monitor.RunOutcome, rejected []target.Rejection, historical, running bool) runReport {
@@ -494,6 +524,14 @@ func buildRunReport(request target.Request, outcome monitor.RunOutcome, rejected
 	sort.Strings(unresolved)
 	for _, host := range unresolved {
 		report.NotFound = append(report.NotFound, notFoundJSON{Object: host, Reason: "no such host"})
+	}
+	if outcome.Coverage != nil {
+		rows := make([]unseenJSON, 0)
+		since := formatOptionalTime(outcome.Coverage.Since)
+		for _, host := range outcome.Coverage.Unseen() {
+			rows = append(rows, unseenJSON{Host: host.Host, Status: host.Status, SeenRounds: host.Answered, Rounds: host.Tested, FailedRounds: host.Failed, Since: since, Note: host.Note})
+		}
+		report.Unseen = &rows
 	}
 	return report
 }

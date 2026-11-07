@@ -28,6 +28,19 @@ type runReport struct {
 	Latest   []latestJSON   `json:"latest"`
 	Summary  []summaryJSON  `json:"summary"`
 	NotFound []notFoundJSON `json:"not_found"`
+	// Unseen is last, present only with --available: nil omits the key and an
+	// empty slice writes [].
+	Unseen *[]unseenJSON `json:"unseen,omitempty"`
+}
+
+type unseenJSON struct {
+	Host         string `json:"host"`
+	Status       string `json:"status"`
+	SeenRounds   int    `json:"seen_rounds"`
+	Rounds       int    `json:"rounds"`
+	FailedRounds int    `json:"failed_rounds"`
+	Since        string `json:"since"`
+	Note         string `json:"note"`
 }
 
 type summaryJSON struct {
@@ -56,6 +69,7 @@ type historyReport struct {
 	Seen    []seenJSON    `json:"seen"`
 	Latest  []latestJSON  `json:"latest"`
 	Summary []summaryJSON `json:"summary"`
+	Unseen  *[]unseenJSON `json:"unseen,omitempty"`
 }
 
 type requestsReport struct {
