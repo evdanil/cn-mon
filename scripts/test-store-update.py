@@ -223,6 +223,18 @@ def store_fixture(pending=False, statuses=None, fail_at=None, change_published_a
     return Transport(), published
 
 
+class FakeClock:
+    """Stands in for the time module: sleeping advances the clock instantly."""
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+    def monotonic(self):
+        return self.now
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
 def make_candidate(tmpdir, release):
     binary = b"trusted binary"
     manifest = (f'''<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10" xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"><Identity Name="{STORE_ENV['CNMON_MSIX_IDENTITY_NAME']}" Publisher="{STORE_ENV['CNMON_MSIX_IDENTITY_PUBLISHER']}" Version="{release['package_version']}" ProcessorArchitecture="x64" /><Properties><DisplayName>cn-mon — Network Monitor</DisplayName><PublisherDisplayName>{STORE_ENV['CNMON_MSIX_PUBLISHER_DISPLAY_NAME']}</PublisherDisplayName></Properties><Applications><Application Id="CnMon"><uap:VisualElements DisplayName="cn-mon — Network Monitor" /></Application></Applications></Package>''').encode()
@@ -353,7 +365,7 @@ class StoreTransactionTests(unittest.TestCase):
                 "release_binding": {k: release[k] for k in ("release_id", "release_tag", "release_commit", "archive_sha256", "packaging_revision")}}
 
     def invoke(self, statuses=None, pending=False, allow_failure=False, fail_at=None, changed_release=False,
-               change_asset=False, change_published_after_first=False, receipt_case=None):
+               change_asset=False, change_published_after_first=False, receipt_case=None, poll_kwargs=None):
         github, _, live_release = github_fixture()
         release = self.runtime_release(github)
         transport, published = store_fixture(pending=pending, statuses=statuses, fail_at=fail_at,
@@ -394,7 +406,8 @@ class StoreTransactionTests(unittest.TestCase):
                     receipt.write_text(json.dumps(value), encoding="utf-8")
             try:
                 result = store_update.submit(release, self.state(release, published), package, receipt, "d" * 40,
-                                             transport=transport, github_client=github, poll_seconds=0)
+                                             transport=transport, github_client=github,
+                                             **({"poll_seconds": 0} if poll_kwargs is None else poll_kwargs))
             except store_update.ControllerError:
                 if not allow_failure:
                     raise
@@ -428,6 +441,50 @@ class StoreTransactionTests(unittest.TestCase):
     def test_pending_publication_at_deadline_reports_submitted(self):
         result, _ = self.invoke(statuses=["PendingPublication"])
         self.assertEqual(result, "submitted")
+
+    def poll(self, statuses, poll_kwargs=None):
+        clock = FakeClock()
+        with patch.object(store_update, "time", clock):
+            result, transport = self.invoke(statuses=statuses, allow_failure=True, poll_kwargs={} if poll_kwargs is None else poll_kwargs)
+        calls = [(method, url) for method, url, _, _ in transport.calls if url.startswith(store_update.STORE)]
+        reads = [call for call in calls if call[0] == "GET" and call[1].endswith("/status")]
+        return result, clock, reads, calls
+
+    def test_commit_wait_polls_every_ten_seconds_until_accepted(self):
+        result, clock, reads, _ = self.poll(["CommitStarted", "CommitStarted", "CommitStarted", "PreProcessing"])
+        self.assertEqual(result, "submitted")
+        self.assertEqual(clock.sleeps, [10, 10, 10])
+        self.assertEqual(len(reads), 4)
+
+    def test_first_accepted_status_ends_polling_immediately(self):
+        for status, expected in (("PreProcessing", "submitted"), ("Certification", "submitted"), ("PendingPublication", "submitted"), ("Published", "published")):
+            with self.subTest(status=status):
+                result, clock, reads, _ = self.poll([status], {"poll_seconds": 3600})
+                self.assertEqual(result, expected)
+                self.assertEqual(clock.sleeps, [])
+                self.assertEqual(len(reads), 1)
+
+    def test_commit_still_pending_at_default_deadline_is_incomplete_and_never_writes_again(self):
+        for status in ("CommitStarted", "PendingCommit"):
+            with self.subTest(status=status):
+                result, clock, reads, calls = self.poll([status])
+                self.assertEqual(result, "failed")
+                self.assertEqual(clock.sleeps, [10] * 90)
+                self.assertEqual(len(reads), 91)
+                commit = next(i for i, (method, url) in enumerate(calls) if method == "POST" and url.endswith("/commit"))
+                self.assertTrue(all(method == "GET" for method, _ in calls[commit + 1:]))
+
+    def test_last_sleep_is_cut_short_to_land_on_the_deadline(self):
+        result, clock, reads, _ = self.poll(["CommitStarted"], {"poll_seconds": 25})
+        self.assertEqual(result, "failed")
+        self.assertEqual(clock.sleeps, [10, 10, 5])
+        self.assertEqual(len(reads), 4)
+
+    def test_commit_failure_while_polling_fails_immediately(self):
+        result, clock, reads, _ = self.poll(["CommitStarted", "CommitFailed"])
+        self.assertEqual(result, "failed")
+        self.assertEqual(clock.sleeps, [10])
+        self.assertEqual(len(reads), 2)
 
     def test_unknown_status_fails_without_claiming_success(self):
         with self.assertRaises(store_update.ControllerError):
