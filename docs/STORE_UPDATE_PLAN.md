@@ -10,7 +10,7 @@
 
 **Spec:** [STORE_UPDATE_SPEC.md](STORE_UPDATE_SPEC.md)
 
-Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (50 tests), workflow guards (8 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. Native Windows SDK/install/WACK qualification runs in PR CI. Pull request checks and reviews are required before merge. The Store credentials are configured, and [Store run 42430749592](https://github.com/evdanil/cn-mon/actions/runs/42430749592) has exercised the Store write path live by creating, uploading and committing package `1.3.3.0`, whose certification and publication are pending.
+Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (50 tests), workflow guards (8 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. Native Windows SDK/install/WACK qualification runs in PR CI. Pull request checks and reviews are required before merge. The Store credentials are configured, and [Store run 42430749592](https://github.com/evdanil/cn-mon/actions/runs/42430749592) has exercised the Store write path live by creating, uploading and committing package `1.3.3.0`, which the owner observed in Partner Center on 2026-11-08 to have passed certification and be published in the Microsoft Store.
 
 ## Global constraints
 
