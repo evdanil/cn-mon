@@ -41,6 +41,7 @@ MARKER_PREFIX = "CNMON_STORE_UPDATE:"
 PENDING_STATUSES = {"PendingCommit", "CommitStarted", "PendingPublication", "PreProcessing", "Certification", "Release", "Publishing"}
 ACCEPTED_STATUSES = {"PreProcessing", "Certification", "Release", "Publishing", "PendingPublication", "Published"}
 FAILED_STATUSES = {"CommitFailed", "PreProcessingFailed", "CertificationFailed", "ReleaseFailed", "PublishFailed", "Canceled"}
+STATUS_POLL_INTERVAL = 10
 
 
 class ControllerError(Exception):
@@ -676,7 +677,7 @@ def _status_name(client, submission_id):
     return status
 
 
-def submit(release, state, package_path, receipt_path, source_sha, *, transport=request, github_client=request, poll_seconds=120):
+def submit(release, state, package_path, receipt_path, source_sha, *, transport=request, github_client=request, poll_seconds=900):
     _validate_release_metadata(release, require_package=True)
     expected_binding = {k: release.get(k) for k in ("release_id", "release_tag", "release_commit", "archive_sha256", "packaging_revision")}
     if (not isinstance(state, dict) or state.get("schema_version") != 1 or
@@ -730,16 +731,11 @@ def submit(release, state, package_path, receipt_path, source_sha, *, transport=
     deadline = time.monotonic() + max(0, poll_seconds)
     while True:
         status = _status_name(client, str(submission_id))
-        if status == "Published":
-            return "published"
         if status in ACCEPTED_STATUSES:
-            if time.monotonic() >= deadline:
-                return "submitted"
-            time.sleep(min(2, max(0, deadline - time.monotonic())))
-        elif time.monotonic() >= deadline:
+            return "published" if status == "Published" else "submitted"
+        if time.monotonic() >= deadline:
             fail()
-        else:
-            time.sleep(min(2, max(0, deadline - time.monotonic())))
+        time.sleep(min(STATUS_POLL_INTERVAL, max(0, deadline - time.monotonic())))
 
 
 def _package_zip(filename, data):

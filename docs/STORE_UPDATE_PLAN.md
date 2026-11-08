@@ -10,7 +10,7 @@
 
 **Spec:** [STORE_UPDATE_SPEC.md](STORE_UPDATE_SPEC.md)
 
-Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (45 tests), workflow guards (8 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. Native Windows SDK/install/WACK qualification runs in PR CI. Pull request checks and reviews are required before merge. The Store credentials are configured, but authenticated Store API validation is incomplete: live runs have made only read-only requests, so no Store write has occurred.
+Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (50 tests), workflow guards (8 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. Native Windows SDK/install/WACK qualification runs in PR CI. Pull request checks and reviews are required before merge. The Store credentials are configured, and [Store run 42430749592](https://github.com/evdanil/cn-mon/actions/runs/42430749592) has exercised the Store write path live by creating, uploading and committing package `1.3.3.0`, whose certification and publication are pending.
 
 ## Global constraints
 
@@ -79,7 +79,7 @@ def test_store_metadata_survives_package_replacement(self):
 - [x] Implement the no-secret release bridge and main-only workflow, ordered resolve/native/preflight/package/Hosted/Certify/submit, and qualification success conditions.
 - [x] Keep private package, receipt, Store JSON, upload ZIP and raw logs out of artifact uploads; clean temporary runner data and scope API credentials to preflight/submission only.
 - [x] Scope `actions: write` to dispatch/publication jobs, `contents: read` elsewhere, and API credentials to prepare/submit; do not pass secrets in command arguments.
-- [x] Run controller (45), workflow guards (7), release workflow, MSIX workflow (23) and PowerShell package/native/profile/baseline harnesses locally.
+- [x] Run controller (50), workflow guards (8), release workflow, MSIX workflow (23) and PowerShell package/native/profile/baseline harnesses locally.
 
 ## Task 4: Documentation, independent review and milestone PR
 
