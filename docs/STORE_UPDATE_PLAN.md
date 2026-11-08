@@ -10,13 +10,13 @@
 
 **Spec:** [STORE_UPDATE_SPEC.md](STORE_UPDATE_SPEC.md)
 
-Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (37 tests), workflow guards (7 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. Native Windows SDK/install/WACK qualification runs in PR CI. Pull request checks and reviews are required before merge. Authenticated Store API validation requires owner credentials and remains unverified; no live Store API request was made.
+Implementation status: Tasks 1–3 are implemented and local code/documentation reviews are complete. Controller (45 tests), workflow guards (8 tests), existing release/MSIX contract and qualification tests pass locally; the package-module harness passes 52 assertions and the native Windows PowerShell harness passes 32 checks. The desktop behavior digest is newline-normalized for Windows checkouts. Native Windows SDK/install/WACK qualification runs in PR CI. Pull request checks and reviews are required before merge. The Store credentials are configured, but authenticated Store API validation is incomplete: live runs have made only read-only requests, so no Store write has occurred.
 
 ## Global constraints
 
 - Preserve `cn-mon — Network Monitor`, native CLI bytes, Linux/Windows x86-64 support, Apache-2.0 utility licensing and private identity.
 - PR jobs receive no Store/identity secrets; privileged code runs the exact trusted main revision.
-- No live Store mutation while preparing/testing this milestone; credential setup is still outstanding.
+- No live Store mutation while preparing/testing this milestone.
 - Any existing pending submission blocks writes; no DELETE operation or destructive retry exists.
 - Existing native-driver and frozen-controller 19-gate qualification retains its meaning; hosted CI explicitly adopts StoreUpdate aggregation requiring 16 Hosted core gates and 17 Certify gates including strict WACK.
 - Package version floor is `1.3.2.0`, fourth component is zero; release and package versions are independent.
@@ -79,7 +79,7 @@ def test_store_metadata_survives_package_replacement(self):
 - [x] Implement the no-secret release bridge and main-only workflow, ordered resolve/native/preflight/package/Hosted/Certify/submit, and qualification success conditions.
 - [x] Keep private package, receipt, Store JSON, upload ZIP and raw logs out of artifact uploads; clean temporary runner data and scope API credentials to preflight/submission only.
 - [x] Scope `actions: write` to dispatch/publication jobs, `contents: read` elsewhere, and API credentials to prepare/submit; do not pass secrets in command arguments.
-- [x] Run controller (37), workflow guards (7), release workflow, MSIX workflow (23) and PowerShell package/native/profile/baseline harnesses locally.
+- [x] Run controller (45), workflow guards (7), release workflow, MSIX workflow (23) and PowerShell package/native/profile/baseline harnesses locally.
 
 ## Task 4: Documentation, independent review and milestone PR
 
