@@ -426,8 +426,10 @@ class StoreClient:
 
 def _check_app_identity(app, credentials):
     expected = {"packageIdentityName": credentials["CNMON_MSIX_IDENTITY_NAME"],
-                "publisherName": credentials["CNMON_MSIX_IDENTITY_PUBLISHER"],
-                "packageFamilyName": credentials["CNMON_MSIX_EXPECTED_PFN"]}
+                "publisherName": credentials["CNMON_MSIX_IDENTITY_PUBLISHER"]}
+    # The live app resource returns no usable packageFamilyName; the packager and receipt check still bind the PFN.
+    if app.get("packageFamilyName") not in (None, ""):
+        expected["packageFamilyName"] = credentials["CNMON_MSIX_EXPECTED_PFN"]
     if any(app.get(k) != v for k, v in expected.items()):
         fail()
 

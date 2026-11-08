@@ -152,18 +152,20 @@ MISSING = object()
 
 
 def store_fixture(pending=False, statuses=None, fail_at=None, change_published_after_first=False,
-                  pricing=None, clone_pricing=None, created_status="PendingCommit"):
+                  pricing=None, clone_pricing=None, created_status="PendingCommit", app_overrides=None):
     published = {
         "id": "published-id", "status": "Published", "targetPublishMode": "Manual",
-        "applicationPackages": [{"fileName": "cn-mon_1.3.2.0_x64.msix", "fileStatus": "Uploaded", "version": "1.3.2.0", "architecture": "X64"}],
+        "applicationPackages": [{"fileName": "cn-mon_1.3.2.0_x64.msix", "fileStatus": "Uploaded", "version": "1.3.2.0", "architecture": "x64"}],
         "notesForCertification": "owner notes", "pricing": copy.deepcopy(pricing if pricing is not None else {"priceId": "Free", "futurePricingField": {"keep": True}}), "listings": {"en-us": {"title": "kept"}},
         "packageDeliveryOptions": {"unknown": True}, "unknownFutureField": {"nested": [1, 2]},
     }
+    # The live app resource reports the identity name and publisher but no usable packageFamilyName.
     app = {"packageIdentityName": STORE_ENV["CNMON_MSIX_IDENTITY_NAME"],
            "publisherName": STORE_ENV["CNMON_MSIX_IDENTITY_PUBLISHER"],
-           "packageFamilyName": STORE_ENV["CNMON_MSIX_EXPECTED_PFN"],
            "lastPublishedApplicationSubmission": {"id": "published-id"},
            "pendingApplicationSubmission": {"id": "pending-id"} if pending else None}
+    # app_overrides sets or varies fields; a MISSING value removes the field.
+    app = {k: v for k, v in {**app, **(app_overrides or {})}.items() if v is not MISSING}
     class Transport:
         def __init__(self):
             self.calls = []
@@ -631,6 +633,82 @@ class StoreTransactionTests(unittest.TestCase):
                 self.assertEqual(result, 1)
                 self.assertEqual(stderr.getvalue().strip(), "store_update_" + code)
                 self.assertNotIn(STORE_ENV["CNMON_STORE_CLIENT_SECRET"], stderr.getvalue() + stdout.getvalue())
+
+
+class AppIdentityTests(unittest.TestCase):
+    """The Store app resource must match the configured identity name and publisher.
+
+    packageFamilyName is compared only when the API reports it; the live resource returns no usable value.
+    """
+    OTHER_PFN = "Other.CnMon_000000000000"
+
+    def preflight(self, app_overrides):
+        github, _, _ = github_fixture()
+        release = store_update.resolve_release("v0.4.0", github)
+        transport, _ = store_fixture(app_overrides=app_overrides)
+        with patch.dict("os.environ", STORE_ENV):
+            try:
+                _, state = store_update._preflight(release, "d" * 40, transport=transport)
+                return state["status"], transport
+            except store_update.ControllerError as error:
+                return error.code, transport
+
+    def assert_no_store_writes(self, transport):
+        self.assertFalse(any(url.startswith(store_update.STORE) and method in ("POST", "PUT", "DELETE")
+                             for method, url, _, _ in transport.calls))
+
+    def assert_rejected_at_identity_check(self, transport):
+        # The app read is the last Store call: nothing after the identity check ran, and nothing was written.
+        store_calls = [(method, url) for method, url, _, _ in transport.calls if url.startswith(store_update.STORE)]
+        self.assertEqual(store_calls[-1][0], "GET")
+        self.assertTrue(store_calls[-1][1].endswith("/applications/store-app-id"))
+        self.assertFalse(any("/submissions" in url for _, url in store_calls))
+        self.assert_no_store_writes(transport)
+
+    def test_preflight_accepts_absent_package_family_name(self):
+        status, _ = self.preflight({})
+        self.assertEqual(status, "ready")
+
+    def test_preflight_treats_null_or_empty_package_family_name_as_not_reported(self):
+        for value in (None, ""):
+            with self.subTest(value=value):
+                status, _ = self.preflight({"packageFamilyName": value})
+                self.assertEqual(status, "ready")
+
+    def test_preflight_accepts_matching_package_family_name(self):
+        status, _ = self.preflight({"packageFamilyName": STORE_ENV["CNMON_MSIX_EXPECTED_PFN"]})
+        self.assertEqual(status, "ready")
+
+    def test_preflight_rejects_differing_package_family_name(self):
+        status, transport = self.preflight({"packageFamilyName": self.OTHER_PFN})
+        self.assertEqual(status, "failed")
+        self.assert_rejected_at_identity_check(transport)
+
+    def test_preflight_rejects_wrong_or_missing_identity_name_and_publisher(self):
+        cases = (("packageIdentityName", "Other.CnMon"), ("packageIdentityName", MISSING),
+                 ("publisherName", "CN=Other Publisher"), ("publisherName", MISSING))
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                status, transport = self.preflight({field: value})
+                self.assertEqual(status, "failed")
+                self.assert_rejected_at_identity_check(transport)
+
+    def test_submit_rejects_differing_package_family_name_before_store_writes(self):
+        github, _, _ = github_fixture()
+        release = store_update.resolve_release("v0.4.0", github, "d" * 40)
+        release.update({"package_version": "1.3.3.0", "msix_name": "cn-mon_1.3.3.0_x64.msix"})
+        transport, published = store_fixture(app_overrides={"packageFamilyName": self.OTHER_PFN})
+        state = {"schema_version": 1, "status": "ready", "published_submission_id": "published-id",
+                 "published_submission_sha256": store_update._published_fingerprint(published),
+                 "package_version": release["package_version"],
+                 "release_binding": {k: release[k] for k in ("release_id", "release_tag", "release_commit", "archive_sha256", "packaging_revision")}}
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict("os.environ", STORE_ENV):
+            package, receipt = make_candidate(tmpdir, release)
+            with self.assertRaises(store_update.ControllerError) as raised:
+                store_update.submit(release, state, package, receipt, "d" * 40,
+                                    transport=transport, github_client=github, poll_seconds=0)
+        self.assertEqual(raised.exception.code, "failed")
+        self.assert_rejected_at_identity_check(transport)
 
 
 if __name__ == "__main__":
